@@ -27,11 +27,21 @@
 1. ✅ **URL shortener** — estimate, data model, counter+Base62, read/write
    paths, 301vs302, first bottleneck → cache + the 4 properties that justify it.
    (Lesson 0001)
-2. Scaling reads — cache eviction (LRU/TTL), CDNs, cache-miss storm / stampede.
+2. ✅ **Scaling reads** — cache size vs hit rate (skew), LRU/LFU/TTL eviction,
+   read-through/cache-aside, cache stampede + single-flight/jitter/SWR, CDNs &
+   the speed-of-light bottleneck. (Lesson 0002)
 3. Scaling writes — sharding, partitioning, distributed ID generation.
 4. Async work — queues + workers (notification fan-out).
 5. Consistency & replication — a like-counter under concurrency.
 6. Designing for failure — timeouts, retries, idempotency, backpressure.
+
+### Advanced topics (queued so the course never runs dry)
+7. Consistent hashing — adding/removing cache or shard nodes without remapping all keys.
+8. Rate limiting — token bucket vs leaky bucket, distributed counters.
+9. Message queues — at-least-once vs exactly-once, ordering, dead-letter queues.
+10. Leader election & coordination — quorums, heartbeats, split-brain.
+11. CAP in practice — what you actually give up under partition.
+12. DB indexing & search systems — B-trees, inverted indexes, when an index hurts.
 
 ## Lesson format conventions
 - Four reusable "moves" framing introduced in Lesson 01: estimate → model →

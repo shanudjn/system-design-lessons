@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 02 — Scaling Reads: Eviction, CDNs, and the Stampede</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 02 · Worked Example</div>
+  <h1>Scaling Reads: Eviction, CDNs, and the Stampede</h1>
+  <p class="lead">Last lesson we put a cache in front of the URL shortener and the read problem looked solved. It isn't — not yet. A real cache can't hold everything, it lives near one data centre, and when a hot key disappears it can take the database down with it. We fix all three, reusing the same four moves.</p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0002-scaling-reads.html"</code></p>
+</header>
+
+<h2>Where Lesson 01 left us</h2>
+<p>The shortener does <b>~3,800 reads/sec</b> against <b>~6 billion</b> stored links, and we added a <b>cache</b> (an in-memory key→value store, think Redis) in front of the database. The mapping <code>short_code → long_url</code> is <b>immutable</b> — written once, never changed — so a cached value is never stale. That was the easy part. Now three cracks show up the moment traffic is real. Here they are on one screen.</p>
+
+<div class="diagram"><pre>
+  THE READ PATH, FULLY LAYERED        (each layer catches what the one above misses)
+
+   user in Tokyo                         user in Berlin
+        │                                     │
+        ▼                                     ▼
+   ┌─────────┐  cache the redirect       ┌─────────┐
+   │  CDN    │  near the user            │  CDN    │   ← CRACK 2: far from the DC = slow
+   │ (edge)  │                           │ (edge)  │
+   └────┬────┘  miss ─────────────┐      └────┬────┘
+        │                         ▼           │
+        │                   ┌──────────┐      │
+        └──────────────────►│   App    │◄─────┘
+                            │  server  │
+                            └────┬─────┘
+                                 │ check cache first
+                                 ▼
+                            ┌─────────┐  full → must EVICT   ← CRACK 1: can't hold 6B
+                            │  CACHE  │  hot key gone? ──┐
+                            └────┬────┘                  │
+                                 │ miss                  │ MANY misses at once
+                                 ▼                       ▼
+                            ┌──────────┐          ┌──────────────┐
+                            │ Database │◄─────────│  STAMPEDE    │ ← CRACK 3: herd hits DB
+                            └──────────┘          └──────────────┘
+</pre></div>
+
+<p class="note">Three cracks: <span class="key">(1) the cache is too small to hold everything, so something must be thrown out — eviction. (2) one cache sits in one place, but users are global — CDNs. (3) when a hot key leaves the cache, a herd of requests stampedes the database at once.</span> We take them in order.</p>
+
+<h2>Move 1 — Estimate: how much can the cache actually hold?</h2>
+<p>Before choosing an eviction rule, find out how tight the squeeze is. Caching is only interesting because memory is small and expensive compared to disk. So: how many of our 6 billion links fit in RAM?</p>
+
+<div class="card calc">
+  <p><b>Size of one cache entry:</b> the key <code>short_code</code> (~7 bytes) + the value <code>long_url</code> (~100 bytes average) + per-entry bookkeeping (pointers, expiry, hashtable slot ~ 90 bytes). Round to <b>~200 bytes/entry</b>.</p>
+  <hr style="border-color:var(--line); margin:.8rem 0">
+  <p><b>One cache box with 16 GB RAM.</b> Reserve ~25% for the process itself → <b>~12 GB usable</b>.</p>
+  <p>Entries that fit = 12 GB ÷ 200 bytes = 12,000,000,000 ÷ 200 = <b>60,000,000 entries</b>.</p>
+  <hr style="border-color:var(--line); margin:.8rem 0">
+  <p>Coverage = 60M ÷ 6,000M = <b>1% of all links fit in the cache.</b> &nbsp;<span class="pill">99% live only on disk</span></p>
+</div>
+
+<p class="note why"><b>Why this matters:</b> 1% sounds hopeless, but remember from Lesson 01 that access is <b>skewed</b> — a few links go viral while most are clicked almost never (this is the <b>80/20</b>, or <b>Zipfian</b>, pattern). If the hottest 1% absorbs, say, 96% of clicks, then the cache catches 96% of reads and the database only sees the other 4%. <span class="key">A 1% cache can carry a 96% hit rate — but only because traffic is skewed.</span> If traffic were uniform, this cache would be nearly useless. The skew is the whole reason caching works.</p>
+
+<div class="card calc">
+  <p><b>Payoff at a 96% hit rate:</b></p>
+  <p>Reads the database must serve = (1 − 0.96) × 3,800/sec = 0.04 × 3,800 = <b>~152 reads/sec</b>.</p>
+  <p>From 3,800/sec hammering disk down to <b>152/sec</b>. That's the cache earning its keep. <span class="pill">25× less DB load</span></p>
+</div>
+
+<h2>Move 2 — Model the cache entry: what does "throw one out" mean?</h2>
+<p>The cache holds 60M entries. Click number 60,000,001 needs a slot and there are none. The cache must <b>evict</b> — pick an existing entry and delete it to make room. <i>Which</i> one you pick is the entire game. Two honest rules:</p>
+
+<div class="grid2">
+  <div class="card">
+    <h3>LRU — Least Recently Used ✅</h3>
+    <p>Track when each entry was last read. When full, evict the one <b>untouched for the longest time</b>. The bet: what you haven't used lately, you won't use soon.</p>
+    <p><b>Fits skewed traffic perfectly.</b> Viral links get read constantly, so they're always "recent" and never evicted. Cold links go quiet and fall out. LRU naturally keeps the hot 1%.</p>
+  </div>
+  <div class="card">
+    <h3>TTL — Time To Live</h3>
+    <p>Stamp each entry with an expiry (say 1 hour). After that it's dropped no matter how hot it is. Bounds how long <i>any</i> data lingers.</p>
+    <p><b>But our mapping is immutable</b> — a cached value is never wrong, so we don't need TTL for staleness. We use a long TTL only to recycle memory and to eventually notice the rare <b>deleted</b> link. TTL here is a safety net, not the main rule.</p>
+  </div>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> LRU optimizes for the <i>access pattern</i> (keep what's hot); TTL optimizes for <i>freshness and memory hygiene</i> (drop what's old). They're not rivals — real systems run <span class="key">LRU for eviction + a long TTL as a backstop</span>. The skill is knowing <i>why</i> each is there: LRU because traffic is skewed, TTL because even "immutable" data can be deleted and memory must be reclaimed.</p>
+
+<h3>One subtlety: LRU vs LFU</h3>
+<p>There's a cousin, <b>LFU — Least Frequently Used</b> — which evicts by total count, not recency. LFU protects an all-time-popular link better, but it's slower to forget yesterday's fad: a link that was huge last week but is dead today keeps its high count and clogs the cache. <span class="key">LRU adapts faster to changing trends; LFU remembers longer.</span> For a shortener, where virality is bursty, LRU's quick forgetting usually wins.</p>
+
+<h2>Move 3 — Trace the paths: the cache hit, the miss, and the dangerous one</h2>
+
+<h3>Cache hit (96% of the time)</h3>
+<div class="diagram"><pre>
+1. GET /15FTGg
+2. App checks cache → key "15FTGg" present
+3. Return long_url straight from memory   (~0.5 ms, no disk touched)
+</pre></div>
+
+<h3>Cache miss (4% of the time) — read-through</h3>
+<div class="diagram"><pre>
+1. GET /15FTGg
+2. App checks cache → MISS
+3. App reads DB:  SELECT long_url WHERE short_code='15FTGg'   (~20 ms)
+4. App writes the value back into the cache   (so the NEXT read hits)
+5. Return long_url
+</pre></div>
+<p class="calc">This "miss → fetch → backfill" loop is called <b>read-through</b> (or <b>cache-aside</b>). The first reader of a cold link pays the slow ~20 ms; everyone after pays the fast ~0.5 ms until it's evicted.</p>
+
+<h3>The dangerous path: a hot key vanishes → the stampede</h3>
+<p>Now the failure that's special to caches. A link goes viral — <b>2,000 requests/second</b> for one code. It's a guaranteed cache hit, so the database never sees it. Life is good. Then its cache entry disappears — maybe the TTL expired, maybe the cache box restarted. For a brief window, that hot key is a <b>miss</b>. What happens?</p>
+
+<div class="card calc">
+  <p>A database read takes <b>~20 ms</b> (= 0.02 s). During that 20 ms window, new requests keep arriving for the same key — and they all miss, because nobody has backfilled yet.</p>
+  <p>Requests piling on in 20 ms = 2,000/sec × 0.02 s = <b>40 simultaneous identical DB queries</b> for one key.</p>
+  <p>Now imagine thousands of warm keys whose TTLs were all set at the same startup instant and expire together: <b>tens of thousands of misses fire in the same second.</b></p>
+</div>
+
+<p class="note">This is the <b>cache stampede</b>, also called the <b>thundering herd</b> or <b>dogpile</b>: the moment a popular key leaves the cache, the herd that the cache was shielding slams into the database all at once. The database, sized for 152 reads/sec, suddenly gets thousands — and falls over. Ironically, <span class="key">the cache made the database <i>weaker</i> by hiding the true load, so the database was never provisioned to survive a cache gap.</span> This is crack #3, and it's the one that takes systems down.</p>
+
+<div class="diagram"><pre>
+  STAMPEDE                          FIXED with single-flight (request coalescing)
+
+  hot key expires                   hot key expires
+   │ │ │ │ │  40 requests            │ │ │ │ │  40 requests
+   ▼ ▼ ▼ ▼ ▼  all MISS               ▼ ▼ ▼ ▼ ▼  all MISS
+  ┌───────────┐                     ┌───────────────────────┐
+  │ Database  │ ← 40 identical      │ 1st request takes a    │
+  │  OVERLOAD │   queries at once   │ LOCK, does the 1 query │
+  └───────────┘                     │ others WAIT for it     │
+                                    └──────────┬────────────┘
+                                               ▼ 1 query only
+                                        ┌──────────┐
+                                        │ Database │  1 read, then all
+                                        └──────────┘  39 read the backfill
+</pre></div>
+
+<h3>Three fixes, each with a named trade-off</h3>
+<table>
+  <tr><th>Fix</th><th>How it works</th><th>Trade-off</th></tr>
+  <tr><td><b>Single-flight</b><br>(request coalescing)</td><td>On a miss, the first request grabs a lock and does the one DB read; the other 39 wait and then read its backfill.</td><td>The 39 waiters see slightly higher latency — but the DB does <b>1</b> query instead of 40. Trade a little latency for survival.</td></tr>
+  <tr><td><b>TTL jitter</b></td><td>Don't expire entries on a round number. Add a random ±10% to each TTL so expiries spread out instead of firing in the same second.</td><td>Costs nothing; just prevents <b>synchronized</b> expiry. The fix for the "10,000 keys die at once" version.</td></tr>
+  <tr><td><b>Stale-while-revalidate</b></td><td>Keep serving the old value past expiry while <b>one</b> background task refreshes it.</td><td>Readers briefly get slightly-stale data — fine here, since the value is immutable anyway. No reader ever waits on the DB.</td></tr>
+</table>
+
+<p class="note why"><b>The transferable lesson:</b> a cache doesn't remove load, it <i>hides</i> load. Always ask "what happens the instant this cache is empty?" — on a cold start, a restart, or a hot-key expiry. If the answer is "the database dies," you haven't finished. <span class="key">Protect the gap, not just the steady state.</span></p>
+
+<h2>Move 4 — Find the next bottleneck: distance</h2>
+<p>Eviction and stampede are solved, but the cache and database still sit in <b>one</b> data centre — say Virginia. A user in Tokyo is ~10,000 km away. Light in fibre travels ~200,000 km/s, so the round trip is physically ~100 ms <i>before any work happens</i>. A 0.5 ms cache hit is meaningless if the packet spends 100 ms crossing the Pacific. <span class="key">The new bottleneck isn't compute — it's the speed of light.</span></p>
+
+<p>Fix: a <b>CDN</b> — Content Delivery Network. A CDN is a fleet of caches (called <b>edge</b> servers, or <b>PoPs</b> — Points of Presence) spread across the globe. The Tokyo user hits a Tokyo edge ~5 ms away instead of Virginia 100 ms away.</p>
+
+<div class="card calc">
+  <p><b>Latency for the Tokyo user:</b></p>
+  <p>Without CDN: ~100 ms round trip to Virginia + 0.5 ms cache = <b>~100 ms</b>.</p>
+  <p>With CDN edge in Tokyo: ~5 ms round trip + edge lookup = <b>~5 ms</b>. <span class="pill">20× faster</span></p>
+</div>
+
+<p>For a URL shortener the CDN can cache the <b>redirect itself</b> — the response that says "go to <code>long_url</code>." The edge answers the redirect without ever reaching your origin. But look closely at the trade-off, because it's the exact one from Lesson 01:</p>
+
+<p class="note why"><b>Name the trade-off:</b> if the edge serves the redirect, clicks <span class="key">never reach your server — so you can't count them.</span> That's the 301-vs-302 dilemma again, one layer out. You choose per use case: cache the redirect at the edge for raw speed and cheap traffic, <i>or</i> let clicks flow to origin so you keep per-click analytics. You can also split it — cache aggressively for links where you don't need counts, and bypass the CDN for links you're tracking. Speed vs. visibility; there's no free version.</p>
+
+<h2>Where we landed</h2>
+<p>We took the "solved" cache from Lesson 01 and stress-tested it. <b>Estimate</b> showed only 1% of links fit in RAM — fine, because skew gives a 96% hit rate. <b>Model</b> gave us eviction: LRU to keep the hot set, TTL as a backstop. <b>Tracing</b> the paths exposed the stampede when a hot key vanishes, fixed with single-flight, jitter, and stale-while-revalidate. The <b>next bottleneck</b> was physical distance, answered by a CDN — which handed us the analytics trade-off all over again. Same four moves; deeper system.</p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lessons build directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>03 — Scaling writes:</b> when one database and one counter aren't enough — sharding, partitioning, and distributed ID generation.</p>
+  <p style="margin:.2rem 0">• Later, when values <i>can</i> change, the cache-invalidation problem we've dodged twice finally comes due (consistency &amp; replication).</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">eviction</span>
+    <span class="pill">LRU</span>
+    <span class="pill">LFU</span>
+    <span class="pill">TTL</span>
+    <span class="pill">hit rate</span>
+    <span class="pill">Zipfian / skewed access</span>
+    <span class="pill">read-through / cache-aside</span>
+    <span class="pill">cache stampede / thundering herd</span>
+    <span class="pill">single-flight / request coalescing</span>
+    <span class="pill">TTL jitter</span>
+    <span class="pill">stale-while-revalidate</span>
+    <span class="pill">CDN / edge / PoP</span>
+  </p>
+  <p>That's Lesson 02, built straight on the shortener. <b>Ask me follow-ups</b> — e.g. "how do I measure the real hit rate?", "what cache size gives 99%?", "show me single-flight in code", "what if the whole cache restarts cold?", or "how does a CDN know when to refresh?" When you're ready, say <b>next</b> and we'll start scaling <i>writes</i>.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Our cache holds only 1% of all links, yet it serves 96% of reads. What makes that possible?",
+    options: [
+      {t:"Skewed (Zipfian) access — a few links get most of the clicks, and those few fit in the cache.", ok:true,
+       fb:"Right. Caching only wins when traffic is uneven. The hot 1% absorbs almost all reads, so a tiny cache covers most traffic. Under uniform access, a 1% cache would give ~1% hit rate and be useless."},
+      {t:"The cache compresses the links so 6 billion fit in 12 GB.", ok:false,
+       fb:"No — we sized it honestly at ~200 bytes/entry, so only ~60M of 6B fit. The win comes from the access pattern, not from squeezing everything in."},
+      {t:"LRU makes the database faster.", ok:false,
+       fb:"LRU is a rule for which entry to drop; it doesn't speed up the database. The high hit rate comes from skew keeping the hot set resident."}
+    ]
+  },
+  {
+    stem: "For this shortener, why is LRU the main eviction rule but TTL only a backstop?",
+    options: [
+      {t:"LRU keeps the constantly-clicked hot links; TTL isn't needed for staleness because the mapping is immutable.", ok:true,
+       fb:"Exactly. Hot links stay 'recently used' so LRU never drops them. Since a cached value can't go stale, TTL isn't about freshness here — it just recycles memory and eventually notices deleted links."},
+      {t:"TTL evicts hot links, which is what we want.", ok:false,
+       fb:"That's the opposite of what we want — TTL would drop a hot link on a timer regardless of how popular it is, which is exactly what triggers a stampede."},
+      {t:"LRU guarantees a value is never stale.", ok:false,
+       fb:"Immutability guarantees the value is never stale, not LRU. LRU only decides *which* entry to evict when the cache is full."}
+    ]
+  },
+  {
+    stem: "A viral link's cache entry expires and the database is suddenly hammered with identical queries. What's the most direct fix?",
+    options: [
+      {t:"Single-flight — let one request do the DB read and have the rest wait for its backfill.", ok:true,
+       fb:"Correct. Coalescing collapses 40 identical misses into 1 DB query; the waiters take a small latency hit but the database survives. That's the core stampede defence."},
+      {t:"Make the database faster so it can handle the spike.", ok:false,
+       fb:"You'd have to provision the DB for the full unhidden load — defeating the cache's purpose. Coalescing removes the duplicate work instead of paying to absorb it."},
+      {t:"Increase the cache size to 100%.", ok:false,
+       fb:"Even a huge cache still has gaps — restarts and expiries. Bigger cache doesn't stop a hot key from briefly missing and triggering the herd."}
+    ]
+  },
+  {
+    stem: "We add a CDN so a Tokyo user hits a 5 ms edge instead of a 100 ms origin. What's the cost of caching the redirect at the edge?",
+    options: [
+      {t:"Clicks answered at the edge never reach origin, so you lose per-click analytics — the 301-vs-302 trade-off again.", ok:true,
+       fb:"Right. Speed at the edge means the click is invisible to your server. It's the same load-vs-data trade from Lesson 01, one layer out. You can split: cache links you don't track, bypass the CDN for ones you do."},
+      {t:"The CDN makes the redirect slower for nearby users.", ok:false,
+       fb:"It's the opposite — the edge is far closer than origin, so it's much faster. The cost is visibility, not speed."},
+      {t:"CDNs can't cache redirects at all.", ok:false,
+       fb:"They can — a redirect is just an HTTP response, very cacheable. The real issue is that caching it means clicks skip your origin and go uncounted."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
