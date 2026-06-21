@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>System Design — Worked-Example Lessons</title>
+<style>
+  :root{--bg:#0e0e16;--card:#16161f;--ink:#e8e8f2;--muted:#9a9ab0;--accent:#a594ff;--line:#2a2a3a;--code:#1d1d28}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:0 0 5rem}
+  .wrap{max-width:760px;margin:0 auto;padding:0 1.25rem}
+  header{border-bottom:1px solid var(--line);padding:2.4rem 0 1.4rem;margin-bottom:1.6rem}
+  .kicker{color:var(--accent);font-weight:700;letter-spacing:.05em;font-size:.78rem;text-transform:uppercase}
+  h1{font-size:1.9rem;margin:.3rem 0 .5rem}
+  .lead{color:var(--muted)}
+  a.lesson{display:block;text-decoration:none;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:1rem 1.15rem;margin:.7rem 0;transition:border-color .15s,transform .1s}
+  a.lesson:hover{border-color:var(--accent);transform:translateY(-1px)}
+  .num{color:var(--accent);font-weight:700;font-size:.8rem;letter-spacing:.04em}
+  .title{font-size:1.12rem;font-weight:600;margin:.15rem 0}
+  .blurb{color:var(--muted);font-size:.92rem}
+  .soon{color:var(--muted);font-size:.85rem;margin-top:1.4rem;padding-top:1rem;border-top:1px solid var(--line)}
+  footer{margin-top:2.5rem;color:var(--muted);font-size:.85rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="kicker">A worked-example course · new lesson daily 8:30 AM</div>
+    <h1>System Design</h1>
+    <p class="lead">One concrete system per lesson, traced end to end. Estimate → model → trace the paths → find the first bottleneck.</p>
+  </header>
+
+  <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0001-url-shortener.html">
+    <div class="num">LESSON 01</div>
+    <div class="title">Design a URL Shortener</div>
+    <div class="blurb">Estimation, data model, counter+Base62 codes, read/write paths, 301 vs 302, and the first bottleneck → caching.</div>
+  </a>
+
+  <p class="soon">📬 A new lesson lands here every morning at 8:30. You'll get a link in your Claude app.</p>
+
+  <footer>Generated lessons live in this repo. VidoFlip & other private tracks stay off GitHub.</footer>
+</div>
+</body>
+</html>

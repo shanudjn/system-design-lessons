@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 01 — Design a URL Shortener</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 01 · Worked Example</div>
+  <h1>Design a URL Shortener</h1>
+  <p class="lead">One small system, traced end to end. By the finish you'll own the four moves every system-design problem reuses: <b>estimate</b>, <b>model</b>, <b>trace the paths</b>, <b>find the first bottleneck</b>.</p>
+  <p class="open">Open me again later:&nbsp; <code>open "/Users/mohammad.uddin/Documents/GitHub/learning/system-design/lessons/0001-url-shortener.html"</code></p>
+</header>
+
+<h2>The whole system on one screen</h2>
+<p>A URL shortener does two things. It takes a long link and hands back a tiny one. And when someone visits the tiny one, it sends them to the long one. That's it. Here is the entire thing as a picture — keep it in your head for the rest of the lesson.</p>
+
+<div class="diagram"><pre>
+  WRITE PATH  (someone creates a short link)
+  ┌────────┐   POST /shorten          ┌────────┐   INSERT row     ┌──────────┐
+  │ Client │ ───────────────────────► │  App   │ ───────────────► │ Database │
+  └────────┘   {long_url}             │ server │   get new id     │  (table) │
+       ▲                              └────────┘ ◄─────────────── └──────────┘
+       │   short.ly/15FTGg                 │  encode id → code
+       └───────────────────────────────────┘
+
+  READ PATH   (someone clicks the short link)   — happens ~100x more often
+  ┌────────┐   GET /15FTGg            ┌────────┐   look up code    ┌──────────┐
+  │ Client │ ───────────────────────► │  App   │ ───────────────► │ Database │
+  └────────┘ ◄─────────────────────── │ server │ ◄─────────────── └──────────┘
+              302 → long_url          └────────┘   return long_url
+</pre></div>
+
+<p class="note">Two boxes (App, Database), two paths (write, read). Everything below is just making each arrow good enough to survive scale. The big idea of the lesson: <span class="key">the read path is ~100× hotter than the write path, and that imbalance decides the whole design.</span></p>
+
+<h2>Move 1 — Estimate before you design</h2>
+<p>Never design in a vacuum. Put rough numbers on it first. The numbers tell you what's hard. We'll invent a plausible scale and do <b>back-of-the-envelope</b> math — round, not exact.</p>
+
+<div class="card calc">
+  <p><b>Assume:</b> 100 million new short links created per month.</p>
+  <p><b>Read:write ratio = 100:1</b> (links get clicked far more than created) → 10 billion redirects per month.</p>
+  <hr style="border-color:var(--line); margin:.8rem 0">
+  <p>A month ≈ 30 × 24 × 3600 ≈ <b>2.6 million seconds</b>.</p>
+  <p>Writes/sec ≈ 100M ÷ 2.6M ≈ <b>~38 writes/sec</b> &nbsp;<span class="pill">tiny</span></p>
+  <p>Reads/sec ≈ 10B ÷ 2.6M ≈ <b>~3,800 reads/sec</b> &nbsp;<span class="pill">this is the real load</span></p>
+  <hr style="border-color:var(--line); margin:.8rem 0">
+  <p><b>Storage:</b> ~100M/mo × 12 × 5 years ≈ <b>6 billion rows</b>. At ~500 bytes/row ≈ <b>~3 TB</b> over 5 years. One database can hold that.</p>
+</div>
+
+<p class="note why"><b>Why this matters:</b> the estimate already wrote half the design for you. Writes are trivial (38/sec — a laptop could do it). Storage is fine (3 TB fits). The <span class="key">only</span> hard part is 3,800 reads/sec. So we'll spend our effort making the <b>read path</b> cheap, and barely think about writes.</p>
+
+<h2>Move 2 — The data model</h2>
+<p>What do we actually store? The smallest thing that works: a mapping from the short code to the long URL. One table.</p>
+
+<table>
+  <tr><th>Column</th><th>Type</th><th>Example</th><th>Note</th></tr>
+  <tr><td><code>id</code></td><td>bigint, auto-increment</td><td><code>1000000000</code></td><td>the primary key, counts up</td></tr>
+  <tr><td><code>short_code</code></td><td>varchar, unique</td><td><code>15FTGg</code></td><td>what appears in the URL</td></tr>
+  <tr><td><code>long_url</code></td><td>text</td><td><code>https://example.com/very/long/path?x=1</code></td><td>where we send the click</td></tr>
+  <tr><td><code>created_at</code></td><td>timestamp</td><td><code>2026-06-21</code></td><td>for cleanup / analytics</td></tr>
+</table>
+
+<p class="note">Notice one quiet but <span class="key">load-bearing</span> property: once a row is written, it never changes. A short code always points to the same long URL, forever. We say the mapping is <b>immutable</b> (write-once). Remember this — it's why caching will be almost free later.</p>
+
+<h2>Move 3 — How do we make the short code?</h2>
+<p>This is the one genuinely interesting design choice. We need a short, unique string. Two honest options:</p>
+
+<div class="grid2">
+  <div class="card">
+    <h3>Option A — Hash the URL</h3>
+    <p>Run the long URL through a hash (e.g. MD5), take the first 6–7 characters.</p>
+    <p><b>Problem:</b> two different URLs can hash to the same 6 characters — a <b>collision</b>. Now one code points to two links. You'd have to check the DB on every create and re-try on collision. Extra reads, ugly edge cases.</p>
+  </div>
+  <div class="card">
+    <h3>Option B — Counter + Base62 ✅</h3>
+    <p>The database already gives every row a unique number: the auto-increment <code>id</code>. Just turn that number into a short string. No two rows share an id, so <b>no collisions, ever</b>.</p>
+    <p>This is the standard choice. Let's see exactly how the number becomes the code.</p>
+  </div>
+</div>
+
+<h3>What is Base62, in one breath</h3>
+<p>Normal numbers are base 10: ten digits, <code>0–9</code>. Base62 uses <b>62</b> symbols: <code>0–9</code>, then <code>a–z</code>, then <code>A–Z</code>. More symbols per character means a big number squeezes into fewer characters. That's the whole trick — we're just writing the id in a denser alphabet.</p>
+
+<div class="card">
+  <p class="calc"><b>The alphabet (index → symbol):</b></p>
+  <p class="calc"><code>0–9</code> → <code>'0'…'9'</code> &nbsp;·&nbsp; <code>10–35</code> → <code>'a'…'z'</code> &nbsp;·&nbsp; <code>36–61</code> → <code>'A'…'Z'</code></p>
+</div>
+
+<h3>Worked example: encode id <code>1,000,000,000</code></h3>
+<p>We repeatedly divide by 62 and keep the remainders — same as how you'd convert to any base. Each remainder is one Base62 digit.</p>
+
+<div class="diagram"><pre>
+ 1,000,000,000  ÷ 62  →  16,129,032  remainder  16   → symbol 'g'   (16 = a..g)
+    16,129,032  ÷ 62  →     260,145   remainder  42   → symbol 'G'   (42-36=6 → G)
+       260,145  ÷ 62  →       4,195   remainder  55   → symbol 'T'   (55-36=19 → T)
+         4,195  ÷ 62  →          67   remainder  41   → symbol 'F'   (41-36=5 → F)
+            67  ÷ 62  →           1   remainder   5   → symbol '5'
+             1  ÷ 62  →           0   remainder   1   → symbol '1'
+
+ Read the remainders bottom-to-top:   1  5  F  T  G  g   →   "15FTGg"
+</pre></div>
+
+<p class="calc">Check it (turn the code back into a number): <b>1·62⁵ + 5·62⁴ + 41·62³ + 55·62² + 42·62 + 16 = 1,000,000,000</b> ✓ — the encoding is reversible, so it's a clean 1-to-1 mapping. The billionth link gets a <b>6-character</b> code.</p>
+
+<h3>How many links can 6 characters hold?</h3>
+<p class="calc"><b>62⁶ = 56,800,235,584 ≈ 56.8 billion</b> distinct codes. Our 5-year estimate was 6 billion rows. So 6 characters is comfortably enough — we'd still be on 6-char codes for decades. (7 chars = ~3.5 trillion, if we ever need it.)</p>
+
+<p class="note why"><b>The transferable lesson:</b> when you need unique IDs, <span class="key">lean on a source that's already unique</span> (the DB counter) and just re-encode it. Don't invent uniqueness with hashing when something upstream already guarantees it.</p>
+
+<h2>Move 4 — Trace the two paths</h2>
+
+<h3>Write path: <code>POST /shorten</code></h3>
+<div class="diagram"><pre>
+1. Client sends   { long_url: "https://example.com/very/long/path?x=1" }
+2. App inserts a row → DB assigns  id = 1,000,000,000
+3. App encodes      base62(1,000,000,000) = "15FTGg"
+4. App saves "15FTGg" into the row's short_code  (or computes it on read)
+5. App returns      { short_url: "https://short.ly/15FTGg" }
+</pre></div>
+<p class="calc">~38 of these per second. One small database handles it without breaking a sweat. Done thinking about writes.</p>
+
+<h3>Read path: <code>GET /15FTGg</code></h3>
+<div class="diagram"><pre>
+1. Client requests   GET short.ly/15FTGg
+2. App looks up       SELECT long_url WHERE short_code = '15FTGg'
+3. App replies        302 Found,  Location: https://example.com/very/long/path?x=1
+4. Browser follows the Location header → user lands on the real page
+</pre></div>
+
+<h3>One sharp detail: 301 vs 302</h3>
+<table>
+  <tr><th>Redirect</th><th>What the browser does</th><th>Trade-off</th></tr>
+  <tr><td><code>301</code> Permanent</td><td>Caches it. Future clicks skip your server entirely.</td><td>Less load, but <b>you lose per-click analytics</b> and can't change the target.</td></tr>
+  <tr><td><code>302</code> Found (temp)</td><td>Asks your server <b>every</b> time.</td><td>More load, but you <b>count every click</b> and can change the destination later.</td></tr>
+</table>
+<p class="note">Most real shorteners pick <b>302</b> on purpose — counting clicks is the product. That's a choice to <span class="key">accept more load in exchange for data</span>. Naming the trade-off out loud is what system design <i>is</i>.</p>
+
+<h2>Move 5 — Find the first bottleneck</h2>
+<p>Now turn up the load in your head. 3,800 redirects per second, each doing a database lookup. The database becomes the hot spot — every click pays for a disk-backed query, and reads dwarf writes 100:1. This is <b>the first thing that breaks</b>.</p>
+
+<p>Fix: put a <b>cache</b> in front of the database — an in-memory key→value store (think Redis). On a read, check the cache first.</p>
+
+<div class="diagram"><pre>
+  READ PATH, with a cache in front
+  ┌────────┐  GET /15FTGg   ┌────────┐   hit? ──► return from memory  (~microseconds)
+  │ Client │ ─────────────► │  App   │ ──► CACHE
+  └────────┘ ◄───302─────── └───┬────┘        │ miss
+                                │             ▼
+                                │        ┌──────────┐
+                                └────────│ Database │  read once, then store in cache
+                                         └──────────┘
+</pre></div>
+
+<h3>Why a cache fits <i>this</i> problem so perfectly</h3>
+<p>Caches aren't free — they can serve stale data and they cost memory. But a URL shortener hits four green lights at once:</p>
+<div class="card">
+  <p>✅ <b>Read-heavy</b> — 100:1. Caching pays off exactly when reads dominate.</p>
+  <p>✅ <b>Key→value shaped</b> — <code>short_code → long_url</code> is literally what a cache stores.</p>
+  <p>✅ <b>Immutable</b> — the mapping never changes, so a cached value is never wrong. <span class="key">No cache-invalidation problem</span> — the hardest part of caching simply doesn't exist here.</p>
+  <p>✅ <b>Skewed access</b> — a few links go viral. A small cache of the hottest codes serves the large majority of traffic (the 80/20 rule).</p>
+</div>
+<p class="note why"><b>The transferable lesson:</b> reach for a cache when data is read-heavy, key-shaped, and rarely-or-never changes. The immutability is the gift here — most real caching pain is deciding <i>when to throw stale data away</i>, and a write-once mapping means never.</p>
+
+<h2>Where we landed</h2>
+<p>From two boxes we reasoned our way to: estimate → one table → counter+Base62 codes → traced write/read paths → spotted the read bottleneck → added a cache, and justified it with four properties. You didn't memorize an answer; you <span class="key">derived</span> it. Every future system reuses these same four moves.</p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lessons build directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>02 — Scaling reads further:</b> cache eviction, CDNs, and what a cache <i>miss</i> storm looks like.</p>
+  <p style="margin:.2rem 0">• <b>03 — Scaling writes:</b> when one counter isn't enough — sharding and distributed IDs.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">back-of-the-envelope estimate</span>
+    <span class="pill">read:write ratio</span>
+    <span class="pill">Base62</span>
+    <span class="pill">collision</span>
+    <span class="pill">immutable / write-once</span>
+    <span class="pill">301 vs 302</span>
+    <span class="pill">cache</span>
+    <span class="pill">cache invalidation</span>
+    <span class="pill">hot key / skewed access</span>
+  </p>
+  <p>This is your first system-design lesson, taught as one worked example. <b>Ask me follow-ups</b> — e.g. "what if two app servers grab the same id?", "why not UUIDs for the code?", "how big should the cache be?", or "show me the cache-miss storm." When you're ready, say <b>next</b> and we'll scale the read path further.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Our estimate gave ~38 writes/sec but ~3,800 reads/sec. What does that imbalance tell us to optimize?",
+    options: [
+      {t:"The read path — reads are 100× hotter, so that's where load hurts.", ok:true,
+       fb:"Right. The estimate exists precisely to point at the hard part. Writes are trivial; the read path is the whole game, which is why the cache goes there."},
+      {t:"The write path — writing is always the expensive operation.", ok:false,
+       fb:"Not here. 38 writes/sec is nothing. Don't assume — the numbers say reads dominate 100:1."},
+      {t:"Storage — 3 TB is too much for any database.", ok:false,
+       fb:"3 TB over 5 years fits one database fine. Storage wasn't the constraint; read throughput was."}
+    ]
+  },
+  {
+    stem: "Why choose 'counter + Base62' over 'hash the URL' for the short code?",
+    options: [
+      {t:"The DB counter is already unique, so codes never collide.", ok:true,
+       fb:"Exactly. We borrow uniqueness from a source that already guarantees it. Hashing reintroduces collisions you'd have to detect and retry around."},
+      {t:"Base62 codes are impossible to reverse-engineer.", ok:false,
+       fb:"They're not secret at all — Base62 is fully reversible (we checked the math). Sequential codes are even guessable. The win is collision-freedom, not secrecy."},
+      {t:"Hashing can't produce short strings.", ok:false,
+       fb:"Hashing can be truncated to 6 chars fine — the real problem is that truncation causes collisions between different URLs."}
+    ]
+  },
+  {
+    stem: "A cache is almost free here because the mapping is immutable. What hard problem does that remove?",
+    options: [
+      {t:"Cache invalidation — a write-once value is never stale, so you never decide when to drop it.", ok:true,
+       fb:"Yes. The hardest part of caching is knowing when a cached copy went stale. If the value can never change, that problem vanishes entirely."},
+      {t:"Network latency between the app and the cache.", ok:false,
+       fb:"Immutability doesn't change network latency. It removes the *staleness* problem — you can trust a cached value forever."},
+      {t:"The cost of memory for the cache.", ok:false,
+       fb:"Memory still costs money regardless. What immutability removes is invalidation — deciding when a cached value is no longer correct."}
+    ]
+  },
+  {
+    stem: "A shortener uses 302 (temporary) redirects instead of 301 (permanent). What are they buying with the extra load?",
+    options: [
+      {t:"Per-click analytics — every click hits their server so it can be counted.", ok:true,
+       fb:"Correct. 301 lets the browser cache and skip the server; 302 forces every click through, so you can count it. They trade load for data — and the data is the product."},
+      {t:"Faster redirects for the end user.", ok:false,
+       fb:"It's the opposite — 301 is faster for the user (browser caches it). 302 is slower but lets the server see every click."},
+      {t:"Protection against collisions.", ok:false,
+       fb:"Redirect type has nothing to do with collisions (Base62 already solved those). It's about analytics vs. load."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
