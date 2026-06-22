@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 03 — Scaling Writes: One Counter, Many Shards</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 03 · Worked Example</div>
+  <h1>Scaling Writes: One Counter, Many Shards</h1>
+  <p class="lead">Lessons 01–02 were about reads — the shortener was read-heavy, so we cached. But the system has one piece every <i>write</i> still squeezes through: the single counter that hands out IDs. And all 6 billion rows still live on one disk. When writes spike, both crack. We fix them with the same four moves.</p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0003-scaling-writes.html"</code></p>
+</header>
+
+<h2>Where Lessons 01–02 left us</h2>
+<p>From Lesson 01, every new link does two things on the write path: <code>INCR counter</code> to get the next number, then Base62-encode it into a short code (e.g. counter <code>1,000,000 → "4c92"</code>) and <code>INSERT</code> the row. From Lesson 02 we know there are <b>~6 billion</b> links on a single database. Writes were tiny — at a 100-to-1 read/write ratio, the ~3,800 reads/sec implied only <b>~38 writes/sec</b>. A single database laughs at 38 writes/sec.</p>
+<p>Then the product landed an <b>enterprise bulk API</b>: customers generate links by the millions during ad campaigns. Peak write rate is now projected at <b>40,000 new links/sec</b>. Two things that were fine at 38/sec are now on fire. Here they are on one screen.</p>
+
+<div class="diagram"><pre>
+  THE WRITE PATH, DISTRIBUTED          (goal: no single row everyone fights over)
+
+     40,000 new links/sec   (campaign peak)
+          │
+          ▼
+   ┌────────────┐  needs a unique id     ┌────────────────────┐
+   │    App     │───────────────────────►│  ID GENERATION     │ ← CRACK 1: one counter
+   │  servers   │  short + unique +       │  (was: 1 counter   │   serializes every write,
+   └─────┬──────┘  no global lock         │   row, ~10k/s cap) │   caps near ~10,000/s
+         │ hash(short_code) % N  picks a shard
+         ▼
+   ┌─────────┬─────────┬─────────┬─────────┐
+   │ shard 0 │ shard 1 │  ...    │ shard15 │   ← CRACK 2: 6B rows = 1.2 TB
+   │ ~75 GB  │ ~75 GB  │         │ ~75 GB  │     won't fit / write to one disk
+   └─────────┴─────────┴─────────┴─────────┘
+         ▲
+         └─ add a 17th shard → "% N" changes → ~94% of keys move  ← CRACK 3 (next lesson)
+</pre></div>
+
+<p class="note"><span class="key">(1) One counter is a single row every writer must serialize through — a coordination ceiling and a single point of failure. (2) 6 billion rows don't fit or write fast enough on one machine — we must split the data across shards. (3) The naive way to pick a shard makes <i>adding</i> one shard reshuffle almost everything.</span> We take them in order.</p>
+
+<h2>Move 1 — Estimate: where exactly are the ceilings?</h2>
+<p>Before redesigning anything, measure the two walls we're about to hit: a <b>throughput</b> wall (IDs per second) and a <b>storage</b> wall (bytes on one disk).</p>
+
+<div class="card calc">
+  <p><b>Throughput wall — the single counter.</b> Every write must do <code>INCR counter</code> on <i>one</i> row. The database serializes those updates so two writers never get the same number. A single primary doing durable, serialized increments tops out around <b>~10,000/sec</b> in practice (disk fsync + lock contention on that one row).</p>
+  <p>Demand at peak = <b>40,000 writes/sec</b>. &nbsp;→&nbsp; 40,000 ÷ 10,000 = <b>4× over the ceiling.</b> <span class="pill">counter is the bottleneck</span></p>
+  <hr style="border-color:var(--line); margin:.8rem 0">
+  <p><b>Storage wall — one disk.</b> One row ≈ <code>short_code</code> (7 B) + <code>long_url</code> (100 B) + <code>created_at</code> + owner + index overhead ≈ <b>~200 bytes/row</b>.</p>
+  <p>Total = 6,000,000,000 × 200 B = <b>1.2 TB</b> today. With 10× growth ahead → <b>12 TB</b> — past what one node comfortably holds <i>and</i> writes to.</p>
+</div>
+
+<p class="note why"><b>Why both walls matter even though writes used to be trivial:</b> the counter is a problem of <i>coordination</i> (everyone needs the same source of truth for "the next number"), and storage is a problem of <i>volume</i> (bytes outgrow one box). They're separate, and they need separate fixes: <span class="key">distributed ID generation for the counter, sharding for the storage.</span> Confusing the two is a classic mistake — a bigger disk doesn't fix the counter, and a faster counter doesn't fix the disk.</p>
+
+<h2>Move 2a — Model the IDs: who hands out "the next number"?</h2>
+<p>The single counter is simple and gives <b>short, dense, perfectly-ordered</b> codes — counter 41 is just <code>"j"</code>, counter 1,000,000 is <code>"4c92"</code>. The price is that <i>every</i> writer on Earth must touch that one row. To remove the bottleneck we must let many machines mint IDs <b>without all asking the same row each time</b>. Three honest ways:</p>
+
+<div class="grid2">
+  <div class="card">
+    <h3>ID blocks (ticket server) ✅</h3>
+    <p>Keep one counter, but hand out IDs in <b>blocks</b>. An app server asks once for a block of <b>1,000</b> IDs (say <code>5,000,000–5,000,999</code>), then serves 1,000 links locally before asking again.</p>
+    <p><b>Coordination drops 1,000×.</b> Codes stay short and roughly ordered. The counter row is touched 40 times/sec, not 40,000.</p>
+  </div>
+  <div class="card">
+    <h3>Snowflake ID</h3>
+    <p>No shared counter at all. Each machine builds a 64-bit ID from <b>time + machine-id + a per-millisecond sequence</b>. Unique by construction, sortable by time.</p>
+    <p><b>Zero coordination</b>, but IDs are big (≈ 11-char codes) and depend on synced clocks + unique machine IDs.</p>
+  </div>
+</div>
+
+<h3>The Snowflake walk-through (worked, because the bit-budget is the whole idea)</h3>
+<p>A <b>Snowflake ID</b> is a single 64-bit integer whose bits are divided into fields. One common split:</p>
+<div class="diagram"><pre>
+  64-bit Snowflake ID  =   [ 1 ] [    41 bits    ] [ 10 bits ] [  12 bits  ]
+                            unused   timestamp (ms)  machine id   sequence
+                            (sign)   since an epoch  (which box)  (Nth id this ms)
+</pre></div>
+<div class="card calc">
+  <p><b>How long do 41 timestamp bits last?</b> 2<sup>41</sup> = 2,199,023,255,552 ms. ÷ 1000 ÷ 86,400 ÷ 365 ≈ <b>69.7 years</b> of unique millisecond stamps. Plenty.</p>
+  <p><b>How many machines?</b> 2<sup>10</sup> = <b>1,024</b> distinct machine IDs.</p>
+  <p><b>How many IDs per machine per millisecond?</b> 2<sup>12</sup> = <b>4,096</b>. So per machine per second = 4,096 × 1,000 = <b>4,096,000 IDs/sec</b>.</p>
+  <hr style="border-color:var(--line); margin:.8rem 0">
+  <p><b>Capacity check:</b> we need 40,000/sec. One Snowflake machine already does ~4.1M/sec — so <b>a single generator is 100× over our peak</b>, with <i>zero</i> cross-machine coordination. Across all 1,024 machines the ceiling is ~4.2 <b>billion</b> IDs/sec.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off (the part that decides it for a shortener):</b> Snowflake removes coordination but its 64-bit numbers Base62-encode to <b>~11 characters</b> instead of 7 — log<sub>62</sub>(2<sup>63</sup>) ≈ 10.6. Longer codes partly defeat the point of a <i>short</i>ener. ID blocks keep codes short <i>and</i> remove the hot single row. So for this system we pick <span class="key">ID blocks</span>; Snowflake is the right call when you care less about code length and more about generating IDs anywhere with no server to ask (e.g. tweets, events, log records).</p>
+
+<table>
+  <tr><th>ID scheme</th><th>Coordination per ID</th><th>Code length</th><th>Main risk</th></tr>
+  <tr><td><b>Single counter</b></td><td>every write hits 1 row</td><td>shortest (~7)</td><td>throughput ceiling + single point of failure</td></tr>
+  <tr><td><b>ID blocks</b> (ticket server) ✅</td><td>1 trip per 1,000 IDs</td><td>short (~7)</td><td>gaps when a server dies holding a block; ticket server must be HA</td></tr>
+  <tr><td><b>Snowflake</b></td><td>none</td><td>long (~11)</td><td>clock skew / backward clock jumps; assigning unique machine IDs</td></tr>
+  <tr><td><b>UUIDv4</b> (random 128-bit)</td><td>none</td><td>longest (~22), random</td><td>random inserts wreck index locality (B-tree page splits)</td></tr>
+</table>
+
+<div class="card calc">
+  <p><b>ID-blocks math:</b> at 40,000 writes/sec with a block size of 1,000, the central counter sees 40,000 ÷ 1,000 = <b>40 requests/sec</b> — a <b>1,000× cut</b>, far under its ~10,000/sec ceiling. We can also make the counter a highly-available pair so it isn't a single point of failure. Cost: if a server crashes mid-block, the unused IDs in that block are lost forever — <span class="key">you trade a few wasted IDs for 1,000× less coordination.</span> For a shortener with billions of codes to spare, that's a trivial price.</p>
+</div>
+
+<h2>Move 2b — Model the storage: split 6B rows into shards</h2>
+<p>IDs are solved, but the rows still live on one disk. <b>Sharding</b> means splitting one logical table across many physical databases (<b>shards</b>), each holding a slice of the rows. The only real question: <b>given a short code, which shard owns it?</b> Two honest schemes.</p>
+
+<div class="grid2">
+  <div class="card">
+    <h3>Hash partitioning ✅</h3>
+    <p>Shard number = <code>hash(short_code) % N</code>. The hash scatters codes evenly, so each of N shards gets ~1/N of the rows <i>and</i> ~1/N of the writes.</p>
+    <p><b>Even load by design.</b> No single shard becomes a hotspot just because it holds the newest links.</p>
+  </div>
+  <div class="card">
+    <h3>Range partitioning</h3>
+    <p>Shard by ranges of the code/time: codes <code>aaaa–ffff</code> on shard 0, etc. Great for "list everything between X and Y."</p>
+    <p><b>But the newest range is a hotspot</b> — every fresh write lands on whichever shard owns the latest range, so one shard takes all the write heat.</p>
+  </div>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> hash partitioning spreads writes perfectly but <span class="key">destroys range scans</span> — "give me all links created Tuesday" now means asking every shard and merging (a <b>scatter-gather</b>). Range partitioning keeps scans cheap but <span class="key">concentrates writes</span> on the newest shard. A URL shortener looks up <i>one</i> code at a time and almost never range-scans, so we choose <b>hash</b> and happily give up scans we don't need.</p>
+
+<div class="card calc">
+  <p><b>Sharding math, N = 16:</b></p>
+  <p>Writes per shard = 40,000 ÷ 16 = <b>2,500 writes/sec</b> — comfortably under one node's limit.</p>
+  <p>Storage per shard = 1.2 TB ÷ 16 = <b>~75 GB</b> each — small and fast.</p>
+  <p>Reads from Lesson 02 (the ~152/sec that miss the cache) also split 16 ways → <b>~10/sec per shard</b>. Sharding scales reads <i>and</i> writes; the cache and the shards stack.</p>
+</div>
+
+<h2>Move 3 — Trace the paths: a write and a read, end to end</h2>
+
+<h3>Creating a link (the write)</h3>
+<div class="diagram"><pre>
+1. POST /shorten {long_url}
+2. App server takes the next id from its LOCAL block  (no network trip if block has IDs left)
+3. Base62-encode the id  →  short_code = "8tWk"
+4. shard = hash("8tWk") % 16  →  shard 5
+5. INSERT (short_code, long_url, created_at) INTO shard 5
+6. Return https://sho.rt/8tWk
+</pre></div>
+<p class="calc">Notice steps 2 and 4 are <b>independent</b>: the ID block answers "what number," the hash answers "which shard." The code does <i>not</i> encode its shard — we recompute the shard from the code on every read.</p>
+
+<h3>Resolving a link (the read, revisited)</h3>
+<div class="diagram"><pre>
+1. GET /8tWk
+2. shard = hash("8tWk") % 16  →  shard 5      (same function, so same answer)
+3. Check cache (Lesson 02). Hit? return. Miss?
+4. SELECT long_url FROM shard 5 WHERE short_code='8tWk'
+5. Backfill cache, return 301/302
+</pre></div>
+
+<p class="note"><span class="key">The routing function must be <i>deterministic</i>:</span> the same <code>short_code</code> must always hash to the same shard, on writes and reads alike, forever. That one rule is what lets us find a row again without storing "which shard" anywhere. It's also exactly what makes adding a shard painful — change the function and old codes route to the wrong place.</p>
+
+<h2>Move 4 — Find the next bottleneck: resharding</h2>
+<p>Everything works at N = 16. Now the data grows and we need a 17th shard. Watch what <code>% N</code> does the instant N changes from 16 to 17.</p>
+
+<div class="card calc">
+  <p>A code stays put only if <code>hash % 16</code> equals <code>hash % 17</code> — which is rare. The fraction of keys that <b>keep</b> their shard is about 1/17 ≈ 6%.</p>
+  <p>So adding one shard forces <b>~94% of 6 billion rows to move</b> between machines. During that migration, routing is ambiguous (is the row on the old shard or the new one yet?), and the network melts. <span class="pill">resharding storm</span></p>
+</div>
+
+<div class="diagram"><pre>
+  NAIVE  hash % N                          BETTER  (next lesson)
+  add shard 17 → N changes → almost         spread keys on a RING so adding a node
+  every key remaps → mass migration         only moves the keys near it (~1/17 of them)
+
+   % 16:  k → shard 5                        ring:  k → next node clockwise
+   % 17:  k → shard 12   (moved!)            add node → only neighbours' keys move
+   ...94% of keys move...                    ...~6% of keys move...
+</pre></div>
+
+<p class="note why"><b>The transferable lesson:</b> <code>% N</code> is a fine router until N changes — and N <i>always</i> changes (you add capacity, a node dies). The flaw isn't the hash; it's that the hash is <span class="key">tied to the current node count</span>. The fix, <b>consistent hashing</b>, breaks that tie so a membership change moves only a small slice of keys. That's the whole of Lesson 04. We've now hit it honestly instead of asserting it.</p>
+
+<h2>Where we landed</h2>
+<p>We took the write path that "didn't matter" and pushed it to 40,000/sec. <b>Estimate</b> found two separate walls: a throughput ceiling on the single counter (~10k/sec) and a storage ceiling on one disk (1.2 TB → 12 TB). <b>Model</b> fixed them separately — ID blocks to mint IDs with 1,000× less coordination (Snowflake when you can spare longer codes), and hash sharding to spread 6B rows over 16 machines at ~75 GB and 2,500 writes each. <b>Tracing</b> showed the shard is recomputed from the code, never stored. The <b>next bottleneck</b> is what happens when you add a shard — <code>% N</code> remaps ~94% of keys — which is exactly the door into consistent hashing. Same four moves; the write side now scales.</p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lessons build directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>04 — Consistent hashing:</b> add or remove a shard/cache node while moving only ~1/N of the keys, not almost all of them.</p>
+  <p style="margin:.2rem 0">• <b>05 — Async work:</b> bulk-creating millions of links shouldn't block the API — push the work onto a queue and let workers drain it.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">distributed ID generation</span>
+    <span class="pill">single counter / ticket server</span>
+    <span class="pill">ID blocks / ranges</span>
+    <span class="pill">Snowflake ID</span>
+    <span class="pill">UUID</span>
+    <span class="pill">sharding</span>
+    <span class="pill">partitioning</span>
+    <span class="pill">hash vs range partitioning</span>
+    <span class="pill">hotspot</span>
+    <span class="pill">scatter-gather</span>
+    <span class="pill">deterministic routing</span>
+    <span class="pill">resharding</span>
+  </p>
+  <p>That's Lesson 03, built straight on the shortener's write path. <b>Ask me follow-ups</b> — e.g. "show me ID blocks in code", "how do you assign Snowflake machine IDs?", "what breaks if a clock jumps backward?", "how big should a block be?", or "why exactly is it ~94% and not 50%?" When you're ready, say <b>next</b> and we'll tackle <i>consistent hashing</i>.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Writes used to be ~38/sec and a single database handled them easily. Why does the single counter still need fixing at 40,000/sec?",
+    options: [
+      {t:"Every write must serialize through one counter row, which caps near ~10,000/sec — a coordination ceiling, not a disk-space problem.", ok:true,
+       fb:"Right. The counter is a single point all writers contend on. At 40k/sec that's 4× its practical ceiling. It's about coordination on one row, separate from how much data fits on disk."},
+      {t:"The database ran out of disk space for the counter.", ok:false,
+       fb:"A counter is one tiny row — space isn't the issue. The problem is throughput: every writer serializes through that one row, capping at roughly 10k/sec."},
+      {t:"Base62 encoding gets slower as numbers grow.", ok:false,
+       fb:"Base62 of a bigger number is a handful of extra characters of CPU — negligible. The bottleneck is the serialized increment on the shared counter row."}
+    ]
+  },
+  {
+    stem: "Why pick ID blocks over Snowflake for THIS URL shortener specifically?",
+    options: [
+      {t:"ID blocks keep codes short (~7 chars) while still cutting coordination 1,000×; Snowflake's 64-bit IDs encode to ~11 chars, working against a 'shortener'.",
+       ok:true,
+       fb:"Exactly. Both remove the bottleneck, but Snowflake's larger numbers make longer codes. For a shortener, short codes matter, so blocks win. Snowflake shines when code length is irrelevant and you want zero server to ask."},
+      {t:"Snowflake can't generate enough IDs per second.", ok:false,
+       fb:"The opposite — one Snowflake machine does ~4.1M IDs/sec, 100× our peak. Capacity isn't the issue; code length is."},
+      {t:"ID blocks need no central server at all.", ok:false,
+       fb:"They do keep a central counter — just touched once per 1,000 IDs (40 req/sec). The win is 1,000× less coordination plus short codes, not zero coordination."}
+    ]
+  },
+  {
+    stem: "We shard by hash(short_code) % 16 instead of by created-at ranges. What do we give up, and what do we gain?",
+    options: [
+      {t:"Gain even write/storage spread (no newest-shard hotspot); give up cheap range scans, which now need a scatter-gather across all shards.",
+       ok:true,
+       fb:"Correct. Hashing scatters keys evenly so no shard is a hotspot, but 'all links from Tuesday' must query every shard and merge. A shortener looks up one code at a time, so that's a fine trade."},
+      {t:"Gain cheap range scans; give up even load.", ok:false,
+       fb:"That's range partitioning, not hashing. Hashing gives the opposite: even load but expensive ranges."},
+      {t:"Nothing is given up — hashing is strictly better.", ok:false,
+       fb:"There's always a trade. Hashing makes range queries expensive (scatter-gather). It's the right pick here only because we don't need ranges."}
+    ]
+  },
+  {
+    stem: "Adding a 17th shard with hash % N moves ~94% of all keys. What's the actual cause?",
+    options: [
+      {t:"The router is tied to the node count N, so changing N changes almost every key's destination.",
+       ok:true,
+       fb:"Right. With % N, a key stays only if hash%16 == hash%17 (~1/17 of keys). The hash itself is fine — the problem is binding it to N. Consistent hashing breaks that tie so only ~1/N keys move."},
+      {t:"The hash function is poorly distributed.", ok:false,
+       fb:"Even a perfect hash remaps ~94% here, because the destination depends on N and N changed. It's the binding to N, not hash quality."},
+      {t:"Short codes are too short to address 17 shards.", ok:false,
+       fb:"Code length isn't the issue — the same code just maps to a different shard once N changes. The fix is making routing independent of the exact node count."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

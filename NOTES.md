@@ -30,18 +30,25 @@
 2. ✅ **Scaling reads** — cache size vs hit rate (skew), LRU/LFU/TTL eviction,
    read-through/cache-aside, cache stampede + single-flight/jitter/SWR, CDNs &
    the speed-of-light bottleneck. (Lesson 0002)
-3. Scaling writes — sharding, partitioning, distributed ID generation.
-4. Async work — queues + workers (notification fan-out).
-5. Consistency & replication — a like-counter under concurrency.
-6. Designing for failure — timeouts, retries, idempotency, backpressure.
+3. ✅ **Scaling writes** — the single counter's throughput ceiling vs the
+   single disk's storage ceiling (two separate walls), distributed ID
+   generation (ID blocks/ticket server vs Snowflake bit-budget vs UUID), hash
+   vs range sharding + hotspots/scatter-gather, deterministic routing, and why
+   `% N` resharding moves ~94% of keys → consistent hashing. (Lesson 0003)
+4. Consistent hashing — adding/removing a shard or cache node while moving
+   only ~1/N of keys, not ~94%. (Direct sequel set up at the end of Lesson 0003:
+   the `% N` resharding storm.) Hash ring, virtual nodes, rebalancing.
+5. Async work — queues + workers (notification / bulk-link fan-out).
+6. Consistency & replication — a like-counter under concurrency.
+7. Designing for failure — timeouts, retries, idempotency, backpressure.
 
 ### Advanced topics (queued so the course never runs dry)
-7. Consistent hashing — adding/removing cache or shard nodes without remapping all keys.
 8. Rate limiting — token bucket vs leaky bucket, distributed counters.
 9. Message queues — at-least-once vs exactly-once, ordering, dead-letter queues.
 10. Leader election & coordination — quorums, heartbeats, split-brain.
 11. CAP in practice — what you actually give up under partition.
 12. DB indexing & search systems — B-trees, inverted indexes, when an index hurts.
+13. Idempotency — making retried writes safe (dedup keys, exactly-once effects).
 
 ## Lesson format conventions
 - Four reusable "moves" framing introduced in Lesson 01: estimate → model →
