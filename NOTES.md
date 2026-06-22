@@ -35,9 +35,11 @@
    generation (ID blocks/ticket server vs Snowflake bit-budget vs UUID), hash
    vs range sharding + hotspots/scatter-gather, deterministic routing, and why
    `% N` resharding moves ~94% of keys → consistent hashing. (Lesson 0003)
-4. Consistent hashing — adding/removing a shard or cache node while moving
-   only ~1/N of keys, not ~94%. (Direct sequel set up at the end of Lesson 0003:
-   the `% N` resharding storm.) Hash ring, virtual nodes, rebalancing.
+4. ✅ **Consistent hashing** — keys and nodes on one `2³²` ring, clockwise
+   ownership so adding a node splits only one arc (~1/N moves, not ~94%);
+   virtual nodes for even load (~1/√V) and failure that spreads instead of
+   dumping on one neighbor; hot keys + heavy rebalance named as what it does
+   NOT solve. (Lesson 0004)
 5. Async work — queues + workers (notification / bulk-link fan-out).
 6. Consistency & replication — a like-counter under concurrency.
 7. Designing for failure — timeouts, retries, idempotency, backpressure.

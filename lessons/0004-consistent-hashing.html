@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 04 — Consistent Hashing: Add a Shard Without the Storm</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 04 · Worked Example</div>
+  <h1>Consistent Hashing: Add a Shard Without the Storm</h1>
+  <p class="lead">Lesson 03 ended on a cliff: our 16 shards are full, we add a 17th, and <code>hash % N</code> stampedes <b>94% of 6 billion rows</b> across the network. This lesson fixes exactly that — same system, same four moves — so that adding (or losing) a shard moves only about <b>1/N</b> of the keys. The trick is a circle.</p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0004-consistent-hashing.html"</code></p>
+</header>
+
+<h2>Where Lesson 03 left us</h2>
+<p>We shard the shortener with <code>shard = hash(short_code) % N</code>. It spreads the 6 billion rows evenly across N=16 machines, and reads and writes both recompute the shard from the code — nothing stores "which shard." That all works <i>until N changes</i>. The instant we go from 16 to 17 shards, almost every code routes somewhere new, because the destination is glued to the divisor N. Here is the whole problem and the whole fix on one screen.</p>
+
+<div class="diagram"><pre>
+  NAIVE  hash % N                          CONSISTENT HASHING (the ring)
+
+   place keys by  hash % N                  place keys AND nodes on a circle
+   add a node  → N changes →                a key belongs to the first node
+   the divisor changes for EVERY key →       found walking CLOCKWISE from it
+   ~94% remap → mass migration              add a node → it splits ONE arc →
+                                            only that arc's keys move (~1/N)
+
+        0 1 2 ... 15   (16 boxes)                  ╭───── 0 ─────╮
+        add box 16 →  % 16 becomes % 17        850·A           B·370
+        almost every key lands elsewhere          │   key@410   │
+                                                  D·            ·C
+                                                   ╰──── 610 ───╯
+                                            key@410 → walk CW → first node = C
+</pre></div>
+
+<p class="note"><span class="key">The flaw in Lesson 03 was never the hash function — it was binding the hash to <code>N</code>.</span> Consistent hashing keeps the hash but removes that binding: keys and nodes share one fixed address space (a circle), and a key is owned by whichever node it bumps into going clockwise. Move a node and only its immediate neighborhood is affected.</p>
+
+<h2>Move 1 — Estimate: how much data actually moves?</h2>
+<p>Before designing, price the migration both ways. One row ≈ <b>200 bytes</b> (Lesson 03), and we have <b>6 billion</b> of them = <b>1.2 TB</b>. We add a 17th shard. The question is: how many bytes cross the network, and how long is the system in a half-migrated, ambiguous state?</p>
+
+<div class="card calc">
+  <p><b>Naive <code>% N</code>, 16 → 17.</b> A key keeps its shard only if <code>hash % 16 == hash % 17</code>, which happens for about <b>1/17 ≈ 5.9%</b> of keys. So <b>94.1%</b> move.</p>
+  <p>Bytes moved = 0.941 × 1.2 TB ≈ <b>1.13 TB</b>. At a realistic <b>~1 GB/s</b> of usable migration bandwidth that's 1,130 GB ÷ 1 GB/s ≈ <b>1,130 s ≈ 19 minutes</b> of the whole fleet shuffling — during which a code might be on the old shard or the new one. <span class="pill">resharding storm</span></p>
+  <hr style="border-color:var(--line); margin:.8rem 0">
+  <p><b>Consistent hashing, 16 → 17.</b> The new shard inserts at one place on the circle and takes over just the arc between itself and the node behind it — about <b>1/17 ≈ 5.9%</b> of keys.</p>
+  <p>Keys moved = 6,000,000,000 ÷ 17 ≈ <b>353 million</b> rows = <b>~71 GB</b>. At 1 GB/s that's <b>~71 seconds</b>. Same hardware change, <b>~16× less data</b> and ~16× less time in the ambiguous state.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off up front:</b> consistent hashing doesn't make routing free — you now keep a small sorted structure (the ring) and do a binary search per lookup instead of one modulo. You spend <span class="key">a little memory and lookup complexity to buy a ~16× smaller migration</span> every time membership changes. And membership <i>always</i> changes: you add capacity, a node dies, you replace a box. The cheaper that event is, the more freely you can do it.</p>
+
+<h2>Move 2 — Model: keys and nodes on one circle</h2>
+<p>A <b>hash ring</b> is the integer range <code>0 … 2³²−1</code> bent into a circle, so the largest value wraps back to <code>0</code>. We hash <i>two</i> different things into that same range:</p>
+<ul>
+  <li><b>Each node</b> (shard) — hash its name, e.g. <code>hash("shard-C")</code> → a point on the circle.</li>
+  <li><b>Each key</b> (short code) — hash it the same way → another point on the circle.</li>
+</ul>
+<p>The ownership rule is one sentence: <span class="key">a key belongs to the first node you meet walking clockwise from the key's point.</span> That's it. The node "covers" the arc from the previous node up to itself.</p>
+
+<p>We'll use a toy ring of <b>0…999</b> so the numbers fit in your head (real rings use <code>2³²</code>). Place four shards and one key:</p>
+
+<div class="diagram"><pre>
+  RING 0..999  (wraps: 999 → 0)        owner = first node CLOCKWISE from the key
+
+         pos 0 ───────────────► clockwise
+       ┌──────────────────────────────────────┐
+   A @ 120 ──covers (850→0→120]                │   key "8tWk"  hash = 410
+   B @ 370 ──covers (120 → 370]                │   walk CW from 410:
+   C @ 610 ──covers (370 → 610]   ◄── 410 lands │     next node ≥ 410 is  C @ 610
+   D @ 850 ──covers (610 → 850]    here, in C's │   ⇒ "8tWk" lives on shard C
+       └──────────────────────────────────────┘
+   a key at 880 → walk CW past 999, wrap to 0, first node A @120 ⇒ shard A
+</pre></div>
+
+<div class="card calc">
+  <p><b>Worked lookup.</b> <code>hash("8tWk") = 410</code>. The shard points sorted are <code>120, 370, 610, 850</code>. Find the smallest one <b>≥ 410</b> → that's <b>610 = shard C</b>. If the key were <code>880</code>, nothing is ≥ 880, so we wrap to the smallest point <code>120 = shard A</code>. The lookup is a binary search over four numbers — <code>O(log&nbsp;n)</code>, not a scan.</p>
+</div>
+
+<h3>Now add a shard — and watch how little moves</h3>
+<p>Data grew; we add <b>shard E</b> and it hashes to <code>500</code>. Before, the arc <code>(370 → 610]</code> all belonged to C (it was the first node clockwise for everything in that span). E now sits inside that arc and splits it:</p>
+
+<div class="diagram"><pre>
+  BEFORE add E:        (370 ──────────────► 610]  all  C
+  AFTER  add E@500:    (370 ──► 500]  E      (500 ──► 610]  C
+
+  Effect on our key "8tWk" @ 410:   410 is in (370,500]  → moves  C ⟶ E
+  Everything outside (370,500]:     UNCHANGED  (A, B, D, and C's tail keep their keys)
+</pre></div>
+
+<p class="note"><span class="key">Adding E touched exactly one arc.</span> Only keys between B (370) and the new node E (500) moved, and they all came from a single donor, C. No other shard sent or received a byte. That is the entire point: a membership change is <i>local</i> to the new node's neighborhood, not global like <code>% N</code>.</p>
+
+<p>In our toy the moved arc is <code>(370,500] = 130/1000 = 13%</code> — lumpy, because four random points don't cut the circle into equal slices. With 16 well-spread nodes the moved arc is ~1/17. That lumpiness is the next problem to solve.</p>
+
+<h2>Move 3 — Trace the paths: the lumpiness bug, and virtual nodes</h2>
+<p>One node = one point on the ring has two ugly failure modes. Trace them.</p>
+
+<div class="grid2">
+  <div class="card">
+    <h3>Bug 1 — uneven load</h3>
+    <p>Random points split the circle into <b>unequal arcs</b>. By bad luck shard C might own a 200-wide arc while D owns a 90-wide arc — C then holds ~2× the data and traffic of D. No hotspot protection at all.</p>
+  </div>
+  <div class="card">
+    <h3>Bug 2 — failure dumps on one neighbor</h3>
+    <p>If C dies, <b>all</b> of C's keys flow to the very next node clockwise (D). D instantly inherits C's entire load on top of its own — it can double and tip over. The failure spreads to <i>one</i> unlucky machine.</p>
+  </div>
+</div>
+
+<p>The fix is <b>virtual nodes</b> (vnodes): instead of placing each physical shard at one point, place it at <b>many</b> points by hashing <code>"shard-C#1"</code>, <code>"shard-C#2"</code>, … <code>"shard-C#150"</code>. Each physical shard now owns ~150 tiny arcs scattered all around the ring.</p>
+
+<div class="diagram"><pre>
+  1 point per node                    150 points per node (virtual nodes)
+
+   A───────B─────C────D                a-c-b-d-a-b-d-c-a-d-b-c-a-c-...
+   big arcs, very uneven                hundreds of tiny arcs, interleaved
+   C dies → ALL of C → D                C dies → C's 150 arcs each merge into
+   (one neighbor doubles)               a DIFFERENT neighbor → load spreads
+</pre></div>
+
+<div class="card calc">
+  <p><b>How smooth, exactly?</b> The spread of load across nodes shrinks roughly like <b>1/√V</b>, where V is vnodes per node. So:</p>
+  <p>V=1 → loads can differ ~100% (2×). &nbsp; V=100 → busiest vs quietest within ~10%. &nbsp; V=256 → within ~6%. Most real systems use <b>~100–256 vnodes per node</b>.</p>
+  <hr style="border-color:var(--line); margin:.8rem 0">
+  <p><b>Failure spreads, too.</b> With vnodes, a dead shard's 150 arcs each have a <i>different</i> clockwise neighbor. Its 1/16 share is handed out across the surviving 15 nodes: each gains only <code>(1/16) ÷ 15 ≈ 0.42%</code>, moving from 6.25% to ~6.67% load. <span class="key">No single neighbor doubles.</span> The same math runs in reverse when you <i>add</i> a node: it pulls a thin slice from many donors at once, so the rebalance is spread and fast.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> more vnodes = smoother load and gentler failures, but the ring now holds <code>N × V</code> entries (16 × 150 = 2,400 points) costing more memory and slightly slower lookups, plus more bookkeeping during a move. You're spending <span class="key">memory and per-lookup work to buy balance and graceful failure</span>. V around 100–256 is the usual sweet spot — past that you pay memory for balance you can't measure.</p>
+
+<h2>Move 4 — Find the next bottleneck</h2>
+<p>The ring scales membership changes beautifully. Two honest things it still does <b>not</b> solve:</p>
+
+<div class="card calc">
+  <p><b>(a) Consistent hashing balances key <i>count</i>, not key <i>heat</i>.</b> It spreads 6 billion codes evenly, but if one short link goes viral, every request for <i>that</i> code hashes to the <i>same</i> single shard. The ring can't split one key. That's a <b>hot key</b>, and it's handled higher up — by the cache from Lesson 02, or by replicating that one key to several nodes. Even load on average ≠ even load per request.</p>
+  <hr style="border-color:var(--line); margin:.8rem 0">
+  <p><b>(b) Rebalancing is itself heavy background work.</b> Even at ~71 GB, moving a new shard's keys is a long job that must run <i>without</i> blocking live reads and writes. You don't do a 71 GB copy inside a user's request — you hand it to <b>background workers</b> that stream keys over while traffic keeps flowing. And the original villain from Lesson 03, the enterprise bulk API minting millions of links, has the same shape: don't do bulk work on the request path.</p>
+</div>
+
+<p class="note why"><b>The transferable idea:</b> consistent hashing is the standard answer anywhere a set of items must be spread over a changing set of machines — database shards, cache servers (the original 1997 use case was web caches), and partitioned queues. Whenever you hear "we added a cache node and the hit rate cratered," the cause is <code>% N</code> remapping everything, and the fix is a ring. The moment a change becomes <i>cheap</i>, you stop fearing it.</p>
+
+<h2>Where we landed</h2>
+<p>We took Lesson 03's cliffhanger — adding one shard remaps 94% of 6 billion rows — and made it cost ~1/N instead. <b>Estimate</b> priced the two migrations: 1.13 TB / ~19 min naive vs ~71 GB / ~71 s with a ring. <b>Model</b> put keys and nodes on one <code>2³²</code> circle and owned each key by the first node clockwise, so adding a node splits only one arc. <b>Tracing</b> exposed lumpy arcs and one-neighbor failure dumps, fixed by <b>virtual nodes</b> (~100–256 per node, balance improving like 1/√V). The <b>next bottlenecks</b> — a single hot key the ring can't split, and rebalancing as heavy background work — point straight at queues and replication. Same four moves; membership changes are now cheap.</p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lessons build directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>05 — Async work:</b> the bulk API and the 71 GB rebalance shouldn't run on the request path — push them onto a queue and let workers drain it (at-least-once, retries, ordering).</p>
+  <p style="margin:.2rem 0">• <b>06 — Consistency &amp; replication:</b> when a shard dies its keys must already live elsewhere — keep copies, and reason about a like-counter under concurrent writes.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">consistent hashing</span>
+    <span class="pill">hash ring</span>
+    <span class="pill">clockwise ownership</span>
+    <span class="pill">arc / key range</span>
+    <span class="pill">virtual nodes</span>
+    <span class="pill">rebalancing</span>
+    <span class="pill">membership change</span>
+    <span class="pill">load skew</span>
+    <span class="pill">hot key</span>
+    <span class="pill">resharding storm</span>
+    <span class="pill">1/√V smoothing</span>
+  </p>
+  <p>That's Lesson 04, built straight on the shortener's sharding. <b>Ask me follow-ups</b> — e.g. "show the ring lookup in code", "how many vnodes does Cassandra/Dynamo use?", "why <i>exactly</i> does balance improve like 1/√V?", "how do you handle a hot key the ring can't split?", or "what does the migration cutover actually look like so reads don't miss?" When you're ready, say <b>next</b> and we'll tackle <i>async work — queues &amp; workers</i>.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "With hash % N, adding a 17th shard moves ~94% of keys. With a hash ring it moves only ~6%. What is the core reason?",
+    options: [
+      {t:"On the ring a key is owned by the first node clockwise, so a new node splits just ONE arc — its destination isn't tied to N.",
+       ok:true,
+       fb:"Right. % N binds every key's destination to the divisor, so changing N reshuffles almost everything. On the ring, ownership is by position, so a new node only steals the arc behind it (~1/N of keys)."},
+      {t:"The ring uses a faster hash function that scatters keys better.",
+       ok:false,
+       fb:"Hash quality isn't the difference — even a perfect hash under % N remaps ~94%. The win is that ownership is by clockwise position, not by N."},
+      {t:"The ring stores which shard each key lives on, so nothing needs to move.",
+       ok:false,
+       fb:"It stores no per-key mapping — the shard is recomputed by walking the ring. Keys DO move on a change, just only the ~1/N in the new node's arc."}
+    ]
+  },
+  {
+    stem: "Why place each physical shard at ~150 points on the ring (virtual nodes) instead of one?",
+    options: [
+      {t:"Many small arcs make load even AND, when a node dies, spread its keys across many neighbors instead of dumping all of them on one.",
+       ok:true,
+       fb:"Exactly both wins. One point per node gives lumpy arcs (load skew) and sends a dead node's entire load to its single clockwise neighbor. Scattering each node into ~150 arcs smooths load (~1/√V) and spreads failure."},
+      {t:"It lets a single hot key be split across several shards.",
+       ok:false,
+       fb:"It can't — every request for one code hashes to one point and lands on one shard. Vnodes balance key COUNT, not the heat of a single key. That's a separate problem (cache / replicate the key)."},
+      {t:"It removes the need for a hash function entirely.",
+       ok:false,
+       fb:"Vnodes are just extra hashed points (\"shard-C#1\", \"#2\", …). They use the hash more, not less; they fix arc balance and failure spread."}
+    ]
+  },
+  {
+    stem: "On a ring with ONE point per node, shard C (covering arc 370→610) crashes. Where do C's keys go?",
+    options: [
+      {t:"All of them to the next node clockwise, which now owns 370→(its own point) and can suddenly carry ~2× its load.",
+       ok:true,
+       fb:"Correct. With one point per node, the dead arc merges entirely into the single clockwise neighbor — a classic failure that doubles one machine. Virtual nodes avoid it by scattering C into many arcs with many different neighbors."},
+      {t:"They are evenly spread across all surviving nodes automatically.",
+       ok:false,
+       fb:"Only with virtual nodes. With one point per node, the whole arc has exactly one clockwise neighbor, so that single node inherits everything."},
+      {t:"They are lost until C is replaced.",
+       ok:false,
+       fb:"Routing still works — the keys just resolve to the next node clockwise now. (Whether the DATA survives is a replication question, Lesson 06; routing itself is fine.)"}
+    ]
+  },
+  {
+    stem: "A celebrity's short link goes viral — millions of hits to one code. Does consistent hashing fix this?",
+    options: [
+      {t:"No. The ring balances how many keys each shard holds, not request volume. One code hashes to one shard, so that shard gets all the heat.",
+       ok:true,
+       fb:"Right. Even-by-count is not even-by-traffic. A single hot key lands on one node no matter how many vnodes you add. You handle it above the ring — cache it (Lesson 02) or replicate that key to several nodes."},
+      {t:"Yes — virtual nodes split the hot key across 150 shards.",
+       ok:false,
+       fb:"Vnodes split the KEYSPACE into many arcs, but any single key still maps to one point and one shard. They don't divide the traffic of one key."},
+      {t:"Yes — adding more shards reduces the per-key load.",
+       ok:false,
+       fb:"More shards spread different keys, but all requests for THIS code still hash to the same one shard. Hot-key heat is a caching/replication problem, not a sharding one."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
