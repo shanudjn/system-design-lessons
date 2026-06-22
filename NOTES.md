@@ -40,7 +40,12 @@
    virtual nodes for even load (~1/√V) and failure that spreads instead of
    dumping on one neighbor; hot keys + heavy rebalance named as what it does
    NOT solve. (Lesson 0004)
-5. Async work — queues + workers (notification / bulk-link fan-out).
+5. ✅ **Async work** — the 2M-link bulk API can't run inline (~2.8 h vs ~60 s
+   timeout); producer→queue→workers, visibility timeout so a crashed worker's
+   message reappears, at-least-once delivery → duplicates fixed by idempotency
+   keys (not "exactly-once"), poison messages → retry limit + DLQ, fan-out with
+   per-key ordering via partitions, and consumer lag/backpressure as the next
+   wall. (Lesson 0005)
 6. Consistency & replication — a like-counter under concurrency.
 7. Designing for failure — timeouts, retries, idempotency, backpressure.
 

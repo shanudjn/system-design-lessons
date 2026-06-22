@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 05 — Async Work: Queues, Workers, and the 2-Million-Link Job</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 05 · Worked Example</div>
+  <h1>Async Work: Queues, Workers, and the 2-Million-Link Job</h1>
+  <p class="lead">Lesson 03's villain is back: an enterprise customer uploads a CSV and asks our shortener to mint <b>2 million</b> links in one API call. Do it inline and the request runs for <b>~2.8 hours</b> — long past any timeout. This lesson takes that one job and traces it through a <b>queue</b> and a pool of <b>workers</b>: same four moves, and we name every trade-off (at-least-once vs exactly-once, ordered vs fast, retry vs dead-letter).</p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0005-async-work.html"</code></p>
+</header>
+
+<h2>The one job we'll trace</h2>
+<p>A customer calls <code>POST /bulk</code> with a CSV of 2,000,000 long URLs. Each row must become a short code (counter + Base62 from Lesson 01, written to its shard from Lessons 03–04). The naive design does all 2M creates <i>inside</i> the HTTP request, then returns. That is the whole bug. Here is the bug and the fix on one screen.</p>
+
+<div class="diagram"><pre>
+  SYNCHRONOUS (inline)                      ASYNCHRONOUS (queue + workers)
+
+  client ──POST /bulk──► API                client ──POST /bulk──► API
+                          │                                          │ writes job row
+                          │ creates 2,000,000                        │ enqueues messages
+                          │ links one by one                         ▼
+                          │ ...2.8 HOURS...               ┌──────── QUEUE ────────┐
+                          │ (connection long dead)        │ msg msg msg msg ...   │
+                          ▼                                └───────────────────────┘
+                       times out                            │      │      │      │
+                       at ~60 s                            W1     W2     W3 ... W20   (workers)
+                                                            └─ each: pull → create → ACK
+  API returns 202 + job_id in ~5 ms; client polls GET /jobs/{id} for progress
+</pre></div>
+
+<p class="note"><span class="key">A queue turns "do it now, caller waits" into "promise to do it, caller leaves."</span> The API's job shrinks to two fast steps — record the job and drop messages on the queue — then it answers <code>202 Accepted</code> immediately. The slow part runs later, on machines the caller never sees.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Producer</b> — code that puts a message on the queue (here, the API).</li>
+  <li><b>Message</b> — one unit of work to do later (here, one CSV row → one link).</li>
+  <li><b>Queue</b> — a durable buffer that holds messages until someone takes them.</li>
+  <li><b>Consumer / worker</b> — a process that pulls a message, does the work, and <b>acks</b> (acknowledges) it so the queue can delete it.</li>
+</ul>
+
+<h2>Move 1 — Estimate: why inline is impossible, and how many workers we need</h2>
+<p>First price the work. Creating one link is one sharded DB write plus an ID-block bump (Lesson 03). Call it <b>5 ms</b> of real work per row. That single number decides everything.</p>
+
+<div class="card calc">
+  <p><b>One worker.</b> 5 ms/row → <b>200 rows/sec</b>. For 2,000,000 rows: 2,000,000 ÷ 200 = <b>10,000 s ≈ 2.78 hours</b>.</p>
+  <p><b>Inline is dead on arrival.</b> A load balancer or proxy drops an idle HTTP connection after roughly <b>60 s</b>. 2.78 hours ≫ 60 s, so the client times out, retries, and now you have <i>two</i> 2.8-hour jobs fighting over the same DB. Synchronous bulk work is not "slow" — it is <span class="key">structurally impossible</span> past the timeout.</p>
+  <hr style="border-color:var(--line); margin:.8rem 0">
+  <p><b>20 workers.</b> Work is independent, so it parallelizes: 20 × 200 = <b>4,000 rows/sec</b>. 2,000,000 ÷ 4,000 = <b>500 s ≈ 8 min 20 s</b>. The customer's HTTP call still returns in ~5 ms; the 8 minutes happen behind the queue.</p>
+  <p><b>Queue cost.</b> One message ≈ a CSV row (URL + metadata) ≈ <b>200 bytes</b>. 2,000,000 × 200 B = <b>400 MB</b> sitting in the queue at peak — trivial for a real broker. The messages drain to zero as workers chew through them.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off up front:</b> the queue buys you decoupling and elastic throughput, but you pay in <span class="key">latency and complexity</span>. The result is no longer ready when the call returns — the client must poll <code>GET /jobs/{id}</code> or get a webhook later. You've added a moving part (the broker) and a new failure mode (messages that get stuck). You trade "answer is ready immediately, but only for tiny jobs" for "answer is eventual, but any size job survives."</p>
+
+<h2>Move 2 — Model: producer → queue → workers</h2>
+<p>The shape is three boxes. The <b>producer</b> (API) writes a job row (<code>status=running, done=0, total=2,000,000</code>) and enqueues the messages. The <b>queue</b> holds them durably. A pool of <b>workers</b> pulls messages, creates links, updates the counter, and acks. Nothing in the request path waits for the work.</p>
+
+<div class="diagram"><pre>
+  PRODUCER (API)            QUEUE (durable buffer)         WORKERS (pool, scale freely)
+  ───────────────          ──────────────────────         ────────────────────────────
+  POST /bulk         ┌───────────────────────────┐         loop:
+    write job row    │ [m1][m2][m3][m4] ... [mN]  │  pull →   m = receive()        (msg hidden)
+    enqueue N msgs ─►│  oldest ───────► newest    │           create_link(m)
+    return 202+id    └───────────────────────────┘   ack ◄──  ack(m)               (msg deleted)
+                                  │                            on crash: no ack →
+  client later:                   └─ "in flight" copy hidden    msg reappears, retried
+    GET /jobs/{id} → {done: 1.31M / 2.00M, status: running}
+</pre></div>
+
+<p>The one mechanism that makes this safe is the <b>visibility timeout</b>. When a worker receives a message, the queue does not delete it — it <i>hides</i> it for, say, 30 seconds. If the worker acks within 30 s, the message is deleted for good. If the worker crashes and never acks, the 30 s elapses and the message <span class="key">becomes visible again</span> for another worker to retry. No work is silently lost.</p>
+
+<div class="card calc">
+  <p><b>Worked: a worker dies mid-job.</b> Worker W7 receives message <code>m_948213</code> (hidden for 30 s), creates the link in the DB, then crashes <i>before</i> sending the ack. After 30 s the queue re-shows <code>m_948213</code>; worker W3 picks it up and creates the link <b>again</b>. Net result: the row was processed <b>twice</b>. The queue guarantees <i>at least</i> one delivery, never <i>exactly</i> one. We must design for the duplicate, not wish it away.</p>
+</div>
+
+<h2>Move 3 — Trace the paths: delivery, duplicates, and poison</h2>
+
+<h3>Path A — the duplicate (at-least-once delivery)</h3>
+<p><b>At-least-once</b> means every message is delivered one <i>or more</i> times. The retry that saves you from crashes is the same retry that creates duplicates. The naive instinct — "just switch the queue to <b>exactly-once</b>" — is a trap: true exactly-once across a network is extremely expensive (it needs distributed transactions between broker and DB) and most "exactly-once" features are really at-least-once plus dedup under the hood. The cheap, standard fix lives in <i>your</i> code: make the work <b>idempotent</b>.</p>
+
+<p><b>Idempotent</b> = running it twice has the same effect as running it once. Give every row a stable <b>idempotency key</b> — e.g. <code>(customer_id, csv_row_number)</code> — and write with it:</p>
+
+<div class="diagram"><pre>
+  NOT idempotent:                          IDEMPOTENT:
+    INSERT link (url) ...                     INSERT link (idem_key, url) ...
+    -> retry makes a 2nd row, 2nd code        ON CONFLICT (idem_key) DO NOTHING
+    -> customer billed twice                  -> retry is a no-op; one row, one code
+
+  redeliver m_948213  ──►  worker does INSERT ... ON CONFLICT (cust42, row#948213)
+                           first time: inserts.   second time: conflict → skipped.
+                           SAME end state either way.
+</pre></div>
+
+<p class="note"><span class="key">Idempotency converts "at-least-once" into "effectively exactly-once" for free.</span> You stop fighting the queue's redelivery and instead make redelivery harmless. This is the load-bearing idea behind every reliable worker — we give it its own lesson later, but the shortener needs it now.</p>
+
+<h3>Path B — the poison message (retry that never ends)</h3>
+<p>Row #1,500,002 is malformed: its URL is 9 KB of garbage that violates a DB constraint. The worker pulls it, throws, never acks. After 30 s it reappears, another worker throws, never acks… forever. One bad row now loops endlessly, burning a worker slot and never finishing the job. This is a <b>poison message</b>.</p>
+
+<p>The fix is a <b>retry limit</b> plus a <b>dead-letter queue (DLQ)</b> — a separate queue where messages go to die after, say, <b>5</b> failed attempts. They stop blocking live workers and wait for a human (or a repair job) to inspect them.</p>
+
+<div class="card calc">
+  <p><b>Worked: 50 poison rows out of 2,000,000.</b> Each bad row is retried 5 times then parked in the DLQ. Workers spend 50 × 5 = 250 wasted attempts total — negligible against 2M good rows. The job finishes: <b>1,999,950 links created, 50 in the DLQ</b> for review. <span class="key">Without a DLQ those 50 messages loop forever</span>, the job's <code>done</code> counter sticks below total, and it never reports complete.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> the retry limit balances two failures. Set it too <b>low</b> and a transient blip (a 1-second DB hiccup) sends good work to the DLQ. Set it too <b>high</b> and real poison wastes capacity longer before it's quarantined. ~3–5 attempts with <span class="key">exponential backoff</span> (wait 1s, 2s, 4s… between tries) is the usual middle: it survives blips but quarantines true poison quickly.</p>
+
+<h3>Path C — fan-out and ordering (the second async job)</h3>
+<p>Bulk creation isn't the only async work. When each link is created we also <b>fan out</b> notifications: update the customer's dashboard, fire their webhook, maybe email a receipt. One event, many side-effects — perfect for a queue. But fan-out raises <b>ordering</b>. If a customer creates then immediately deletes a link, the "deleted" event must not be processed before "created", or their webhook ends up in a wrong state.</p>
+
+<p>Global ordering (every message strictly in order) would force a <i>single</i> consumer and kill our parallelism. The standard answer is <b>per-key ordering via partitions</b>: pick a <b>partition key</b> = <code>customer_id</code>, so all of one customer's events land on the same partition and stay ordered, while different customers run on different partitions in parallel.</p>
+
+<div class="diagram"><pre>
+  GLOBAL ORDER (1 consumer)            PER-KEY ORDER (partition by customer_id)
+  ─────────────────────────           ─────────────────────────────────────────
+  all events ─► 1 worker               cust42's events ─► partition 0 ─► worker A  (ordered)
+  strict order, NO parallelism         cust77's events ─► partition 1 ─► worker B  (ordered)
+  throughput capped at 1 worker        cross-customer order: NOT guaranteed (don't need it)
+</pre></div>
+
+<p class="note why"><b>Name the trade-off:</b> ordering and throughput pull against each other. <span class="key">Total order costs parallelism; no order maximizes it.</span> Per-key order is the pragmatic middle — you keep the ordering that actually matters (within one customer / one entity) and pay nothing for the ordering you don't care about (between unrelated customers).</p>
+
+<h2>Move 4 — Find the next bottleneck: consumer lag &amp; backpressure</h2>
+<p>Workers now scale horizontally, but a new wall appears the moment <b>arrival rate &gt; drain rate</b>. The queue depth grows, and the time between a message being enqueued and processed — the <b>consumer lag</b> — climbs. Trace it.</p>
+
+<div class="card calc">
+  <p>Drain rate with 20 workers = <b>4,000 msg/s</b>. Customer A enqueues 2,000,000 at t=0: depth spikes to 2M, then falls linearly, hitting 0 at 2,000,000 ÷ 4,000 = <b>500 s</b>.</p>
+  <p>Now customer B enqueues <b>1,000,000</b> more at t=100 s. At t=100 s the backlog is 2,000,000 − 4,000×100 = 1,600,000; add B's 1M → <b>2,600,000</b>. Remaining drain = 2,600,000 ÷ 4,000 = <b>650 s</b>, finishing at t=750 s. The oldest waiting message is now ~hundreds of seconds behind real time — that is the lag, and it's what an SLA actually feels.</p>
+  <hr style="border-color:var(--line); margin:.8rem 0">
+  <p><b>The fix: watch queue depth, not CPU.</b> If <code>depth ÷ drain_rate</code> (age of the oldest message) exceeds your target, <b>autoscale</b> workers. Doubling to 40 workers → 8,000 msg/s → the 2.6M backlog clears in ~325 s instead of 650 s. The queue's depth is the single best signal for "add capacity."</p>
+</div>
+
+<p class="note why"><b>Backpressure is the honest limit.</b> If producers can enqueue faster than any worker pool can drain <i>forever</i>, the queue grows without bound and eventually the broker runs out of disk. A queue is a shock absorber for <i>bursts</i>, not a bottomless pit for a permanent overload. The real fixes: autoscale workers to meet sustained load, or <b>shed load</b> at the producer (reject/throttle new bulk jobs when depth is dangerous — the rate-limiting topic coming up). <span class="key">A queue smooths spikes; it cannot create throughput that the workers don't have.</span></p>
+
+<h2>Where we landed</h2>
+<p>We took the 2-million-link bulk job that can't fit in one request and made it routine. <b>Estimate</b> showed inline = 2.78 hours (impossible past a 60 s timeout) and sized the fix at 20 workers → ~8 min, returning <code>202</code> in ~5 ms. <b>Model</b> set up producer → queue → workers with a visibility timeout so a crashed worker's message reappears instead of vanishing. <b>Tracing</b> the paths exposed three truths: at-least-once delivery means duplicates (fix: idempotency keys, not "exactly-once"), poison messages loop forever (fix: retry limit + DLQ), and fan-out needs per-key ordering via partitions (total order would kill parallelism). The <b>next bottleneck</b> — consumer lag and backpressure — says a queue absorbs bursts but can't invent throughput, pointing at autoscaling and rate limiting.</p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lessons build directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>06 — Consistency &amp; replication:</b> our workers bump a shared <code>done</code> counter and a like-counter — what happens when two of them write the same row at the same instant?</p>
+  <p style="margin:.2rem 0">• <b>07 — Designing for failure:</b> timeouts, retries with backoff, and idempotency promoted from "a trick we used here" to the core discipline.</p>
+  <p style="margin:.2rem 0">• <b>08 — Rate limiting:</b> the load-shedding we hand-waved — token bucket vs leaky bucket — to protect the queue from permanent overload.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">producer</span>
+    <span class="pill">consumer / worker</span>
+    <span class="pill">message queue</span>
+    <span class="pill">enqueue / ack</span>
+    <span class="pill">visibility timeout</span>
+    <span class="pill">at-least-once</span>
+    <span class="pill">exactly-once</span>
+    <span class="pill">idempotency key</span>
+    <span class="pill">poison message</span>
+    <span class="pill">dead-letter queue</span>
+    <span class="pill">retry + backoff</span>
+    <span class="pill">fan-out</span>
+    <span class="pill">partition key / ordering</span>
+    <span class="pill">consumer lag</span>
+    <span class="pill">backpressure</span>
+  </p>
+  <p>That's Lesson 05, built straight on the shortener's bulk API and the rebalance from Lesson 04. <b>Ask me follow-ups</b> — e.g. "show the worker loop in pseudocode", "how is a visibility timeout different from a TTL?", "when is exactly-once actually worth it?", "how do Kafka partitions compare to SQS message groups?", or "what does autoscaling on queue depth look like in practice?" When you're ready, say <b>next</b> and we'll tackle <i>consistency &amp; replication — a counter under concurrent writes</i>.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "The bulk job would take ~2.8 hours inline. What is the PRIMARY reason we push it onto a queue instead?",
+    options: [
+      {t:"A request can't hold a connection that long (it times out ~60 s), so we decouple: the API enqueues and returns 202 in ~5 ms, and workers do the slow part later.",
+       ok:true,
+       fb:"Right. The job is structurally too long for the request path. The queue lets the producer (API) finish instantly and hands the work to a worker pool that drains it asynchronously while the client polls for progress."},
+      {t:"Queues make each individual link creation faster than a direct DB write.",
+       ok:false,
+       fb:"They don't — a create still costs ~5 ms whether queued or not. The win isn't per-item speed; it's decoupling the slow total job from the request so it survives timeouts and scales across workers."},
+      {t:"Queues guarantee the work happens exactly once, so we avoid duplicate links.",
+       ok:false,
+       fb:"The opposite: standard queues deliver at-least-once, so duplicates are POSSIBLE. We handle that with idempotency keys, not by relying on the queue."}
+    ]
+  },
+  {
+    stem: "A worker creates a link, then crashes before sending its ack. The message reappears and is processed again. What's the right fix?",
+    options: [
+      {t:"Make the work idempotent — write with a stable key like (customer_id, row#) and INSERT ... ON CONFLICT DO NOTHING, so a redelivery is a harmless no-op.",
+       ok:true,
+       fb:"Exactly. At-least-once delivery means redelivery WILL happen. Idempotency makes running twice equal running once, turning the duplicate into a no-op — effectively exactly-once, for free."},
+      {t:"Switch the broker to exactly-once delivery so redelivery never occurs.",
+       ok:false,
+       fb:"True exactly-once across a network is very expensive (distributed transactions) and most 'exactly-once' is at-least-once + dedup underneath. The cheap, robust fix is idempotency in your own code."},
+      {t:"Shorten the visibility timeout so the message is deleted before the worker can crash.",
+       ok:false,
+       fb:"A shorter timeout makes things WORSE — it re-shows messages that are still being processed, causing MORE duplicates. The timeout should exceed your p99 processing time; idempotency handles the rest."}
+    ]
+  },
+  {
+    stem: "One malformed row makes the worker throw every single time. Without intervention, what happens — and what's the fix?",
+    options: [
+      {t:"It's a poison message: it's redelivered forever, burning worker slots. Fix it with a retry limit + a dead-letter queue (DLQ) that quarantines it after ~5 tries.",
+       ok:true,
+       fb:"Correct. A message that always fails never gets acked, so it loops indefinitely and the job's done-counter never reaches total. A retry cap moves it to the DLQ for a human to inspect, and the rest of the job completes."},
+      {t:"The queue automatically detects the bad message and drops it after one failure.",
+       ok:false,
+       fb:"It doesn't — a failed (un-acked) message reappears after the visibility timeout and is retried. You must set the retry limit and DLQ yourself; the broker won't guess that 'failed once' means 'discard'."},
+      {t:"The whole queue halts until the bad message is removed by hand.",
+       ok:false,
+       fb:"Other messages keep flowing to other workers; only the slot retrying the poison message is wasted. But it never finishes, so you still want a retry limit + DLQ to quarantine it."}
+    ]
+  },
+  {
+    stem: "Producers are enqueuing faster than your workers can drain, and queue depth keeps climbing. What does this tell you?",
+    options: [
+      {t:"It's consumer lag / backpressure: a queue absorbs bursts but can't invent throughput. Either autoscale workers to meet sustained load, or shed load at the producer.",
+       ok:true,
+       fb:"Right. Watch queue depth (depth ÷ drain_rate = age of oldest message) as your scaling signal. If arrival exceeds drain forever, the buffer grows without bound — you must add workers or throttle producers; the queue alone won't save you."},
+      {t:"It means the queue is broken and messages are stuck.",
+       ok:false,
+       fb:"Growing depth under high load is normal backpressure, not a fault. The queue is doing its job (buffering); the signal is telling you to add drain capacity or limit intake."},
+      {t:"Adding more partitions will fix it without adding workers.",
+       ok:false,
+       fb:"Partitions enable parallelism but don't process anything by themselves — you still need more WORKERS consuming them. Total throughput is bounded by worker capacity, not partition count."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
