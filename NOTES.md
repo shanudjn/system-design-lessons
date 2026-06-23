@@ -46,7 +46,12 @@
    keys (not "exactly-once"), poison messages → retry limit + DLQ, fan-out with
    per-key ordering via partitions, and consumer lag/backpressure as the next
    wall. (Lesson 0005)
-6. Consistency & replication — a like-counter under concurrency.
+6. ✅ **Consistency & replication** — a like-counter under concurrency: "+1"
+   is a read-modify-write whose gap races into lost updates (fix: atomic
+   increment / compare-and-set); replication scales reads but adds lag →
+   read-your-writes broken; strong vs eventual; quorums (W+R>N guarantees
+   overlap); next wall = still-hot single row → sharded/approximate counter
+   (trade exact read for scalable write). (Lesson 0006)
 7. Designing for failure — timeouts, retries, idempotency, backpressure.
 
 ### Advanced topics (queued so the course never runs dry)

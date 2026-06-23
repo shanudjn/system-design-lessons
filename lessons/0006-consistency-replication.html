@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 06 — Consistency &amp; Replication: A Like-Counter Under Concurrent Writes</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 06 · Worked Example</div>
+  <h1>Consistency &amp; Replication: A Like-Counter Under Concurrent Writes</h1>
+  <p class="lead">We add a <b>like</b> button to our short links. A celebrity posts one and it goes viral: <b>50,000 likes/second</b>, half a million people watching the number tick. Two problems crash into each other. First, when two likes land at the same instant, the count goes up by <b>one</b>, not two — a <b>lost update</b>. Second, when one database can't serve the reads we copy it, and now the copies disagree. Same four moves, and we name every trade-off: atomic vs lock, strong vs eventual, sync vs async, exact vs fast.</p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0006-consistency-replication.html"</code></p>
+</header>
+
+<h2>The one number we'll trace</h2>
+<p>A short link <code>xZ9</code> has a like counter: one row, <code>likes(link_id, count)</code>. Liking it should add 1. Reading the page should show the total. That's it — and it is one of the hardest things in distributed systems, because "add 1" is secretly <b>three</b> steps, and "show the total" is secretly a question about <i>which copy</i> you ask. Here is both bugs on one screen.</p>
+
+<div class="diagram"><pre>
+  THE WRITE BUG (lost update)                 THE READ BUG (stale replica)
+  ───────────────────────────                 ─────────────────────────────
+
+  count = 100                                  Alice ──like──► LEADER (count 100→101)
+  Worker A: read 100 ─┐                                          │ async copy (lag)
+  Worker B: read 100 ─┤ both saw 100                             ▼
+  Worker A: write 101 │                        Alice ──refresh──► REPLICA (still 100)
+  Worker B: write 101 ┘ second overwrites      "I just liked it... why does it say 100?"
+  TWO likes, count = 101  (one vanished)       read-your-own-write broken
+</pre></div>
+
+<p class="note"><span class="key">A "counter" is the simplest piece of shared mutable state — which is exactly why it exposes every consistency problem at once.</span> Get the like-counter right and you understand bank balances, inventory, vote tallies, and seat reservations. They are all the same shape: many writers, many readers, one truth that must not drift.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Read-modify-write</b> — the three hidden steps of "+1": read the value, add one, write it back.</li>
+  <li><b>Race condition</b> — two operations interleave so the result depends on timing, not logic.</li>
+  <li><b>Replication</b> — keeping copies of the data on more than one machine.</li>
+  <li><b>Leader / replica</b> — the one copy that takes writes (leader) and the read-only copies (replicas, aka followers) that trail behind it.</li>
+  <li><b>Consistency</b> — a promise about <i>which</i> value a read is allowed to return.</li>
+</ul>
+
+<h2>Move 1 — Estimate: how hot is this counter, and how many readers?</h2>
+<p>Price the load before designing. A viral link draws <b>50,000 likes/second</b> at peak. Reads dwarf writes — every viewer's page renders the count — call it <b>10×</b>, so <b>500,000 reads/second</b>. Both hit the same one row.</p>
+
+<div class="card calc">
+  <p><b>The hot-row ceiling.</b> An atomic increment must briefly <b>lock</b> the row so two writers can't clobber each other. Say a locked write-and-release takes <b>~0.5 ms</b>. Writes to <i>one row</i> serialize, so that single row caps at 1 ÷ 0.0005 = <b>2,000 increments/second</b>. We need <b>50,000</b>. The hot row is <span class="key">25× too slow</span> — not because the database is weak, but because one row is a single point of serialization.</p>
+  <hr style="border-color:var(--line); margin:.8rem 0">
+  <p><b>The read ceiling.</b> One database node serves maybe <b>10,000</b> reads/second of this kind. We need <b>500,000</b>. That's 50× — so we'll <b>replicate</b> the data across read-only copies (and cache the count, per Lesson 02). Replication is the only way to scale reads past one machine, and it is the move that introduces disagreement between copies.</p>
+</div>
+
+<p class="note why"><b>Name the tension up front:</b> the two fixes pull in opposite directions. To survive the writes we want the count in <i>one</i> authoritative place (easy to keep correct, but a throughput wall). To survive the reads we want the count in <i>many</i> places (scales reads, but now copies can disagree). <span class="key">Every consistency decision in this lesson is a point on the line between "one true copy" and "many fast copies."</span></p>
+
+<h2>Move 2 — Model: what "+1" really is, and why it races</h2>
+<p>Spell out the naive like handler. It looks like one line; it's three.</p>
+
+<div class="diagram"><pre>
+  def like(link_id):
+      n = db.read(link_id).count     # step 1: READ   (e.g. 100)
+      n = n + 1                       # step 2: MODIFY (101, in app memory)
+      db.write(link_id, n)           # step 3: WRITE  (store 101)
+</pre></div>
+
+<p>Between step 1 and step 3 there is a gap. If a second request reads the same <code>100</code> during that gap, both compute <code>101</code>, and the second write overwrites the first. One like is gone. This is a <b>race condition</b>: correctness now depends on timing. Trace it on a clock.</p>
+
+<div class="card calc">
+  <p><b>Worked: two likes, one survivor.</b> Count starts at <b>100</b>.</p>
+  <p>t=0.0 ms — Request A reads <b>100</b>.<br>
+     t=0.1 ms — Request B reads <b>100</b> (A hasn't written yet).<br>
+     t=0.2 ms — A writes <b>101</b>.<br>
+     t=0.3 ms — B writes <b>101</b> (it still thinks the base was 100).</p>
+  <p><b>Two users liked. The count is 101, not 102.</b> A like vanished. At 50,000 likes/second these gaps overlap constantly — you would silently lose a large fraction of every viral spike. The bug isn't rare; under load it is the <i>common</i> case.</p>
+</div>
+
+<h2>Move 3 — Trace the paths: fixing the write, then the read</h2>
+
+<h3>Path A — kill the lost update (atomic increment)</h3>
+<p>The read-modify-write loses data because the "read" and the "write" are separate trips with a gap between them. The fix is to make the increment <b>atomic</b> — one indivisible operation the database does for you, with no gap for anyone to slip into:</p>
+
+<div class="diagram"><pre>
+  LOST-UPDATE (read then write):            ATOMIC (one statement):
+    n = read(count)      # 100                UPDATE likes
+    write(count, n+1)    # 101                  SET count = count + 1
+    -> two of these race -> lost like           WHERE link_id = 'xZ9';
+                                              -> DB serializes per row; nothing lost
+</pre></div>
+
+<p>Now the database itself does read+add+write as one step while holding the row lock, so two concurrent <code>+ 1</code>s run one-after-the-other and the count rises by exactly two. <span class="key">The race is gone because the gap is gone.</span> (The same idea appears as <b>compare-and-set</b> / optimistic locking: write only if the value is still what you read, else retry. Atomic increment is the lock-free special case for counters.)</p>
+
+<p class="note why"><b>Name the trade-off:</b> atomic increment trades <i>flexibility</i> for <i>safety</i>. You can no longer compute the new value in your own code (apply a discount, cap at a max) — the database owns the arithmetic. For a plain counter that's a perfect fit. For richer logic you fall back to compare-and-set with a retry loop, paying retries under contention instead.</p>
+
+<h3>Path B — the stale read (replication lag)</h3>
+<p>Atomic increment fixes the write but the row still caps at ~2,000/s and one node still can't serve 500,000 reads. So we <b>replicate</b>: one <b>leader</b> takes all writes, and several <b>replicas</b> copy the leader's changes and serve reads. The leader streams its changes to the replicas — but that copy takes time. That delay is <b>replication lag</b>.</p>
+
+<div class="diagram"><pre>
+   WRITES                         READS (fan out across replicas)
+   ──────                         ──────────────────────────────
+   all likes ─► LEADER ──┬── stream ──► REPLICA 1 ─► readers
+                count    ├── stream ──► REPLICA 2 ─► readers
+                = truth  └── stream ──► REPLICA 3 ─► readers
+                              (lag: replicas trail the leader by tens of ms)
+</pre></div>
+
+<p>Now Alice likes the link (write → leader, count 100→101), then refreshes (read → a replica that's 40 ms behind and still says 100). She sees her own like disappear. This breaks <b>read-your-writes</b>: the weak but vital promise that <i>you</i> at least see <i>your own</i> changes. Everyone else seeing 100 for 40 ms is harmless; the author seeing it is alarming.</p>
+
+<div class="card calc">
+  <p><b>Worked: how stale, exactly?</b> Suppose average replication lag is <b>40 ms</b>. In those 40 ms the leader took 50,000 × 0.040 = <b>2,000</b> more likes. So a replica read can be up to ~2,000 behind the true count during a viral spike. For a like badge, <span class="key">being 2,000 behind for 40 ms is completely fine</span> — nobody can tell 1,048,000 from 1,050,000. For a bank balance or "seats left: 1," it is not. <b>The acceptable staleness is a property of the data, not the database.</b></p>
+</div>
+
+<h3>The named choice: strong vs eventual consistency</h3>
+<p>You get to choose what a read promises. The two anchors:</p>
+
+<table>
+  <tr><th>Model</th><th>Promise</th><th>Cost</th><th>Right for</th></tr>
+  <tr><td><b>Strong</b></td><td>every read sees the latest write</td><td>reads must hit the leader or a quorum → slower, less scalable</td><td>balances, inventory, "seats left"</td></tr>
+  <tr><td><b>Eventual</b></td><td>reads may be stale but copies converge if writes stop</td><td>can show old data briefly</td><td>like counts, view counts, feeds</td></tr>
+</table>
+
+<p>Two cheap middles fix Alice without going fully strong: <b>read-your-writes</b> (for a few seconds after you write, route <i>your</i> reads to the leader, so you see your own like; everyone else reads replicas), or simply increment the number in her browser optimistically. Both keep eventual consistency's cheap reads for the 499,999 other viewers.</p>
+
+<h3>How "strong" is actually built: quorums (W + R &gt; N)</h3>
+<p>When you do need strong reads from replicas, the tool is a <b>quorum</b>. Keep <b>N</b> copies. Require a write to be acknowledged by <b>W</b> of them before it's "done," and a read to gather answers from <b>R</b> of them and take the newest. The magic rule: if <span class="key">W + R &gt; N</span>, the write set and the read set must overlap in at least one node — and that node has the latest value.</p>
+
+<div class="card calc">
+  <p><b>Worked: N = 3 copies.</b> Pick <b>W = 2</b> and <b>R = 2</b>. Then W + R = 4 &gt; 3.</p>
+  <p>A write lands on copies {1, 2}. A later read asks copies {2, 3}. The sets share copy <b>2</b> — which saw the write — so the read returns the fresh value. Because 2 + 2 = 4 &gt; 3, <i>any</i> write-pair and <i>any</i> read-pair must share a node (pigeonhole: 4 picks among 3 boxes forces a collision). <b>Overlap is guaranteed → the read can't miss the latest write.</b></p>
+  <hr style="border-color:var(--line); margin:.8rem 0">
+  <p><b>Counter-example: W = 1, R = 1.</b> W + R = 2, <b>not</b> &gt; 3. Write hits {1}; read hits {3}; no overlap → the read returns stale data. Fast (one node each) but not strong. That's the dial: <b>raise W and R for consistency, lower them for speed and availability.</b></p>
+</div>
+
+<p class="note why"><b>Name the trade-off (this is CAP in miniature):</b> sync replication / high quorums buy strong consistency but cost <b>latency</b> (you wait for more nodes) and <b>availability</b> (if too few nodes are reachable, you must refuse the operation rather than serve stale data). Async replication / low quorums buy speed and stay up during partial failures, but let reads go stale. <span class="key">There is no setting that is fast, always-available, AND always-fresh during a network split — you pick two.</span> We give CAP its own lesson; the like-counter is your first feel for it.</p>
+
+<h2>Move 4 — Find the next bottleneck: the hot row is still one row</h2>
+<p>Atomic increment removed the <i>correctness</i> bug, but not the <i>throughput</i> wall: one row still serializes at ~2,000 writes/second and we need 50,000. The standard fix is the <b>sharded (approximate) counter</b>: split one logical counter into <b>K</b> physical sub-counters on different rows/nodes. Each like increments a random shard; the displayed total is the <b>sum</b> of all shards.</p>
+
+<div class="diagram"><pre>
+  ONE HOT ROW (serializes)            SHARDED COUNTER (K = 50 sub-rows)
+  ────────────────────────           ─────────────────────────────────
+  like ─► [ xZ9 : count ]            like ─► pick random k in 0..49
+          ~2,000 writes/s max                 ─► [ xZ9#k : +1 ]   (50 rows)
+          50,000 needed = JAM        read  ─► SUM(all 50 rows)
+                                     each row: 50,000/50 = 1,000 w/s  (under the 2,000 cap)
+</pre></div>
+
+<div class="card calc">
+  <p><b>Worked: size K.</b> Per-row ceiling ≈ 2,000 writes/s; target 50,000 writes/s. K ≥ 50,000 ÷ 2,000 = <b>25</b>. Use <b>K = 50</b> for headroom → each shard takes ~1,000 writes/s, comfortably under the cap. Writes now scale linearly with K. <b>The read pays for it:</b> instead of reading 1 row you must <code>SUM</code> 50 — so cache that sum (Lesson 02) and recompute it every second or so, since a like badge tolerates ~1 s of staleness.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> sharding the counter trades a <b>cheap exact read</b> for a <b>cheap scalable write</b>. One row gave you the instant true total but choked on writes; K rows swallow the writes but make the read a fan-in sum that's best served slightly stale from cache. That's the right trade for likes (write-heavy, staleness-tolerant) and the <i>wrong</i> trade for a bank balance (read-heavy, must be exact) — which would keep the single strongly-consistent row and shard by <i>account</i> instead. <span class="key">Match the consistency to what the number means.</span></p>
+
+<h2>Where we landed</h2>
+<p>We took one counter and met every consistency problem at once. <b>Estimate</b> exposed two ceilings: a hot row that serializes at ~2,000 writes/s (vs 50,000 needed) and a single node that can't serve 500,000 reads. <b>Model</b> revealed that "+1" is a read-modify-write with a gap, which races into <b>lost updates</b>. <b>Tracing</b> the paths fixed the write with an <b>atomic increment</b> (close the gap), then scaled reads with <b>replication</b> — which introduced <b>lag</b> and the choice between <b>strong</b> and <b>eventual</b> consistency, built concretely from <b>quorums</b> (W + R &gt; N guarantees overlap). The <b>next bottleneck</b> — the still-hot single row — pushed us to a <b>sharded counter</b>, trading an exact read for a scalable write. The thread through all of it: <span class="key">pick how fresh a read must be based on what the number means, then pay only for that much consistency.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lessons build directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>07 — Designing for failure:</b> what happens to writes, quorums, and that leader when nodes time out, retry, and partition — and how idempotency keeps retries safe.</p>
+  <p style="margin:.2rem 0">• <b>08 — CAP in practice:</b> the strong-vs-eventual dial under an actual network split — what you really give up when you can't reach a quorum.</p>
+  <p style="margin:.2rem 0">• <b>09 — Leader election:</b> the leader we leaned on is a single point of write — how the replicas pick a new one without two leaders (split-brain).</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">read-modify-write</span>
+    <span class="pill">race condition</span>
+    <span class="pill">lost update</span>
+    <span class="pill">atomic increment</span>
+    <span class="pill">compare-and-set</span>
+    <span class="pill">replication</span>
+    <span class="pill">leader / replica</span>
+    <span class="pill">replication lag</span>
+    <span class="pill">read-your-writes</span>
+    <span class="pill">strong consistency</span>
+    <span class="pill">eventual consistency</span>
+    <span class="pill">quorum (W+R&gt;N)</span>
+    <span class="pill">sync vs async replication</span>
+    <span class="pill">sharded / approximate counter</span>
+  </p>
+  <p>That's Lesson 06, built straight on the shared <code>done</code>/like counters our workers bumped in Lesson 05. <b>Ask me follow-ups</b> — e.g. "show compare-and-set with a retry loop in pseudocode", "how does read-your-writes get implemented in practice?", "when is exactly W+R&gt;N not enough (hello, write conflicts)?", "how do databases actually stream replication?", or "how would you do this for a bank balance instead of a like?" When you're ready, say <b>next</b> and we'll tackle <i>designing for failure — timeouts, retries, idempotency, and backpressure</i>.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Two likes hit the counter at the same instant and the naive handler does read → +1 → write. The count goes from 100 to 101 instead of 102. What is this, and what's the fix?",
+    options: [
+      {t:"A lost update from the read-modify-write gap. Fix it with an atomic increment (UPDATE SET count = count + 1) so the database does read+add+write as one indivisible step.",
+       ok:true,
+       fb:"Right. The two requests both read 100 before either writes, so the second write overwrites the first. Making the increment atomic closes the gap — the DB serializes the two +1s per row and the count rises by exactly two."},
+      {t:"Replication lag — the replica is behind the leader, so the second write saw an old value.",
+       ok:false,
+       fb:"This bug happens on a single node with no replicas at all. It's a concurrency race within read-modify-write, not a staleness problem between copies. The fix is atomicity, not faster replication."},
+      {t:"Just add more replicas so the writes spread out and stop colliding.",
+       ok:false,
+       fb:"Replicas serve READS, not writes — all writes still go to the leader's one row. More replicas don't touch the write race at all. You need an atomic increment (and later, a sharded counter for throughput)."}
+    ]
+  },
+  {
+    stem: "Alice likes the link (write to the leader), refreshes, and a read replica that's 40 ms behind still shows the old count. Which promise is broken, and what's the cheap fix?",
+    options: [
+      {t:"Read-your-writes is broken. Cheaply fix it by routing Alice's own reads to the leader for a few seconds after she writes (or increment optimistically in her browser) — everyone else keeps reading replicas.",
+       ok:true,
+       fb:"Exactly. Others seeing a 40 ms-stale count is harmless; the author seeing her own like vanish is alarming. Read-your-writes restores just that one guarantee without forcing strong consistency on all 500,000 readers."},
+      {t:"Strong consistency is broken, so we must make every read hit the leader.",
+       ok:false,
+       fb:"Sending all 500,000 reads/s to the leader defeats the whole reason we replicated. We don't need every read fresh — only Alice's own. Read-your-writes is the targeted, cheap fix; full strong reads are overkill for a like badge."},
+      {t:"Nothing is broken — a like count is allowed to be eventually consistent, so ignore it.",
+       ok:false,
+       fb:"Eventual consistency is fine for the 499,999 other viewers, but a user seeing their OWN action fail to register reads as a bug. Read-your-writes is the small targeted guarantee that fixes the author's experience."}
+    ]
+  },
+  {
+    stem: "You keep N = 3 copies and want a read to always see the latest write. Which quorum setting guarantees it?",
+    options: [
+      {t:"W = 2, R = 2, because W + R = 4 > 3 forces the write set and read set to share at least one node — and that node has the latest value.",
+       ok:true,
+       fb:"Correct. With 3 boxes, any 2-write and any 2-read must overlap (pigeonhole), so the read always sees a node that received the write. That overlap is exactly what W + R > N buys you."},
+      {t:"W = 1, R = 1, because each operation only needs to touch one fast node.",
+       ok:false,
+       fb:"W + R = 2, which is not > 3. The write can land on node 1 while the read asks node 3 — no overlap, stale read. It's fast and highly available, but not strongly consistent."},
+      {t:"Any setting works as long as you have 3 replicas; the count of copies is what matters.",
+       ok:false,
+       fb:"Not so — consistency comes from the OVERLAP rule W + R > N, not from N alone. Three copies with W=1,R=1 still return stale reads. You tune W and R to trade consistency against latency/availability."}
+    ]
+  },
+  {
+    stem: "Atomic increment fixed correctness, but one row still caps at ~2,000 writes/s and you need 50,000. What's the standard fix and its cost?",
+    options: [
+      {t:"Shard the counter into K sub-rows (K ≈ 25–50); each like hits a random shard, and the total is the SUM of shards. Cost: the read is now a fan-in sum, best served slightly stale from cache.",
+       ok:true,
+       fb:"Right. Splitting into 50 rows drops each to ~1,000 writes/s, under the per-row cap, and writes scale with K. You trade a cheap exact read for a cheap scalable write — fine for a staleness-tolerant like badge, cached and recomputed ~once a second."},
+      {t:"Add more read replicas so the writes have somewhere to go.",
+       ok:false,
+       fb:"Replicas don't take writes — every increment still funnels to the leader's one hot row. Replicas scale reads; they do nothing for the write ceiling. You need to split the row itself."},
+      {t:"Raise the quorum W so writes commit faster.",
+       ok:false,
+       fb:"A higher W makes each write SLOWER (it waits for more nodes) and still targets the same hot row. Quorums tune consistency, not single-row throughput. Sharding the counter is what scales the writes."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
