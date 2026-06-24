@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0007-designing-for-failure.html">
+    <div class="num">LESSON 07</div>
+    <div class="title">Designing for Failure: Timeouts, Retries, Idempotency &amp; Backpressure</div>
+    <div class="blurb">One timed-out call, traced end to end. A timeout isn't an answer (partial failure), so set it from p99 not a lazy 1 s default, make the retry safe with an idempotency key, gentle with backoff + jitter + a retry budget, and cut losses with a circuit breaker — then backpressure and load shedding instead of an unbounded queue.</div>
+  </a>
   <a class="lesson" href="lessons/0006-consistency-replication.html">
     <div class="num">LESSON 06</div>
     <div class="title">Consistency &amp; Replication: A Like-Counter Under Concurrent Writes</div>

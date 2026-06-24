@@ -52,7 +52,13 @@
    read-your-writes broken; strong vs eventual; quorums (W+R>N guarantees
    overlap); next wall = still-hot single row → sharded/approximate counter
    (trade exact read for scalable write). (Lesson 0006)
-7. Designing for failure — timeouts, retries, idempotency, backpressure.
+7. ✅ **Designing for failure** — one timed-out call traced end to end: a
+   timeout is a partial failure (work may have happened), so set it from
+   p99/p99.9 not a lazy 1 s default (which collapses the thread pool 100×); a
+   blind retry duplicates → idempotency key makes retries safe; backoff + jitter
+   + retry budget stop the retry storm / metastable failure; circuit breaker
+   fails fast on a dead dependency; next wall = unbounded queue → backpressure +
+   load shedding (honest 429). (Lesson 0007)
 
 ### Advanced topics (queued so the course never runs dry)
 8. Rate limiting — token bucket vs leaky bucket, distributed counters.

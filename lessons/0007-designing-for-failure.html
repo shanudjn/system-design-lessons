@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 07 — Designing for Failure: Timeouts, Retries, Idempotency &amp; Backpressure</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 07 · Worked Example</div>
+  <h1>Designing for Failure: Timeouts, Retries, Idempotency &amp; Backpressure</h1>
+  <p class="lead">Our app server calls the leader to record a like. Usually it answers in <b>10 ms</b>. One afternoon the leader hiccups and an answer never comes back. Now the hard question: <b>how long do we wait, and then what?</b> Wait too long and threads pile up until the whole app falls over. Retry blindly and we duplicate writes — or worse, we hammer a struggling dependency into a full outage. This lesson takes ONE timed-out call and traces every decision: the timeout, the retry, the idempotency key that makes a retry safe, and the backpressure that stops a slowdown from becoming a meltdown. We name the trade-off behind each.</p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0007-designing-for-failure.html"</code></p>
+</header>
+
+<h2>The one call we'll trace</h2>
+<p>A user likes link <code>xZ9</code>. Our app server sends one network request to the leader: <code>recordLike(xZ9)</code>. The leader normally replies in ~10 ms. Today, after 50 ms, nothing. The reply hasn't come. Here is the whole problem on one screen: <span class="key">a timeout tells you the answer is late — it does <i>not</i> tell you whether the work happened.</span></p>
+
+<div class="diagram"><pre>
+  THE PARTIAL FAILURE (one timed-out call, three possible truths)
+
+  app server ──recordLike(xZ9)──►  ??? ──►  LEADER
+       │                                       │
+       │   ...50 ms... no reply...             │
+       ▼                                       ▼
+   TIMEOUT fires. What actually happened on the other side?
+
+   (1) request never arrived ............ work NOT done  → retry is safe
+   (2) work done, but the ACK was lost ... work DONE     → retry DUPLICATES
+   (3) request still running slowly ...... in progress   → retry RACES it
+
+   The app cannot tell (1) from (2) from (3). All it knows: "no reply yet."
+</pre></div>
+
+<p class="note"><span class="key">Distributed systems fail <i>partially</i>: a call can half-happen, and the caller is left guessing.</span> On one machine a function either runs or doesn't. Across a network the request, the work, and the acknowledgement are three separate things, and any of them can be lost. Every tool in this lesson exists to make a sane decision while genuinely not knowing which of the three truths you're in.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Timeout</b> — the deadline after which the caller gives up waiting for a reply.</li>
+  <li><b>Partial failure</b> — a call that may have done its work even though you got no confirmation.</li>
+  <li><b>Retry</b> — sending the request again after a failure.</li>
+  <li><b>Idempotent</b> — an operation you can apply more than once and get the <i>same</i> end state as applying it once.</li>
+  <li><b>Backpressure</b> — pushing "slow down" back to callers (or rejecting them) when you can't keep up.</li>
+</ul>
+
+<h2>Move 1 — Estimate: how long is it safe to wait?</h2>
+<p>Pick the timeout from the dependency's real latency, not a round number. Measure the leader's <code>recordLike</code> response times: <b>p50 = 10 ms</b>, <b>p99 = 50 ms</b>, <b>p99.9 = 200 ms</b>. A healthy call almost never takes longer than 200 ms. So a wait beyond ~200 ms means "this one is genuinely stuck," not "this one is just slow." That — not the framework's lazy <b>1-second</b> default — is where the deadline belongs.</p>
+
+<div class="card calc">
+  <p><b>Why the default 1 s is a trap.</b> The app server serves likes from a pool of <b>200 worker threads</b>. Each call ties up one thread until it returns. Normal call = 10 ms, so one thread does 1000 ÷ 10 = <b>100 calls/second</b>; the pool handles 200 × 100 = <b>20,000 calls/second</b>.</p>
+  <p>Now the leader stalls and every call hangs until the timeout. With a <b>1 s</b> timeout each thread does just 1000 ÷ 1000 = <b>1 call/second</b>; the pool collapses to 200 × 1 = <b>200 calls/second</b> — a <span class="key">100× drop</span>. All 200 threads sit blocked on dead calls, new likes queue up, and the app stops responding to <i>everything</i>, not just likes. With a <b>200 ms</b> timeout the same stall caps each thread at 5 calls/s → 1,000 calls/s, and threads free up 5× faster to fail fast and recover.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> the timeout is a dial between <b>false failures</b> and <b>thread exhaustion</b>. Too short, and you kill healthy-but-slow calls — wasting completed work and triggering needless retries. Too long, and during a real stall your threads pile up on dead calls until the caller itself dies. <span class="key">The right timeout is "the point where waiting longer is worse than giving up."</span> Set it from the p99/p99.9 of the thing you're calling — every hop gets its own.</p>
+
+<h2>Move 2 — Model: a timeout is not an answer</h2>
+<p>The naive like handler treats a timeout like a clean "no":</p>
+
+<div class="diagram"><pre>
+  def like(link_id):
+      try:
+          record_like(link_id)        # call leader, 200 ms timeout
+      except Timeout:
+          record_like(link_id)        # "it failed, just try again"  ← the bug
+</pre></div>
+
+<p>But from Move 1's diagram, a timeout could mean the like already landed (truth 2) and we just lost the reply. Retrying then applies the like <b>twice</b>. We are right back in the <b>lost-update</b>'s evil twin from Lesson 06 — except now the cause isn't concurrency, it's a <i>retry</i> on an operation that already succeeded. Trace it:</p>
+
+<div class="card calc">
+  <p><b>Worked: the duplicate like.</b></p>
+  <p>t=0 ms — app sends <code>recordLike(xZ9)</code>; leader applies it, count 100 → <b>101</b>.<br>
+     t=12 ms — leader's ACK starts back… and is dropped by a flaky switch.<br>
+     t=200 ms — app's timeout fires. App believes the call failed.<br>
+     t=201 ms — app retries <code>recordLike(xZ9)</code>; leader applies it again, 101 → <b>102</b>.</p>
+  <p><b>One user clicked like once. The count is 102.</b> The retry was the right instinct (the network <i>did</i> fail) but the operation wasn't safe to repeat. <span class="key">Retries are only safe on idempotent operations.</span> So before we retry, we have to make <code>recordLike</code> idempotent.</p>
+</div>
+
+<h2>Move 3 — Trace the paths: retry, but make it safe and gentle</h2>
+
+<h3>Path A — make the write idempotent (an idempotency key)</h3>
+<p>An operation is <b>idempotent</b> when doing it twice leaves the same end state as doing it once. A blind counter <code>+1</code> is <i>not</i> idempotent. We make it so by tagging each <i>logical</i> action with a unique <b>idempotency key</b> — a UUID the client generates <b>once</b> and reuses on every retry of that same action. The server remembers keys it has already applied and ignores repeats:</p>
+
+<div class="diagram"><pre>
+  NOT idempotent (counts every call)     IDEMPOTENT (counts each key once)
+  ──────────────────────────────────     ─────────────────────────────────
+  recordLike(xZ9):                        recordLike(xZ9, key=K7):
+     count = count + 1                       if K7 in applied:        # seen it
+                                                 return stored_result  # no-op
+  retry  -> count + 1 AGAIN                    count = count + 1
+           (duplicate)                         applied.add(K7)        # remember
+                                            retry with SAME K7 -> deduped, no double
+</pre></div>
+
+<p>Now replay truth 2 from Move 2: the first call applied <code>K7</code> and bumped the count to 101; the ACK was lost; the retry arrives carrying the <b>same</b> <code>K7</code>; the leader sees <code>K7</code> is already applied and returns the stored result without touching the count. <span class="key">The count is 101. Retry as many times as you like — the key makes it safe.</span> This is the exact same idempotency-key trick that tamed at-least-once queue delivery in Lesson 05; here it tames at-least-once <i>retries</i>.</p>
+
+<p class="note why"><b>Name the trade-off:</b> idempotency buys safe retries at the cost of <b>state</b> — the server must store every applied key for long enough to outlive any retry (say a 24 h TTL), which is memory and a lookup on the hot path. The key must also identify the <i>logical action</i>, not the attempt: generate it once on the client and reuse it, or each retry looks new and the dedup does nothing.</p>
+
+<h3>Path B — retry without starting a storm (backoff + jitter + budget)</h3>
+<p>Safe retries can still be <b>dangerous in aggregate</b>. The leader hiccuped because it was near capacity. If every failed call instantly retries — and retries up to 3 times — we multiply the load on a dependency that is <i>already</i> drowning. That's a <b>retry storm</b>, and it turns a blip into an outage.</p>
+
+<div class="card calc">
+  <p><b>Worked: retries amplify load.</b> Normal offered load is <b>20,000 calls/s</b>; the leader holds up to ~<b>25,000 calls/s</b> (80% utilized). It hiccups and starts failing a slice of calls. With "retry up to 3×," each failure can become <b>1 + 3 = 4</b> attempts. As failures spread, offered load climbs toward 20,000 × 4 = <b>80,000 calls/s</b> against a 25,000 ceiling — <span class="key">3× over capacity</span>. The leader now fails <i>everything</i>, so everything retries, so it stays dead even after the original hiccup is gone. That self-sustaining death spiral is a <b>metastable failure</b>.</p>
+</div>
+
+<p>Three controls keep retries from becoming a storm:</p>
+<ul>
+  <li><b>Exponential backoff</b> — wait longer between each attempt: ~100 ms, then ~200 ms, then ~400 ms. This gives the dependency room to recover instead of a wall of instant retries.</li>
+  <li><b>Jitter</b> — add a random spread to each wait so retries from thousands of clients don't fire in lockstep. (Same thundering-herd cure as the cache stampede in Lesson 02 — desynchronize the crowd.)</li>
+  <li><b>Retry budget</b> — cap retries to a small fraction (say <b>10%</b>) of normal traffic. When the budget is spent, fail fast instead of retrying. This <i>bounds</i> the amplification: worst case 1.1×, never 4×.</li>
+</ul>
+
+<h3>Path C — stop calling a corpse (the circuit breaker)</h3>
+<p>If the leader is hard-down, even backed-off retries waste 200 ms per call hitting a wall. A <b>circuit breaker</b> watches the recent failure rate and, when it crosses a threshold, <b>opens</b> — failing calls <i>instantly</i> for a cooldown instead of waiting on the timeout. After the cooldown it goes <b>half-open</b>, letting one trial call through; success <b>closes</b> it, failure re-opens it.</p>
+
+<div class="diagram"><pre>
+  CLOSED  ──(failures > 50% of last 20 calls)──►  OPEN
+   normal: calls flow                              fail fast, ~0 ms, for 5 s cooldown
+     ▲                                               │
+     │ trial call succeeds                           │ cooldown elapsed
+     └──────────────  HALF-OPEN  ◄───────────────────┘
+                       let ONE call through to test the water
+</pre></div>
+
+<div class="card calc">
+  <p><b>Worked: fail fast vs hang.</b> Leader is dead. <b>Without</b> a breaker, each of 20,000 calls/s waits the full 200 ms timeout, holding threads and collapsing the pool to 1,000 calls/s of throughput — the app drags everyone down. <b>With</b> the breaker open, those calls return in ~0 ms with a clean error, threads stay free, and the like feature degrades gracefully (show the last cached count) while the rest of the app keeps serving. <span class="key">Failing fast protects the caller and gives the dependency quiet time to recover.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> the circuit breaker trades <b>availability for stability</b>. While open it rejects calls that <i>might</i> have succeeded — but in exchange it stops thread exhaustion in the caller and stops piling load on a dependency that needs breathing room. Tune the threshold and cooldown to how fast the dependency actually recovers; too twitchy and you reject healthy traffic, too sluggish and you hang too long.</p>
+
+<h2>Move 4 — Find the next bottleneck: backpressure beats an unbounded queue</h2>
+<p>We've made the caller behave. But if work arrives faster than the leader can drain it, where does the excess go? The tempting answer — "queue it all" — just moves the failure. An <b>unbounded</b> queue fills with requests whose users have already timed out and gone home; you spend capacity replying to nobody while latency climbs without limit. The fix is <b>backpressure</b>: bound the queue, and when it's full, <b>shed load</b> — reject new work immediately with a clear "try later" (an HTTP <b>429</b>) instead of accepting work you can't finish.</p>
+
+<div class="diagram"><pre>
+  UNBOUNDED QUEUE (hidden collapse)      BOUNDED QUEUE + LOAD SHEDDING
+  ─────────────────────────────────      ───────────────────────────────
+  arrivals ─► [ ∞∞∞∞∞∞∞∞… ] ─► leader    arrivals ─► [ ▓▓▓▓ ] (cap 10k) ─► leader
+              latency → minutes                       │
+              users already gone                      └─ full? → reject NOW (429)
+              capacity wasted on the dead             bounded latency, honest "no"
+</pre></div>
+
+<div class="card calc">
+  <p><b>Worked: bound the wait.</b> The leader drains <b>20,000 calls/s</b>. Cap the queue at <b>10,000</b> items. Worst-case wait = 10,000 ÷ 20,000 = <b>0.5 s</b> — under our 200 ms+backoff budget's tolerance, and never unbounded. Past 10,000 we shed: better to tell 5% of users "retry in a moment" than to give 100% of them a 3-minute hang. <span class="key">A fast, honest rejection is a feature; a slow timeout is the worst outcome for everyone.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> backpressure trades <b>completeness for survival</b> — you deliberately reject some requests so the system stays up and fast for the rest, instead of accepting everything and melting for all. It's the same wall we hit as consumer lag in Lesson 05; load shedding is just backpressure applied at the front door instead of the queue.</p>
+
+<h2>Where we landed</h2>
+<p>We took one timed-out call and made the whole system fail gracefully. <b>Estimate</b> set the timeout from the dependency's p99/p99.9 (~200 ms), and showed a lazy 1 s default turns one stall into a 100× thread-pool collapse. <b>Model</b> revealed the core truth: a timeout is a <b>partial failure</b> — the work may have happened — so a blind retry <b>duplicates</b> the like. <b>Tracing</b> the paths fixed that with an <b>idempotency key</b> (safe to retry), then kept retries gentle with <b>backoff + jitter + a retry budget</b> (no storm), and cut losses on a dead dependency with a <b>circuit breaker</b> (fail fast). The <b>next bottleneck</b> — work arriving faster than we can drain it — pushed us to <b>backpressure</b>: bound the queue and shed load with an honest 429. The thread through all of it: <span class="key">you can't prevent failure, so design what happens <i>during</i> it — never wait forever, never retry blindly, and always prefer a fast honest "no" to a slow collapse.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lessons build directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>08 — Rate limiting:</b> backpressure decided <i>when</i> to say no; rate limiting decides <i>who</i> and <i>how much</i> — token bucket vs leaky bucket, enforced across many servers.</p>
+  <p style="margin:.2rem 0">• <b>09 — Message queues, deeper:</b> at-least-once vs exactly-once and dead-letter queues, now that idempotency is a core discipline.</p>
+  <p style="margin:.2rem 0">• <b>CAP in practice &amp; leader election:</b> what the partition we kept hand-waving really forces, and how replicas pick a new leader without two of them (split-brain).</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">timeout</span>
+    <span class="pill">partial failure</span>
+    <span class="pill">thread-pool exhaustion</span>
+    <span class="pill">p99 / p99.9 latency</span>
+    <span class="pill">retry</span>
+    <span class="pill">idempotent</span>
+    <span class="pill">idempotency key</span>
+    <span class="pill">exponential backoff</span>
+    <span class="pill">jitter</span>
+    <span class="pill">retry budget</span>
+    <span class="pill">retry storm</span>
+    <span class="pill">metastable failure</span>
+    <span class="pill">circuit breaker</span>
+    <span class="pill">backpressure</span>
+    <span class="pill">load shedding</span>
+  </p>
+  <p>That's Lesson 07, built straight on the leader, replicas, and idempotency keys from Lessons 05 and 06. <b>Ask me follow-ups</b> — e.g. "show exponential backoff with jitter in pseudocode", "where exactly do you store idempotency keys, and for how long?", "how is a circuit breaker different from a retry budget?", "what's the difference between load shedding and rate limiting?", or "how do you set timeouts across a chain of 5 services so the budget adds up?" When you're ready, say <b>next</b> and we'll tackle <i>rate limiting — token bucket vs leaky bucket, and distributed counters</i>.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your call to record a like times out after 200 ms. What does the timeout tell you about whether the like was actually recorded?",
+    options: [
+      {t:"Nothing for certain — it's a partial failure. The like may never have arrived, may have been applied with the ACK lost, or may still be running. The caller can't tell which.",
+       ok:true,
+       fb:"Right. A timeout means 'no reply yet,' not 'no work done.' Because the request, the work, and the acknowledgement are separate things across a network, any of them can be lost — so you must assume the work might have happened and make the retry safe."},
+      {t:"It means the like definitely failed, so it's always safe to just send it again.",
+       ok:false,
+       fb:"This is the exact bug. The work might have completed before the ACK was lost — retrying then applies the like twice. A timeout is not a clean 'no'; treating it as one duplicates writes."},
+      {t:"It means the leader is down, so you should fail the whole request immediately.",
+       ok:false,
+       fb:"One slow call doesn't mean the dependency is down — it could be a single stuck call or a dropped reply. Declaring a hard outage is the circuit breaker's job, and only after many failures, not one timeout."}
+    ]
+  },
+  {
+    stem: "Your framework defaults to a 1-second timeout on a call that normally returns in 10 ms (p99.9 = 200 ms). The leader stalls. Why is 1 s dangerous?",
+    options: [
+      {t:"Threads block on dead calls for a full second, so the 200-thread pool collapses from ~20,000 calls/s to ~200 — the whole app stops responding, not just likes.",
+       ok:true,
+       fb:"Exactly. Each thread does 1000/10 = 100 calls/s when healthy but only 1 call/s when every call hangs for 1 s — a 100× collapse. A timeout near p99.9 (~200 ms) frees threads ~5× faster so the app fails fast and recovers."},
+      {t:"1 s is fine — a longer timeout just means more calls eventually succeed.",
+       ok:false,
+       fb:"During a real stall the calls aren't going to succeed; they're going to hang until the deadline. The longer the deadline, the more threads pile up on dead calls, exhausting the pool and taking down everything the app serves."},
+      {t:"It's dangerous because 1 s is shorter than the p99.9 of 200 ms, so it kills healthy calls.",
+       ok:false,
+       fb:"The arithmetic is backwards: 1 s is much longer than 200 ms, so it doesn't kill healthy calls — it lets stuck calls linger. The risk here is thread exhaustion from waiting too long, not false failures from waiting too little."}
+    ]
+  },
+  {
+    stem: "You want retries to be safe to apply more than once. What makes recordLike idempotent, and what does it cost?",
+    options: [
+      {t:"Tag each logical like with a client-generated idempotency key reused on every retry; the server applies a key once and no-ops repeats. Cost: storing applied keys (memory + a hot-path lookup, with a TTL).",
+       ok:true,
+       fb:"Correct. The same action carries the same key across all its retries, so the server dedups it — count goes up exactly once no matter how many times you resend. The price is keeping the applied-key set around long enough to outlive any retry."},
+      {t:"Set a shorter timeout so the retry happens before the first call can finish.",
+       ok:false,
+       fb:"Timing can't make a non-idempotent operation safe — racing the original just risks applying it twice in parallel. Safety comes from the server recognizing a repeated logical action via its key, not from how fast you retry."},
+      {t:"Generate a fresh idempotency key on each retry so every attempt is uniquely tracked.",
+       ok:false,
+       fb:"A fresh key per attempt defeats the whole point — each retry looks like a brand-new action, so the dedup never fires and you still double-count. The key must identify the logical action and stay the same across its retries."}
+    ]
+  },
+  {
+    stem: "The leader is at 80% capacity and hiccups. Every failed call retries up to 3 times. What happens, and which combination of controls prevents it?",
+    options: [
+      {t:"A retry storm: offered load jumps toward 4× (1 + 3 attempts), pushing a near-full dependency far past capacity into a self-sustaining metastable failure. Prevent it with backoff + jitter + a retry budget, and a circuit breaker to fail fast when it's hard-down.",
+       ok:true,
+       fb:"Right. Instant 4× retries against a 25k ceiling means ~80k offered load — everything fails, everything retries, it stays dead. Backoff gives recovery room, jitter desynchronizes the crowd, a retry budget caps amplification near 1.1×, and the breaker stops calling a corpse."},
+      {t:"Nothing bad — retries always help because more attempts mean more successes.",
+       ok:false,
+       fb:"Retries help an isolated failure, but in aggregate they multiply load exactly when the dependency is already overloaded. Unbounded retries turn a brief hiccup into a full outage; they must be bounded by backoff, jitter, and a budget."},
+      {t:"Add more app-server threads so there's capacity to handle all the retries.",
+       ok:false,
+       fb:"More threads just let you fire even more retries at the struggling leader — it accelerates the storm. The bottleneck is the dependency's capacity, not your thread count; you have to reduce and space out the retries, not amplify them."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
