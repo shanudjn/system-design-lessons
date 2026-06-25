@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0008-rate-limiting.html">
+    <div class="num">LESSON 08</div>
+    <div class="title">Rate Limiting: Token Bucket, Leaky Bucket &amp; Distributed Counters</div>
+    <div class="blurb">One runaway API key, gated fairly. Size the limit (sustained rate + burst), watch the fixed-window boundary bug leak 2× traffic, walk the token bucket (burst then clamp) against the leaky bucket (smooth drip), then fix the 10× per-server leak with a centralized atomic counter — and shard or approximate when that store becomes the wall.</div>
+  </a>
   <a class="lesson" href="lessons/0007-designing-for-failure.html">
     <div class="num">LESSON 07</div>
     <div class="title">Designing for Failure: Timeouts, Retries, Idempotency &amp; Backpressure</div>

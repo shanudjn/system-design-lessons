@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 08 — Rate Limiting: Token Bucket, Leaky Bucket &amp; Distributed Counters</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 08 · Worked Example</div>
+  <h1>Rate Limiting: Token Bucket, Leaky Bucket &amp; Distributed Counters</h1>
+  <p class="lead">Our URL-shortener API offers a free tier: <b>60 requests per minute</b> per API key. One morning a single key — a runaway script — starts firing as fast as it can. Last lesson's backpressure decided <i>when</i> the system says "no" to protect itself. Rate limiting answers the next question: <b>who</b> gets to say how much, and <b>how</b> we enforce it fairly the instant a request arrives — before it touches a database, a queue, or a leader. This lesson takes ONE noisy key and traces every decision: how big the limit is, which counting algorithm we use (and the boundary bug that lets a sloppy one leak 2× the traffic), and why a limiter that works on one server quietly breaks across ten. We name the trade-off behind each.</p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0008-rate-limiting.html"</code></p>
+</header>
+
+<h2>The one request we'll trace</h2>
+<p>A client holding API key <code>k_42</code> sends <code>POST /shorten</code>. Before we do any real work, one gate must answer a yes/no question in well under a millisecond: <span class="key">has this key used up its allowance for the current slice of time?</span> If yes, we reject it immediately with HTTP <b>429 Too Many Requests</b> and never spend a database call on it. Here is the whole job on one screen.</p>
+
+<div class="diagram"><pre>
+  THE RATE-LIMIT GATE (decided before any real work)
+
+  k_42 ──POST /shorten──►  ┌──────────────────────┐
+                           │   RATE LIMITER        │   counter for k_42
+                           │   "tokens left > 0?"  │   ────────────────
+                           └──────────┬───────────┘   allowance: 60 / min
+                              yes ◄───┴───► no
+                               │             │
+                               ▼             ▼
+                         do the work     429 Too Many Requests
+                        (db, queue…)      Retry-After: 30s   ← cheap, instant
+
+  The gate protects everything DOWNSTREAM by spending almost nothing itself.
+</pre></div>
+
+<p class="note"><span class="key">A rate limiter is a cheap gate that caps how often one caller can act, so no single caller can starve the rest or topple shared infrastructure.</span> It is the front-door cousin of last lesson's load shedding: load shedding sheds <i>anyone</i> when the system is overloaded; rate limiting caps <i>each named caller</i> all the time, fairly, whether or not the system is busy.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Rate limit</b> — the maximum number of requests one caller may make per unit of time (e.g. 60/min).</li>
+  <li><b>Throttle</b> — to reject or delay a request because the caller is over its limit (the 429).</li>
+  <li><b>Burst</b> — a clump of requests arriving close together, faster than the sustained rate.</li>
+  <li><b>Token bucket</b> — an allowance modeled as tokens that refill over time; each request spends one.</li>
+  <li><b>Leaky bucket</b> — a queue that drains (does work) at a fixed steady rate, smoothing bursts out.</li>
+</ul>
+
+<h2>Move 1 — Estimate: how big is the limit, and what does breaking it cost?</h2>
+<p>A limit has two numbers, not one: a <b>sustained rate</b> (how fast you may go forever) and a <b>burst</b> (how much you may clump up momentarily). Pick them from what the protected resource can take and what a legitimate client actually needs.</p>
+
+<div class="card calc">
+  <p><b>Worked: sizing the free tier.</b> The downstream write path (leader + queue) safely handles <b>20,000 requests/second</b> across <i>all</i> callers (that was the ceiling we found in Lesson 07). We have <b>~100,000</b> free-tier keys. If we let each key sustain <b>1 req/s</b> (= our 60/min), worst case all keys go flat-out: 100,000 × 1 = <b>100,000 req/s</b> — 5× over the 20,000 ceiling. So the per-key limit alone isn't enough; it must be paired with a global cap. But for the <i>typical</i> case, a real client makes maybe a handful of calls then pauses, so 60/min with room to <b>burst ~60 at once</b> covers honest use while the runaway script slams into the wall on request 61.</p>
+</div>
+
+<p>And the cost of getting it wrong cuts both ways. Set the limit <b>too low</b> and you 429 paying customers doing nothing wrong — lost trust, support tickets. Set it <b>too high</b> (or enforce it loosely) and one runaway key consumes the capacity meant for thousands of others — the very starvation the gate exists to prevent.</p>
+
+<p class="note why"><b>Name the trade-off:</b> the limit is a dial between <b>false throttling</b> and <b>resource starvation</b>. The honest client and the abusive one are separated only by where you set the number and how tightly you count — so the counting algorithm in Move 2 matters as much as the number itself.</p>
+
+<h2>Move 2 — Model: counting requests (and the boundary bug)</h2>
+<p>The simplest counter is a <b>fixed window</b>: keep one integer per key for the current 60-second clock window; increment on each request; reset to zero when the window rolls over. It's one counter and one comparison — beautifully cheap. It also has a famous bug.</p>
+
+<div class="card calc">
+  <p><b>Worked: the fixed-window double burst.</b> Limit = 60 per 60-second window. A client sends <b>60 requests at 12:00:59</b> (all inside window <code>[12:00:00–12:01:00)</code>, all allowed) then <b>60 more at 12:01:00</b> (the counter just reset for window <code>[12:01:00–12:02:00)</code>, all allowed). That's <b>120 requests in about 2 seconds</b> straddling the boundary — <span class="key">2× the rate we promised to enforce</span>. The counter was never "wrong" inside either window; the windows simply don't see across their own edge.</p>
+</div>
+
+<div class="diagram"><pre>
+  FIXED WINDOW — bursts hide at the seam
+
+  window A [12:00:00 ───────────── 12:01:00) window B [12:01:00 ──────────
+                                  60 reqs │ 60 reqs
+                                  @ :59   │ @ :00
+                              ────────────┼────────────
+                                          ▲
+                                 120 reqs in ~2s — each window counted 60,
+                                 neither saw the other → promised 60, got 120
+</pre></div>
+
+<p>Two well-known fixes, then the one we'll actually trace:</p>
+<ul>
+  <li><b>Sliding-window log</b> — store the timestamp of every request and count how many fall in the last 60 s on each call. Exact, but you store and scan one entry per request — costly memory for a busy key.</li>
+  <li><b>Sliding-window counter</b> — keep the current and previous window counts and blend them by how far into the current window you are. Cheap and smooth; a good production default.</li>
+  <li><b>Token bucket</b> — model the allowance as a refilling reserve. It handles bursts <i>by design</i> and is what most APIs (and our trace) use, so we'll walk it in full.</li>
+</ul>
+
+<h2>Move 3 — Trace the paths: token bucket vs leaky bucket</h2>
+
+<h3>Path A — the token bucket (allow bursts, cap the average)</h3>
+<p>Picture a bucket that holds at most <b>B</b> tokens and refills at <b>r</b> tokens per second. Each request must take one token to proceed; if the bucket is empty, the request is throttled. Two numbers, two jobs: <span class="key">the capacity <b>B</b> sets the biggest burst; the refill rate <b>r</b> sets the sustained average.</span> For our free tier: <b>B = 60</b> tokens, <b>r = 1</b> token/second (= 60/min). The bucket starts full.</p>
+
+<div class="card calc">
+  <p><b>Worked: the runaway script meets the bucket.</b></p>
+  <p>t = 0.0 s — bucket full at <b>60</b>. The script fires 60 requests instantly. Each takes a token → <b>all 60 allowed</b>, bucket now <b>0</b>. (The burst is honored — that's the point.)<br>
+     t = 0.1 s — request 61 arrives. Bucket holds 0 (only 0.1 s × 1/s = 0.1 token refilled, not a whole one) → <b>throttled, 429</b>.<br>
+     t = 10 s — 10 seconds have refilled 10 × 1 = <b>10 tokens</b>. The script's next 10 requests pass; the 11th is throttled again.</p>
+  <p>Over a long minute the script can spend at most the <b>60</b> it started with plus <b>60</b> refilled = <b>120 in the first 60 s</b>, then a steady <b>60/min</b> forever after. <span class="key">Burst up to B once, then clamped to the refill rate r.</span> Honest clients who never burst never even notice the bucket.</p>
+</div>
+
+<div class="diagram"><pre>
+  TOKEN BUCKET  (B = 60 capacity, r = 1 token/sec)
+
+        refill 1 token/sec
+              │  drip
+              ▼
+        ┌───────────┐   take 1 token per request
+        │ ● ● ● ●    │   ─────────────────────────►  allowed
+        │ ● ● ●      │   bucket empty? ───────────►  429 throttled
+        └───────────┘
+   capacity B = biggest burst   ·   rate r = sustained average
+</pre></div>
+
+<p>The implementation is lazy and O(1): you don't run a timer adding tokens. You store <code>(tokens, last_refill_time)</code> and, on each request, add <code>(now − last_refill) × r</code> tokens (capped at B) before checking for one. Cheap enough for the hot path.</p>
+
+<h3>Path B — the leaky bucket (smooth everything to a steady drip)</h3>
+<p>A <b>leaky bucket</b> flips the picture: requests pour into a queue of fixed size and are <i>let out</i> — actually processed — at a constant rate, like water leaking from a hole. A burst fills the queue but the output stays a perfectly even stream; overflow past the queue size is dropped.</p>
+
+<div class="diagram"><pre>
+  TOKEN BUCKET                         LEAKY BUCKET
+  ─────────────                        ─────────────
+  burst of 60 → all 60 pass NOW        burst of 60 → queue fills, output
+  then clamp to r afterward            drips out at a fixed 1/s, smooth
+  spiky output, bursty-friendly        even output, burst latency added
+  good for APIs (let clients clump)    good for protecting a fragile
+                                        downstream that hates spikes
+</pre></div>
+
+<p class="note why"><b>Name the trade-off:</b> token bucket trades <b>smoothness for burst tolerance</b> — it lets a client clump requests (great for interactive APIs) but passes that spike straight downstream. Leaky bucket trades <b>burst tolerance for smoothness</b> — it guarantees a steady output rate (kind to a fragile dependency) but <i>adds latency</i> to bursts and drops the overflow. Choose by what you're protecting: token bucket when callers are bursty and downstream can absorb it; leaky bucket when downstream must never see a spike.</p>
+
+<h2>Move 4 — Find the next bottleneck: one limiter, ten servers</h2>
+<p>Everything above assumed <b>one</b> counter. In production our API runs on a fleet of servers behind a load balancer. If each server keeps its <i>own</i> local bucket for <code>k_42</code>, the limit silently multiplies.</p>
+
+<div class="card calc">
+  <p><b>Worked: the per-server leak.</b> We run <b>M = 10</b> API servers; the load balancer spreads <code>k_42</code>'s requests round-robin. Each server keeps a local 60/min bucket. The client sends 600/min; each server sees only 60 → each thinks the client is exactly at its limit → <b>all 600 are allowed</b>. The promised 60/min became <b>60 × 10 = 600/min</b> — <span class="key">the limit is 10× too loose, and it scales <i>looser</i> every time autoscaling adds a server</span>.</p>
+</div>
+
+<p>Two ways to fix it, each with a cost:</p>
+<ul>
+  <li><b>Divide the budget</b> — give each server <code>60 ÷ 10 = 6</code>/min. Simple, no shared state. But traffic is never perfectly even: if the balancer sends a client mostly to 3 servers, it gets throttled at 18/min while 42/min of its budget sits unused on idle servers. And M changes under autoscaling, so the per-server share keeps shifting.</li>
+  <li><b>Centralize the counter</b> — put one shared store (e.g. Redis) in front; every server does an <b>atomic</b> token-bucket update against the same key. Now all 10 servers see one true count for <code>k_42</code>. This is the accurate choice — and it must be atomic, or two servers read "1 token left" at once and both spend it (the exact <b>lost-update</b> race from Lesson 06; here a Lua script or atomic <code>INCR</code> makes the read-modify-write a single indivisible step).</li>
+</ul>
+
+<div class="diagram"><pre>
+  CENTRALIZED LIMITER (one true counter, atomic updates)
+
+  server 1 ─┐
+  server 2 ─┤   atomic "take a token for k_42"
+   …        ├────────────────►  ┌──────────────┐
+  server 10 ┘                   │  REDIS        │  k_42 → tokens, ts
+                                └──────────────┘  one source of truth
+            every server sees the SAME count → limit holds at exactly 60/min
+</pre></div>
+
+<p>But the centralized store is now on the hot path of <i>every</i> request — and that's the next wall.</p>
+
+<div class="card calc">
+  <p><b>Worked: the limiter store becomes the bottleneck.</b> The whole fleet handles <b>200,000 req/s</b>, and <i>every</i> request must consult the limiter first. A single Redis node tops out near <b>~100,000 simple ops/s</b> — so one central node is already <span class="key">2× over capacity</span> before doing any real work. Two escapes, both old friends: <b>(1) shard the limiter by key</b> across many nodes (consistent hashing from Lesson 04) so the 200k spreads out — but a single celebrity key doing 50k/s still pins one shard. <b>(2) go approximate:</b> let each server keep a <i>local</i> bucket holding a slice of the global budget and reconcile with the central count every second. That trades a small, bounded overshoot at the edges for a limiter that scales — the same <b>exact-vs-scalable</b> bargain we struck with the sharded counter in Lesson 06.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> distributed rate limiting is a dial between <b>accuracy and scalability</b>. A single shared counter is exact but a throughput bottleneck and a single point of failure; per-server or approximate counters scale freely but let the real limit drift a little. As everywhere in this course, <span class="key">there is no "correct" — only the overshoot you can tolerate versus the scale you must reach.</span></p>
+
+<h2>Where we landed</h2>
+<p>We took one noisy API key and built a fair gate in front of everything. <b>Estimate</b> sized the limit from two numbers — a sustained rate (1 req/s) and a burst (~60) — chosen against the downstream ceiling, and named the dial: false throttling vs starvation. <b>Model</b> showed the cheap fixed-window counter and its boundary bug — 120 requests across a seam where we promised 60 — and the sliding-window and token-bucket fixes. <b>Tracing</b> the paths walked the <b>token bucket</b> (capacity = burst, refill = average; burst once then clamp to r) against the <b>leaky bucket</b> (smooth output, burst latency) and named the smoothness-vs-burst trade. The <b>next bottleneck</b> — one limiter across ten servers — exposed the 10× per-server leak, fixed by a centralized atomic counter (beware the lost-update race), which itself became a throughput wall solved by sharding or approximation. The thread through all of it: <span class="key">a rate limiter is a cheap gate that makes one caller's appetite everyone else's problem no longer — and counting it correctly at scale is its own small distributed-systems problem.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lessons build directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>09 — Message queues, deeper:</b> at-least-once vs exactly-once, ordering, and dead-letter queues, now that idempotency and backpressure are core.</p>
+  <p style="margin:.2rem 0">• <b>Leader election &amp; CAP in practice:</b> that single "leader" and single Redis we keep leaning on — how replicas pick a new one without two of them (split-brain), and what a partition really forces you to give up.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">rate limit</span>
+    <span class="pill">throttle</span>
+    <span class="pill">429 Too Many Requests</span>
+    <span class="pill">burst</span>
+    <span class="pill">sustained rate</span>
+    <span class="pill">fixed window</span>
+    <span class="pill">boundary burst</span>
+    <span class="pill">sliding window</span>
+    <span class="pill">token bucket</span>
+    <span class="pill">leaky bucket</span>
+    <span class="pill">refill rate</span>
+    <span class="pill">distributed counter</span>
+    <span class="pill">atomic update</span>
+    <span class="pill">approximate limiting</span>
+    <span class="pill">accuracy vs scalability</span>
+  </p>
+  <p>That's Lesson 08, built straight on the load shedding and idempotency from Lesson 07, the lost-update race from Lesson 06, and consistent hashing from Lesson 04. <b>Ask me follow-ups</b> — e.g. "show the token-bucket refill math in pseudocode", "why is a sliding-window counter smoother than a fixed window?", "how do you write the atomic token-bucket check as a Redis Lua script?", "when would you pick leaky bucket over token bucket?", or "how much overshoot does the approximate local-bucket approach actually allow?" When you're ready, say <b>next</b> and we'll go deeper on <i>message queues — exactly-once, ordering, and dead-letter queues</i>.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your limiter uses a fixed 60-second window: one counter per key, reset each minute. A client sends 60 requests at 12:00:59 and 60 more at 12:01:00. What happens, and why?",
+    options: [
+      {t:"All 120 are allowed — 60 land in the window ending at 12:01:00 and 60 in the next window, so ~120 pass in ~2 seconds even though the limit is 60/min. Each window counted correctly but neither saw across the boundary.",
+       ok:true,
+       fb:"Right — the boundary burst. The fixed-window counter is exact inside each window and blind at the seam, so a client straddling the edge gets up to 2× the promised rate. Sliding-window or token-bucket counting closes the seam."},
+      {t:"Only the first 60 are allowed; the second 60 are throttled because the key already hit its limit this minute.",
+       ok:false,
+       fb:"The window resets at 12:01:00, so the second batch starts a fresh count from zero — they're not blocked. That reset is exactly why the boundary burst leaks 2× the rate."},
+      {t:"All 120 are throttled because 120 exceeds the 60/min limit overall.",
+       ok:false,
+       fb:"The fixed-window limiter doesn't look at a rolling 60 seconds — it only counts within the current clock window and resets. Each window saw just 60, so it allowed both batches; nothing is throttled."}
+    ]
+  },
+  {
+    stem: "In a token bucket, what do the capacity B and the refill rate r each control?",
+    options: [
+      {t:"B sets the biggest burst the client can spend at once; r sets the sustained average rate over time. With B=60, r=1/s, a client can fire 60 instantly, then is clamped to ~1/s.",
+       ok:true,
+       fb:"Exactly. The two knobs decouple burst from average: a full bucket lets a clump of B through immediately, after which requests can only proceed as fast as r refills tokens. That's why token buckets suit bursty API clients."},
+      {t:"B sets how long a request waits in the queue; r sets how many servers process it.",
+       ok:false,
+       fb:"That's closer to a leaky-bucket-as-queue mental model, and servers aren't part of the algorithm at all. In a token bucket nothing queues — a request either takes a token now or is throttled now."},
+      {t:"B and r both set the same thing (the rate); you only need one of them.",
+       ok:false,
+       fb:"They're independent and that independence is the point. Capacity controls burst size, refill controls the long-run average — change one without the other and you get a different burst/average trade entirely."}
+    ]
+  },
+  {
+    stem: "You must protect a fragile downstream service that misbehaves whenever it sees a sudden spike of requests. Token bucket or leaky bucket, and what's the cost?",
+    options: [
+      {t:"Leaky bucket — it drains at a fixed steady rate, so a burst gets smoothed into an even stream the downstream can handle. Cost: bursts wait in the queue (added latency), and overflow past the queue is dropped.",
+       ok:true,
+       fb:"Correct. Leaky bucket guarantees a smooth output rate, which is exactly what a spike-sensitive dependency needs. You pay for it with burst latency and dropped overflow — you've traded burst tolerance for smoothness."},
+      {t:"Token bucket — it lets the burst through immediately so the client is never delayed.",
+       ok:false,
+       fb:"That's the wrong direction: a token bucket passes the burst straight downstream, which is precisely what this fragile service can't take. Token bucket optimizes for the client's burstiness, not the downstream's smoothness."},
+      {t:"Either one — they produce identical output, so it doesn't matter.",
+       ok:false,
+       fb:"They differ exactly on output shape: token bucket emits spiky bursts, leaky bucket emits a steady drip. For a spike-sensitive downstream that difference is the whole decision."}
+    ]
+  },
+  {
+    stem: "You move the API to 10 servers behind a load balancer, each keeping its own local 60/min bucket per key. A client now gets ~600/min through. What's the fix, and what new problem does the clean fix create?",
+    options: [
+      {t:"Local buckets multiply the limit by the server count, so centralize one counter in a shared store with atomic updates — all servers see the true count. New problem: that store is now on every request's hot path and becomes a throughput bottleneck and single point of failure, pushing you to shard or approximate.",
+       ok:true,
+       fb:"Right. Per-server counters leak by a factor of M and drift as autoscaling changes M. A centralized atomic counter restores accuracy but concentrates all traffic on one store — so you shard it (consistent hashing) or go approximate with local buckets reconciled periodically, trading a little overshoot for scale."},
+      {t:"Add more servers so there's more total capacity for the requests.",
+       ok:false,
+       fb:"More servers makes it strictly worse — each new server adds another independent 60/min bucket, so the effective limit climbs with the fleet size. The bug is the per-server counting, not a lack of capacity."},
+      {t:"Just divide nothing and trust the load balancer to keep each client on one server forever.",
+       ok:false,
+       fb:"Pinning every client to one server (sticky routing) wrecks load balancing and still fails when that server is added, removed, or restarted. The robust fixes are a shared atomic counter or an approximate distributed scheme, each with its own accuracy-vs-scale cost."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

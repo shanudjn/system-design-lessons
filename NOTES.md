@@ -60,13 +60,22 @@
    fails fast on a dead dependency; next wall = unbounded queue → backpressure +
    load shedding (honest 429). (Lesson 0007)
 
+8. ✅ **Rate limiting** — the free-tier API key (60/min): size the limit as a
+   sustained rate + burst against the downstream ceiling; the fixed-window
+   boundary bug (120 across the seam, promised 60) → sliding window; token
+   bucket (capacity=burst, refill=average; burst once then clamp to r) vs leaky
+   bucket (smooth drip, burst latency); next wall = the 10× per-server counter
+   leak → centralized atomic counter (lost-update race) → shard/approximate
+   (accuracy vs scalability). (Lesson 0008)
+
 ### Advanced topics (queued so the course never runs dry)
-8. Rate limiting — token bucket vs leaky bucket, distributed counters.
 9. Message queues — at-least-once vs exactly-once, ordering, dead-letter queues.
 10. Leader election & coordination — quorums, heartbeats, split-brain.
 11. CAP in practice — what you actually give up under partition.
 12. DB indexing & search systems — B-trees, inverted indexes, when an index hurts.
 13. Idempotency — making retried writes safe (dedup keys, exactly-once effects).
+14. CDN design — edge caching, cache keys, invalidation, origin shielding.
+15. Notification/feed fan-out — push vs pull, fan-out-on-write vs read.
 
 ## Lesson format conventions
 - Four reusable "moves" framing introduced in Lesson 01: estimate → model →
