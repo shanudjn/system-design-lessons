@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0009-message-queues.html">
+    <div class="num">LESSON 09</div>
+    <div class="title">Message Queues: The Log, Exactly-Once &amp; Ordering</div>
+    <div class="blurb">One 100k-events/sec click stream through a log-based queue. Size it (20 MB/s, 12 TB, 20 partitions), see why a log keeps data and each reader tracks its own offset, walk the three delivery semantics (at-most-once loses, at-least-once duplicates, "exactly-once" = at-least-once + idempotency), then partition-by-key for ordering — and pay for it with a hot partition, consumer lag, and the poison message a DLQ quarantines.</div>
+  </a>
   <a class="lesson" href="lessons/0008-rate-limiting.html">
     <div class="num">LESSON 08</div>
     <div class="title">Rate Limiting: Token Bucket, Leaky Bucket &amp; Distributed Counters</div>

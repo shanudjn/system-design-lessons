@@ -69,7 +69,14 @@
    (accuracy vs scalability). (Lesson 0008)
 
 ### Advanced topics (queued so the course never runs dry)
-9. Message queues — at-least-once vs exactly-once, ordering, dead-letter queues.
+9. ✅ **Message queues** — one 100k-events/sec click stream through a log:
+   estimate (20 MB/s, 12 TB/7d, 20 partitions = parallelism vs order); log vs
+   mailbox (events kept, per-group committed offset, the work→commit danger gap);
+   three delivery semantics (at-most-once loses / at-least-once duplicates /
+   "exactly-once" = at-least-once + idempotency key or transactional offset+output,
+   no exactly-once on the wire); partition-by-key for per-key order → hot partition;
+   next walls = consumer lag (the number to alarm on), poison message blocking a
+   partition → DLQ, rebalance storm → coordination. (Lesson 0009)
 10. Leader election & coordination — quorums, heartbeats, split-brain.
 11. CAP in practice — what you actually give up under partition.
 12. DB indexing & search systems — B-trees, inverted indexes, when an index hurts.

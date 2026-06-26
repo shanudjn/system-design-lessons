@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 09 — Message Queues: The Log, Exactly-Once &amp; Ordering</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 09 · Worked Example</div>
+  <h1>Message Queues: The Log, Exactly-Once &amp; Ordering</h1>
+  <p class="lead">In Lesson 05 we pushed a slow bulk job onto a queue and let workers drain it. That bought us asynchrony, and we met its sharp edges in passing — at-least-once delivery, duplicates, dead-letter queues. This lesson takes ONE high-volume event stream — every redirect on our URL shortener emits a <b>click event</b> — and traces it through a <b>log-based</b> message queue end to end. We'll see why a log is not the same shape as a mailbox, why "exactly-once delivery" is a polite fiction that real systems quietly replace with something honest, and why the simple act of <i>counting in order</i> forces a trade you can't dodge. We name the trade-off behind every choice.</p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0009-message-queues.html"</code></p>
+</header>
+
+<h2>The one stream we'll trace</h2>
+<p>Every time someone follows a short link, the redirect server emits a tiny <b>event</b> — a fact that already happened: <code>{code:"a9Z", ts:…, country:"IN", paid:true}</code>. Two downstream jobs consume the same stream: an <b>analytics</b> consumer that increments a per-link click counter, and a <b>billing</b> consumer that meters paid customers' usage. Neither can keep up if it has to run inline on the redirect's hot path, so the events go into a <b>message queue</b> in the middle. Here is the whole shape on one screen.</p>
+
+<div class="diagram"><pre>
+  ONE EVENT STREAM, TWO INDEPENDENT READERS
+
+  redirect servers          THE LOG (per-key, append-only, kept 7 days)
+  (producers)        partition 0:  [e0][e1][e2][e3][e4][e5]►   append ──►
+      │  emit                         ▲committed            ▲head
+      ├──────────────►  partition 1:  [.][.][.][.][.]►
+      │                partition 2:  [.][.][.][.]►
+      ▼                       …  (20 partitions total)
+                                 │                    │
+                  ┌──────────────┘                    └───────────────┐
+                  ▼ consumer group "analytics"        ▼ consumer group "billing"
+            count clicks per code                meter usage per paid customer
+            (its OWN offset per partition)       (its OWN offset, reads same data)
+
+  The log is kept, not consumed-away. Each group remembers HOW FAR it has read.
+</pre></div>
+
+<p class="note"><span class="key">A message queue is a buffer in the middle that lets producers and consumers run at different speeds and survive each other's outages.</span> A <b>log-based</b> queue (think Kafka) is a specific shape: an append-only sequence of events, kept for a retention window, where each reader tracks its own position — so the data isn't deleted when one reader reads it, and a second reader (or the same reader after a crash) can re-read from any point. That last property is the whole reason this lesson exists.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Event</b> — an immutable record of something that already happened (a click), not a command to do something.</li>
+  <li><b>Log</b> — an append-only, ordered sequence of events. New events go on the end; nothing is edited.</li>
+  <li><b>Offset</b> — a position in the log: "reader X has consumed up to event #4,217." Just a number.</li>
+  <li><b>Partition</b> — one independent sub-log. The stream is split into many so it can be read in parallel.</li>
+  <li><b>Consumer group</b> — a set of workers that share the partitions of a stream and track one set of offsets together.</li>
+  <li><b>Commit</b> — to durably record "I've processed up to this offset," so a restart resumes from there.</li>
+</ul>
+
+<h2>Move 1 — Estimate: how much stream, how many partitions?</h2>
+<p>Sizing comes first, because it decides the shape of everything downstream. Two numbers drive a log: the <b>throughput</b> (events/sec) and the <b>retention</b> (how long you keep them). From those fall the partition count and the storage bill.</p>
+
+<div class="card calc">
+  <p><b>Worked: sizing the click stream.</b></p>
+  <p>Peak redirects = <b>100,000 clicks/second</b>. One event each, ~<b>200 bytes</b> on the wire.</p>
+  <p>• Ingest rate = 100,000 × 200 B = <b>20,000,000 B/s = 20 MB/s</b>.<br>
+     • Events per day = 100,000 × 86,400 s = <b>8.64 billion events/day</b>.<br>
+     • Retention = 7 days. Storage = 20 MB/s × 86,400 s/day × 7 = 20 × 10⁶ × 604,800 ≈ <b>12.1 TB</b> for the full window (before replication).</p>
+  <p><b>Partitions.</b> One consumer instance can process about <b>10,000 events/sec</b> (it does a counter update and a network write per event). To absorb 100,000/s we need at least 100,000 ÷ 10,000 = <b>10</b> consumers reading in parallel — and a partition can only be read by <i>one</i> consumer in a group at a time, so we need <b>≥ 10 partitions</b>. Round up to <b>20</b> for headroom and future growth: each partition then carries 100,000 ÷ 20 = <b>5,000 events/s</b>, a comfortable half of one consumer's ceiling.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> the partition count is a dial between <b>parallelism</b> and <b>order</b>. More partitions = more consumers can run at once = more throughput — but ordering is only ever guaranteed <i>within</i> a single partition, never across them. So every partition you add buys speed and spends global order. We'll feel the bite of that in Move 3.</p>
+
+<h2>Move 2 — Model: the log, the offset, the consumer group</h2>
+<p>A traditional queue (think a mailbox or SQS) <i>deletes</i> a message once a worker acknowledges it — the message is gone, and a second team that wanted the same data is out of luck. A log does the opposite: it <b>keeps</b> every event for the whole retention window and hands each reader a bookmark.</p>
+
+<table>
+  <tr><th>&nbsp;</th><th>Traditional queue (mailbox)</th><th>Log (this lesson)</th></tr>
+  <tr><td>After read</td><td>message deleted</td><td>event stays for the retention window</td></tr>
+  <tr><td>Position</td><td>the broker tracks per-message ack</td><td>each consumer group tracks one <code>offset</code> per partition</td></tr>
+  <tr><td>Re-read / replay</td><td>not possible once acked</td><td>rewind the offset and re-read</td></tr>
+  <tr><td>Two independent readers</td><td>need two copies / fan-out</td><td>two groups read the same log at their own pace</td></tr>
+</table>
+
+<p>The single most important variable in the whole design is the <b>committed offset</b>: the last position a consumer group has durably said "done" up to. A crash doesn't lose your place — you resume from the committed offset. But <i>when</i> you commit, relative to <i>when</i> you do the work, is the entire game of delivery semantics. Watch this gap.</p>
+
+<div class="diagram"><pre>
+  ONE PARTITION, ONE CONSUMER — the order of two steps decides everything
+
+     read e7 ─► DO THE WORK (update counter) ─► COMMIT offset=7
+               └───────────── the danger gap ─────────────┘
+                  a crash anywhere in here changes the semantics:
+                    commit BEFORE work  → crash loses e7   (at-most-once)
+                    commit AFTER  work  → crash repeats e7 (at-least-once)
+</pre></div>
+
+<h2>Move 3 — Trace the paths</h2>
+
+<h3>Path A — delivery semantics (the order of two steps)</h3>
+<p>There are exactly three things that can happen to an event when a consumer can crash mid-flight. They differ only by where you put the commit.</p>
+
+<div class="card calc">
+  <p><b>Worked: the billing consumer crashes.</b> It reads click <code>e7</code> for a paid customer and must (1) add a <b>$0.001</b> charge and (2) commit offset 7.</p>
+  <p><b>At-most-once</b> — commit <i>first</i>, then charge. The worker commits offset 7, then crashes before the charge lands. On restart it resumes at offset 8. The charge is <span class="key">lost</span> — the customer used the link free. Fast, no duplicates, but it drops work on failure.</p>
+  <p><b>At-least-once</b> — charge <i>first</i>, then commit. The worker adds the $0.001 charge, then crashes before committing. On restart it re-reads offset 7 and charges <span class="key">again</span> — the customer is billed twice for one click. Nothing is ever lost, but duplicates happen on every crash/retry.</p>
+</div>
+
+<p>Real systems almost always choose <b>at-least-once</b>, because losing data silently is worse than handling a duplicate you can see. But then you owe a defense against the duplicate. That defense is the thing everyone <i>calls</i> "exactly-once" — and it is worth saying plainly what that phrase really means.</p>
+
+<div class="card calc">
+  <p><b>Worked: there is no exactly-once <i>delivery</i>.</b> Picture the worker finishing the charge and sending "commit offset 7" to the broker. The network drops the acknowledgement. Did the broker record the commit or not? The worker cannot tell. Its only two moves are: assume yes (and risk having lost the commit → at-most-once) or assume no and resend / re-read (→ at-least-once). <span class="key">Across an unreliable network you must pick one; "exactly-once on the wire" is not on the menu.</span> This is the same two-generals impossibility we keep bumping into.</p>
+  <p><b>So how do systems advertise "exactly-once"?</b> They give you <b>at-least-once delivery + a way to make the duplicate harmless</b> — sometimes called <b>effectively-once</b>. Two honest implementations:</p>
+  <p>• <b>Idempotent effect</b> — tag each event with a unique <code>event_id</code> and have the consumer record processed IDs (a dedup set / a unique key on the charge row). A re-delivered <code>e7</code> finds its ID already present and skips the second charge. (This is exactly the idempotency key from Lessons 05 and 07, applied to the consumer.)<br>
+     • <b>Transactional commit</b> — write the output <i>and</i> the new offset in one atomic transaction, so either both land or neither does. A crash can never leave "charged but not committed." This is what brokers mean by built-in "exactly-once" — it works only when the output store can share the transaction.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> delivery semantics is a dial between <b>lost work</b> and <b>duplicate work</b>. At-most-once never duplicates but drops on failure; at-least-once never drops but duplicates on failure. There is no third native option — "exactly-once" is at-least-once with the duplicate neutralized by idempotency or a shared transaction, and you pay for it in dedup storage or a tighter coupling to the output store.</p>
+
+<h3>Path B — ordering (and what it costs)</h3>
+<p>Some work doesn't care about order: incrementing a click counter is <b>commutative</b> — <code>+1</code> then <code>+1</code> gives the same total in any order. But suppose we also stream <b>link-lifecycle</b> events — <code>created → disabled → re-enabled</code> for a code. Apply those out of order and the link ends up in the wrong final state (disabled when it should be live). Order matters per code, and a log only promises order <b>within one partition</b>.</p>
+
+<div class="diagram"><pre>
+  PARTITION BY KEY  →  all events for one code land in one partition, in order
+
+   hash("a9Z") % 20 = 3   ┌► partition 3:  created ─ disabled ─ enabled   ✓ in order
+   hash("a9Z") % 20 = 3   │
+   every "a9Z" event ─────┘   (same key → same partition → consumed in sequence)
+
+   RANDOM partitioning      → "a9Z" events scatter across partitions,
+                              consumed in parallel → final state can be WRONG
+</pre></div>
+
+<p>The fix is to <b>partition by key</b>: choose the partition from <code>hash(code) % 20</code>, so every event for code <code>a9Z</code> is pinned to the same partition and read in the order it was produced. We get per-key ordering for free. But pinning a key to a partition is exactly the move that creates a <b>hot partition</b>.</p>
+
+<div class="card calc">
+  <p><b>Worked: the celebrity link.</b> A single viral code is being clicked <b>30,000 times/second</b> during a campaign. With partition-by-key, all 30,000/s hash to <i>one</i> partition. That partition's lone consumer tops out at <b>10,000 events/s</b>, so it falls behind by 20,000 events every second while the other 19 partitions sit half-idle. <span class="key">Ordering forced the hot key onto one lane, and one lane can't be widened.</span> Random partitioning would have spread those 30,000/s evenly — at the cost of the per-code ordering we needed.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> ordering vs load spread. Partition-by-key buys per-key order and pays with hot partitions (the same hot-key problem from Lessons 03 and 06, wearing a new hat). Random partitioning buys even load and pays with lost ordering. You only get to keep one for any given key — so order <i>only</i> the keys that truly need it, and let the commutative ones (like our click count) spread freely.</p>
+
+<h2>Move 4 — Find the next bottleneck: lag, poison, and rebalance</h2>
+<p>The log happily buffers everything; the danger is on the read side. Three walls show up in order.</p>
+
+<h3>Consumer lag — the gap between head and committed</h3>
+<div class="card calc">
+  <p><b>Worked: a producer spike opens a gap.</b> A campaign pushes producers to <b>150,000 events/s</b> while consumers max out at 20 partitions × 5,000/s = <b>100,000/s</b>. Lag grows at 150,000 − 100,000 = <b>50,000 events/sec</b>. After one minute of spike the backlog is 50,000 × 60 = <b>3,000,000 events</b> — that's the <b>consumer lag</b>. The log stores it fine (3M × 200 B = 600 MB, trivial against 12 TB), but end-to-end latency balloons: an event now waits behind 3M others. When the spike ends and producers fall to 80,000/s, drain rate = 100,000 − 80,000 = <b>20,000/s</b>, so clearing 3M takes 3,000,000 ÷ 20,000 = <b>150 seconds</b>. Lag is the single number to alarm on: if it only ever grows, consumers are permanently too slow and no buffer saves you.</p>
+</div>
+
+<h3>The poison message — one event that blocks a whole partition</h3>
+<p>In a log you can't just "skip" a bad message the way a mailbox can hide one. If event <code>e7</code> is malformed and the consumer throws every time it tries, it can't advance the offset past 7 without either losing order or looping forever — and <span class="key">every event behind it in that partition is now stuck</span>. One bad event has stalled 5,000 events/second.</p>
+<p>The fix is the <b>dead-letter queue (DLQ)</b> from Lesson 05, applied here: retry <code>e7</code> a bounded number of times (say 3); if it still fails, write it to a separate DLQ topic for humans to inspect, <i>then commit offset 7 and move on</i>. The partition unblocks; the poison is quarantined, not lost.</p>
+
+<div class="diagram"><pre>
+  POISON HANDLING — bound the retries, quarantine, then advance
+
+   e7 fails ─► retry 1 ─► retry 2 ─► retry 3 ─► still failing?
+                                                   │
+                                       ┌───────────┴───────────┐
+                                       ▼                       ▼
+                              copy e7 → DLQ topic     commit offset 7, read e8
+                              (humans inspect)        (partition flows again)
+</pre></div>
+
+<h3>The rebalance storm — and the next course</h3>
+<p>When a consumer crashes or you add one, the group must reassign partitions — a <b>rebalance</b>. During it, consumers briefly stop. If a flaky consumer flaps in and out, the group rebalances over and over and barely makes progress — a small <i>coordination</i> problem: who owns which partition, and who decides? That question — electing a coordinator, agreeing on membership without two leaders disagreeing (split-brain) — is its own subject, and it's exactly where we go next.</p>
+
+<h2>Where we landed</h2>
+<p>We took one 100,000-events/sec click stream and ran it through a log. <b>Estimate</b> sized it — 20 MB/s, 12 TB over 7 days — and set 20 partitions, naming the parallelism-vs-order dial. <b>Model</b> drew the log against a mailbox: events kept, each group tracking its own committed offset, with the danger gap between doing work and committing. <b>Tracing the paths</b> walked the three delivery semantics (at-most-once loses, at-least-once duplicates, "exactly-once" = at-least-once + idempotency or a shared transaction — there is no exactly-once on the wire), then ordering: partition-by-key buys per-key order and pays with a hot partition. The <b>next bottleneck</b> was the read side — consumer lag as the one number to alarm on, the poison message that blocks a partition until a DLQ quarantines it, and the rebalance storm that opens the door to coordination. The thread through all of it: <span class="key">a log is just an ordered list of facts plus a bookmark per reader — and almost every hard question is really "what happens to the bookmark when something crashes?"</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lessons build directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>10 — Leader election &amp; coordination:</b> the rebalance we just hit, generalized — heartbeats, quorums, and how a group picks ONE leader without two of them claiming the crown (split-brain).</p>
+  <p style="margin:.2rem 0">• <b>CAP in practice:</b> the partition that splits our consumers from the broker — what you are actually forced to give up, and why "exactly-once" and "always available" can't both be free.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">message queue</span>
+    <span class="pill">log</span>
+    <span class="pill">event</span>
+    <span class="pill">offset</span>
+    <span class="pill">partition</span>
+    <span class="pill">consumer group</span>
+    <span class="pill">committed offset</span>
+    <span class="pill">retention</span>
+    <span class="pill">at-most-once</span>
+    <span class="pill">at-least-once</span>
+    <span class="pill">exactly-once</span>
+    <span class="pill">effectively-once</span>
+    <span class="pill">idempotency</span>
+    <span class="pill">transactional commit</span>
+    <span class="pill">partition-by-key</span>
+    <span class="pill">hot partition</span>
+    <span class="pill">consumer lag</span>
+    <span class="pill">poison message</span>
+    <span class="pill">dead-letter queue</span>
+    <span class="pill">rebalance</span>
+    <span class="pill">replay</span>
+  </p>
+  <p>That's Lesson 09, built straight on the queues and DLQs of Lesson 05, the idempotency keys of Lessons 05 and 07, and the hot-key problem from Lessons 03 and 06. <b>Ask me follow-ups</b> — e.g. "show the consumer loop with the commit-after-work pattern in pseudocode", "how does a dedup set avoid growing forever?", "what exactly does a broker's transactional 'exactly-once' require of the output store?", "why can't you just skip a poison message in a log?", or "how do you pick a good partition key to avoid hot partitions?" When you're ready, say <b>next</b> and we'll go deeper on <i>leader election &amp; coordination — heartbeats, quorums, and split-brain</i>.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your billing consumer reads click e7, adds the charge, then crashes BEFORE committing offset 7. On restart it resumes from the committed offset (6). What happened and what semantic is this?",
+    options: [
+      {t:"It re-reads e7 and adds the charge a second time — the customer is billed twice. This is at-least-once delivery: work is never lost, but a crash between doing the work and committing produces a duplicate.",
+       ok:true,
+       fb:"Right. Committing AFTER the work means a crash in the gap replays the event. Nothing is lost (good), but you now owe a defense against the duplicate — an idempotency key on the charge, or a transaction that writes charge+offset together."},
+      {t:"The charge is lost, because the crash rolled back everything including the charge.",
+       ok:false,
+       fb:"The charge already landed before the crash — only the commit was missed. Losing the charge would be at-most-once, which happens when you commit BEFORE doing the work. Here the work is done and will be repeated, not lost."},
+      {t:"Nothing happens twice — the broker guarantees exactly-once delivery, so e7 can never be re-read.",
+       ok:false,
+       fb:"There is no exactly-once delivery across a network. The consumer committed nothing for e7, so on restart it must re-read it. 'Exactly-once' is really at-least-once plus idempotency or a shared transaction — not a wire guarantee."}
+    ]
+  },
+  {
+    stem: "A teammate says 'just turn on exactly-once so we stop seeing duplicate charges.' What's the accurate way to deliver that?",
+    options: [
+      {t:"There's no exactly-once on the wire; keep at-least-once delivery and make the duplicate harmless — tag each event with a unique id and dedup on the consumer (or write the output and the offset in one atomic transaction). That's 'effectively-once.'",
+       ok:true,
+       fb:"Exactly. The network can always drop an ack, so you can't avoid a possible re-delivery. You neutralize it: an idempotency key makes the second charge a no-op, or a transactional write of (charge + new offset) makes 'charged but not committed' impossible."},
+      {t:"Switch the consumer to at-most-once so a message is never processed twice.",
+       ok:false,
+       fb:"At-most-once stops duplicates by committing before the work — but then a crash LOSES the charge entirely. You've traded double-billing for silent free usage, which for billing is usually worse, not better."},
+      {t:"Add more partitions; with enough parallelism each event is only seen once.",
+       ok:false,
+       fb:"Partitions are about throughput and ordering, not delivery semantics. They don't change whether a crash between work and commit replays an event. The duplicate comes from the commit gap, and only idempotency or a transaction closes it."}
+    ]
+  },
+  {
+    stem: "Link-lifecycle events (created → disabled → enabled) for code a9Z must be applied in order, but click events for the same code only need counting. How do you partition, and what's the cost?",
+    options: [
+      {t:"Partition the lifecycle events BY KEY (hash the code) so all of a9Z's events land in one partition and are read in order. Cost: a hot code concentrates all its traffic on one partition, and that single consumer can't be widened — a hot partition.",
+       ok:true,
+       fb:"Correct. A log only orders within a partition, so per-key order means pinning a key to one partition. That's the right call for lifecycle state, but it re-creates the hot-key problem: a viral code overloads one lane while others idle. Counts, being commutative, can partition randomly and spread freely."},
+      {t:"Partition everything randomly for maximum even load — ordering sorts itself out at the consumer.",
+       ok:false,
+       fb:"Random partitioning scatters a9Z's lifecycle events across partitions read in parallel, so 'disabled' and 'enabled' can be applied out of order and the link ends in the wrong state. Ordering does NOT sort itself out; the log only guarantees order within a single partition."},
+      {t:"Use one single partition for the whole stream so global order is guaranteed.",
+       ok:false,
+       fb:"One partition does give total order, but it caps you at a single consumer (~10,000/s) for a 100,000/s stream — you'd fall behind 10×. You only need per-key order, not global order, so partition-by-key gives ordering where it matters without throwing away parallelism."}
+    ]
+  },
+  {
+    stem: "A malformed event e7 makes the consumer throw every time, and the partition stops advancing past offset 7. What's the right fix?",
+    options: [
+      {t:"Retry e7 a bounded number of times; if it still fails, copy it to a dead-letter queue for humans, then commit offset 7 and move on. The partition unblocks and the poison is quarantined, not lost.",
+       ok:true,
+       fb:"Right. In a log you can't selectively hide one message, so a poison event stalls everything behind it. Bounding retries then routing to a DLQ lets you advance the offset while preserving the bad event for inspection — the same DLQ pattern from Lesson 05."},
+      {t:"Skip e7 by jumping the offset ahead and never look at it again.",
+       ok:false,
+       fb:"Silently skipping advances the offset but throws the event away with no record — you lose data you may need, and you learn nothing about the bug. The DLQ keeps the event for inspection while still unblocking the partition; that's the difference between quarantine and data loss."},
+      {t:"Keep retrying e7 forever until it eventually succeeds.",
+       ok:false,
+       fb:"If e7 is malformed it will never succeed, so infinite retries block the partition permanently — one bad event stalls 5,000 events/second indefinitely. You must bound the retries and route the failure aside so the rest of the stream can flow."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
