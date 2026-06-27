@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0010-leader-election.html">
+    <div class="num">LESSON 10</div>
+    <div class="title">Leader Election &amp; Coordination: One Leader, No Split-Brain</div>
+    <div class="blurb">Five nodes must run a billing job exactly once. Size the failover clock (1 s heartbeat, 3 s timeout, ~3.5 s failover) and see why a too-short timeout makes leadership flap; learn terms and one-vote-per-term; watch a majority make two leaders mathematically impossible when the network splits (two groups of 3 in a set of 5 must overlap); fence the zombie leader by epoch; and learn why coordination clusters run 3, 5, or 7 — never 6.</div>
+  </a>
   <a class="lesson" href="lessons/0009-message-queues.html">
     <div class="num">LESSON 09</div>
     <div class="title">Message Queues: The Log, Exactly-Once &amp; Ordering</div>

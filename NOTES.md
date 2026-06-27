@@ -77,7 +77,15 @@
    no exactly-once on the wire); partition-by-key for per-key order → hot partition;
    next walls = consumer lag (the number to alarm on), poison message blocking a
    partition → DLQ, rebalance storm → coordination. (Lesson 0009)
-10. Leader election & coordination — quorums, heartbeats, split-brain.
+10. ✅ **Leader election & coordination** — five nodes must run a billing job
+    exactly once: heartbeat (1 s) + timeout (3 missed = 3 s) sizes a ~3.5 s
+    failover, and too-short a timeout makes leadership flap (the rebalance storm);
+    terms + one-vote-per-term + majority quorum (⌊N/2⌋+1 = 3 of 5); split-brain
+    under partition is impossible because two majorities of 5 must overlap and the
+    shared node can't vote twice → minority steps down (safety over availability);
+    the zombie/slow leader fenced by an epoch (fencing token) the resource rejects
+    if lower; odd N because even buys no extra fault tolerance (N−quorum); leans on
+    a coordination service (ZK/etcd/Consul, Raft/Paxos). (Lesson 0010)
 11. CAP in practice — what you actually give up under partition.
 12. DB indexing & search systems — B-trees, inverted indexes, when an index hurts.
 13. Idempotency — making retried writes safe (dedup keys, exactly-once effects).

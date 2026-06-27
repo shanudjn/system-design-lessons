@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 10 — Leader Election &amp; Coordination: One Leader, No Split-Brain</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 10 · Worked Example</div>
+  <h1>Leader Election &amp; Coordination: One Leader, No Split-Brain</h1>
+  <p class="lead">Lesson 09 ended on a small panic: when a consumer flaps in and out, the group keeps re-deciding <i>who owns which partition</i> — a rebalance storm. Underneath that is one of the oldest problems in distributed systems: a group of equal machines has to agree on a single decision-maker, and keep agreeing even as machines die and networks split. This lesson takes ONE concrete cluster — five nodes that must run a billing cron job <b>exactly once</b> — and traces how they pick a leader, detect its death, and survive the nightmare where the network tears in two and <i>both halves</i> think they're in charge. The villain has a name: <b>split-brain</b>. The cure is a single counting trick: a majority. We name the trade-off behind every choice.</p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0010-leader-election.html"</code></p>
+</header>
+
+<h2>The one cluster we'll trace</h2>
+<p>We run a job that charges every customer their monthly bill. It must run on <b>exactly one</b> machine — if two machines run it, every customer is charged twice. But one machine is a single point of failure: if it dies on the 1st of the month, nobody gets billed. So we run <b>five identical nodes</b> and have them elect one <b>leader</b> to do the job; the other four stand by, ready to take over. Here is the whole shape on one screen.</p>
+
+<div class="diagram"><pre>
+  FIVE NODES, ONE LEADER, A HEARTBEAT EVERY SECOND
+
+                       ┌─────────────┐
+                       │  LEADER  A  │  term 1   ── runs the billing job
+                       │  (epoch 1)  │
+                       └──────┬──────┘
+            heartbeat ♥/1s    │   "I'm alive, I'm term 1"
+        ┌──────────┬──────────┼──────────┬──────────┐
+        ▼          ▼          ▼          ▼          ▼
+     ┌─────┐    ┌─────┐               ┌─────┐    ┌─────┐
+     │  B  │    │  C  │               │  D  │    │  E  │   followers
+     └─────┘    └─────┘               └─────┘    └─────┘   (watch the ♥)
+
+  If 3 heartbeats are missed → a follower becomes a CANDIDATE, bumps the
+  term to 2, and asks the others to VOTE. Win a MAJORITY (3 of 5) → leader.
+</pre></div>
+
+<p class="note"><span class="key">Leader election is how a group of equal machines agrees on exactly one of them to make a class of decisions, and re-agrees when that one dies.</span> The decision could be "who runs the cron job," "who is the primary that accepts writes," or "who assigns partitions to consumers" — the rebalance from Lesson 09. The shape is always the same, so we learn it once here.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Leader</b> — the one node currently allowed to do the singleton work. <b>Follower</b> — a node that isn't, but is watching.</li>
+  <li><b>Heartbeat</b> — a tiny "I'm alive" message the leader sends on a fixed interval. Silence is how death is detected.</li>
+  <li><b>Term</b> (or <b>epoch</b>) — a number that goes up by one with every election. It stamps "which reign are we in," so stale messages from an old leader can be spotted and ignored.</li>
+  <li><b>Candidate</b> — a follower that has stopped hearing heartbeats and is now asking others to vote for it.</li>
+  <li><b>Quorum</b> / <b>majority</b> — more than half the nodes: <code>⌊N/2⌋ + 1</code>. For N=5 that's <b>3</b>. A decision needs a quorum to count.</li>
+  <li><b>Split-brain</b> — the failure where two nodes both believe they are leader at the same time, and both act.</li>
+  <li><b>Fencing token</b> — the term/epoch attached to every action, so a resource can reject an action stamped with an old reign.</li>
+</ul>
+
+<h2>Move 1 — Estimate: how fast can we notice the leader died?</h2>
+<p>Before any election, size the clock. Two numbers set everything: the <b>heartbeat interval</b> (how often the leader says "alive") and the <b>timeout</b> (how long of silence means "dead"). From those falls the <b>failover time</b> — the window where nobody is leader and no billing runs.</p>
+
+<div class="card calc">
+  <p><b>Worked: the failover budget.</b></p>
+  <p>Heartbeat interval <b>H = 1 s</b>. We declare death after <b>3 missed</b> heartbeats, so timeout <b>T = 3 s</b>.</p>
+  <p>• A follower notices silence somewhere between 2 s and 3 s after the leader's last beat. Worst case = <b>3 s</b> to suspect death.<br>
+     • It becomes a candidate and runs an election: one round of "request vote" out and "yes" back ≈ one network round-trip ≈ <b>0.2 s</b>.<br>
+     • To avoid two candidates splitting the vote at once, each waits a small <b>random</b> extra delay (say 0–0.3 s) before standing — call it <b>0.3 s</b> worst case.<br>
+     • Failover ≈ 3 s + 0.3 s + 0.2 s ≈ <b>3.5 s</b> with no leader. For a monthly billing job that runs for minutes, 3.5 s of dead air is invisible — totally fine.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> the timeout is a dial between <b>fast failover</b> and <b>false positives</b>. Shorten T to 0.5 s and you fail over in under a second — but now a healthy leader that pauses for a 600 ms garbage-collection or hits a network blip <i>looks</i> dead, triggers a needless election, comes back, gets re-elected, pauses again… that's <b>leadership flapping</b> — the exact rebalance storm from Lesson 09, wearing a crown. So T must sit comfortably <i>above</i> the worst benign pause you expect (think p99.9 of GC + network jitter, the same p99-sizing reflex from Lesson 07). Detect too eagerly and you manufacture the very instability you were guarding against.</p>
+
+<h2>Move 2 — Model: term, vote, and the majority</h2>
+<p>Every node keeps three facts: who it thinks the leader is, the current <b>term</b>, and (per term) <b>who it has voted for</b>. Two rules turn those into a working election:</p>
+<ul>
+  <li><b>One vote per node per term.</b> Once node C votes for someone in term 2, it will not vote for anyone else in term 2.</li>
+  <li><b>You must win a majority to lead.</b> A candidate becomes leader only after collecting votes from more than half the nodes — <b>3 of 5</b>.</li>
+</ul>
+<p>Those two rules, together, are the whole defense against split-brain — and the reason is pure counting, not magic. Hold that thought; we cash it out in Path B.</p>
+
+<div class="diagram"><pre>
+  ONE ELECTION (leader A has gone silent)
+
+   term 1: A leader            B,C,D,E hear nothing for 3 s
+                                       │
+   C times out first ──► becomes CANDIDATE, term = 2, votes for itself (1)
+        │  "RequestVote(term 2)"
+        ├────────► B: haven't voted in term 2 → YES   (2)
+        ├────────► D: haven't voted in term 2 → YES   (3)  ◄── majority reached
+        └────────► E: (vote arrives later, doesn't matter)
+   C has 3 of 5 ──► LEADER for term 2, epoch 2, starts heartbeating.
+</pre></div>
+
+<h2>Move 3 — Trace the paths</h2>
+
+<h3>Path A — a clean failover</h3>
+<div class="card calc">
+  <p><b>Worked: the leader's machine dies.</b> Leader <b>A</b> (term 1) loses power mid-month. Its heartbeats stop. After 3 s of silence, follower <b>C</b> times out first (its random delay was shortest), bumps the term to <b>2</b>, and votes for itself. It asks the others; <b>B</b> and <b>D</b> haven't voted in term 2, so they say yes. C now has 3 votes — a majority — and becomes leader for term 2 with <b>epoch 2</b>. It resumes the billing job from where A's progress was committed. Total dead air: ~3.5 s. When A's machine reboots, it hears a heartbeat stamped <b>term 2</b>, sees that 2 &gt; its own 1, and quietly steps down to follower. The higher term always wins.</p>
+</div>
+
+<h3>Path B — the network splits, and why a majority saves us</h3>
+<p>This is the dangerous one. The cluster doesn't lose a machine — it loses a <i>cable</i>. The five nodes are torn into two groups that can each talk internally but not across the gap: <b>{A, B}</b> on one side, <b>{C, D, E}</b> on the other. Each side sees the other as "dead." Without the majority rule, <i>both</i> sides would elect a leader, both would run the billing job, and every customer would be charged twice.</p>
+
+<div class="diagram"><pre>
+  NETWORK PARTITION — the cable between the racks is cut
+
+        side L (minority)            ╳            side R (majority)
+     ┌─────┐   ┌─────┐          cut here        ┌─────┐ ┌─────┐ ┌─────┐
+     │  A  │   │  B  │     ◄── can't reach ──►   │  C  │ │  D  │ │  E  │
+     └─────┘   └─────┘                          └─────┘ └─────┘ └─────┘
+       2 nodes  → needs 3 to lead                3 nodes → has a majority
+
+   A (old leader) can reach only B = 2 votes. 2 < 3 → A must STEP DOWN.
+   C asks D,E → 3 votes ≥ 3 → C becomes leader (term 2). Exactly ONE leader.
+</pre></div>
+
+<div class="card calc">
+  <p><b>Worked: why two leaders is mathematically impossible.</b> A leader needs <b>3 of 5</b> votes. Suppose, for contradiction, two different nodes each won. That's two voting groups of size ≥ 3 inside a set of 5 nodes. But 3 + 3 = <b>6 &gt; 5</b>, so by the pigeonhole principle the two groups must <span class="key">share at least one node</span>. That shared node would have had to vote for <i>both</i> leaders in the same term — and rule one says each node votes at most once per term. Contradiction. <span class="key">Any two majorities of the same set always overlap, so at most one can exist per term.</span> The minority side {A,B} simply can't reach 3, so it can't lead — it goes read-only and waits.</p>
+  <p><b>The cost, in dollars avoided:</b> with 200,000 customers billed $5/month, a split-brain double-run would issue 200,000 × $5 = <b>$1,000,000</b> of duplicate charges. The majority rule turns that into one leader and zero duplicates — by making the minority refuse to act.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> a majority quorum buys <b>safety</b> (never two leaders) and pays with <b>availability for the minority</b>. The {A,B} side is alive and healthy but deliberately does nothing, because the only way to guarantee "at most one leader" is to make the side that <i>can't</i> prove it has a majority give up. You are choosing consistency over availability under a partition — which is exactly the CAP choice we open next lesson.</p>
+
+<h3>Path C — the zombie leader, and the fencing token</h3>
+<p>One nasty gap remains. Suppose A wasn't partitioned — it just <b>froze</b> (a long GC pause) for 4 s. While frozen, the others timed out and elected C (term 2, epoch 2). Now A <i>unfreezes</i>, still believing it is leader of term 1, and tries to write "billing run complete" to the database. A doesn't yet know it's been replaced. How do we stop this <b>zombie leader</b> from corrupting state?</p>
+<p>The answer is a <b>fencing token</b>: every action the leader sends to a shared resource carries its epoch, and the resource <span class="key">remembers the highest epoch it has ever seen and rejects anything lower</span>. C has already written with epoch 2, so the database's high-water mark is 2. A's stale write arrives stamped epoch 1; <code>1 &lt; 2</code>, so the database refuses it. The zombie is fenced out without the database needing to know anything about elections.</p>
+
+<div class="diagram"><pre>
+  FENCING — the resource rejects any action from an old reign
+
+   C (epoch 2) writes ─────► DB:  highest epoch seen = 2   ✓ accept
+   A (epoch 1, zombie) writes ─►  DB:  1 < 2  ✗ REJECT
+                                  (A is fenced; no need to "kill" A)
+</pre></div>
+
+<p class="note why"><b>Name the trade-off:</b> heartbeats alone can detect a <i>crashed</i> leader, but they can't protect against a <i>slow</i> one that wakes up confused. Leases and timeouts reduce the window; the fencing token closes it for good — at the cost of threading an epoch number through every write and asking the resource to enforce it. Detection (heartbeats) tells you who <i>should</i> lead; fencing makes sure only that one's writes <i>land</i>.</p>
+
+<h2>Move 4 — Find the next bottleneck: why 5, why odd, and what you give up</h2>
+<p>The majority rule decides how many nodes you should run — and the answer is "an odd number," for a reason that's pure arithmetic. <b>Fault tolerance</b> = how many nodes can die while a majority is still reachable = <code>N − quorum</code>.</p>
+
+<table>
+  <tr><th>Nodes N</th><th>Quorum ⌊N/2⌋+1</th><th>Failures tolerated (N − quorum)</th></tr>
+  <tr><td>3</td><td>2</td><td>1</td></tr>
+  <tr><td><b>4</b></td><td><b>3</b></td><td><b>1</b> — same as 3, but costs a node</td></tr>
+  <tr><td>5</td><td>3</td><td>2</td></tr>
+  <tr><td><b>6</b></td><td><b>4</b></td><td><b>2</b> — same as 5, but costs a node</td></tr>
+  <tr><td>7</td><td>4</td><td>3</td></tr>
+</table>
+
+<p>Read the bold rows: going from 5 to 6 nodes does <i>not</i> let you survive more failures — both tolerate 2 — but it raises the quorum to 4, so you now need <i>more</i> machines healthy to make any decision. <span class="key">An even N gives you the fault tolerance of the odd number below it, at higher cost and higher quorum.</span> That's why coordination clusters run 3, 5, or 7 nodes — almost never 4 or 6. Five is the common sweet spot: tolerate two simultaneous failures, keep the quorum at a cheap 3.</p>
+
+<p>And notice the wall the table runs into: under a partition, the <b>minority side cannot make progress at all</b>. It's alive, it's serving reads, but it refuses every write to preserve the one-leader guarantee. We deliberately traded that side's availability for safety. Whether that's the right trade — and what the <i>other</i> choice (stay available, give up single-truth) actually looks like — is the formal subject of the next lesson.</p>
+
+<p class="note">In practice you rarely hand-roll this. You lean on a <b>coordination service</b> — ZooKeeper, etcd, or Consul — which is itself a small odd-sized cluster running a consensus algorithm (Raft, Paxos) that bundles exactly what we traced: heartbeats, terms, majority votes, and a monotonic epoch you use as a fencing token. You ask it for a leader lease; it does the counting. Knowing what's inside is what lets you reason about it when it misbehaves.</p>
+
+<h2>Where we landed</h2>
+<p>We took one five-node cluster that must run a billing job exactly once and traced how it stays single-headed. <b>Estimate</b> sized the clock — 1 s heartbeat, 3 s timeout, ~3.5 s failover — and named the detection-speed-vs-false-positive dial that turns a too-short timeout into leadership flapping. <b>Model</b> gave us terms, one-vote-per-term, and the majority rule. <b>Tracing the paths</b> walked a clean failover, then the partition where a majority makes two leaders mathematically impossible (two groups of 3 in a set of 5 must overlap, and the shared node can't vote twice), then the zombie leader that a fencing token shuts out by epoch. The <b>next bottleneck</b> was sizing the cluster itself — odd N, because an even one buys no extra fault tolerance — and the wall behind it: the minority side gives up availability to keep safety. The thread through all of it: <span class="key">agreement among equals is just careful counting of votes, stamped with a term so the past can't outvote the present.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lessons build directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>11 — CAP in practice:</b> the partition we just survived, stated as a law — when the network splits you must choose Consistency or Availability, and we'll see exactly what each choice does to real reads and writes.</p>
+  <p style="margin:.2rem 0">• <b>Idempotency, revisited:</b> the fencing token is one way to make a stale action harmless; we'll connect it back to the idempotency keys of Lessons 05 and 07.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">leader</span>
+    <span class="pill">follower</span>
+    <span class="pill">heartbeat</span>
+    <span class="pill">timeout</span>
+    <span class="pill">failover</span>
+    <span class="pill">term</span>
+    <span class="pill">epoch</span>
+    <span class="pill">candidate</span>
+    <span class="pill">vote</span>
+    <span class="pill">quorum</span>
+    <span class="pill">majority</span>
+    <span class="pill">split-brain</span>
+    <span class="pill">fencing token</span>
+    <span class="pill">zombie leader</span>
+    <span class="pill">leadership flapping</span>
+    <span class="pill">false positive</span>
+    <span class="pill">fault tolerance</span>
+    <span class="pill">coordination service</span>
+    <span class="pill">consensus</span>
+    <span class="pill">lease</span>
+  </p>
+  <p>That's Lesson 10, built straight on the rebalance/coordination cliffhanger of Lesson 09, the p99-sizing reflex of Lesson 07, and the idempotency-key idea from Lessons 05 and 07. <b>Ask me follow-ups</b> — e.g. "show the candidate's election loop in pseudocode", "why does a random election timeout prevent split votes?", "what's the difference between a lease and a heartbeat?", "how does Raft actually pick which log to keep?", or "where exactly does a fencing token get checked in a real database?" When you're ready, say <b>next</b> and we'll go deeper on <i>CAP in practice — what you actually give up under a partition</i>.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "A network partition splits your 5 nodes into {A,B} and {C,D,E}. Why is it impossible for both sides to end up with a leader, given the majority rule?",
+    options: [
+      {t:"A leader needs 3 of 5 votes, and any two voting groups of size 3 inside a set of 5 must share at least one node (3+3 > 5). That shared node can only vote once per term, so two leaders in the same term can't both reach a majority.",
+       ok:true,
+       fb:"Right — it's pure pigeonhole. Two majorities always overlap, and one-vote-per-term means the overlap node can't bless both. So {A,B} with only 2 votes steps down, {C,D,E} with 3 leads, and you get exactly one leader."},
+      {t:"Because the partition heals quickly, so there's never enough time for the second side to finish an election.",
+       ok:false,
+       fb:"Safety can't depend on timing — a partition can last minutes or hours. The guarantee is structural: the minority side mathematically cannot collect a majority, so it never elects a leader no matter how long the split lasts."},
+      {t:"The old leader A keeps its title across the partition because it was leader first.",
+       ok:false,
+       fb:"A can only reach B — 2 votes — which is below the quorum of 3, so A must step down and go read-only. 'Was leader first' confers nothing once it can't prove a current majority; that's exactly what stops split-brain."}
+    ]
+  },
+  {
+    stem: "Ops wants faster failover, so they cut the heartbeat timeout from 3 s to 0.4 s. What's the likely result?",
+    options: [
+      {t:"Healthy leaders that pause briefly (a GC pause, a network blip) now look dead, triggering needless elections — leadership flaps in and out, and the cluster spends its time re-electing instead of working.",
+       ok:true,
+       fb:"Exactly. The timeout must sit above your worst benign pause (p99.9 GC + jitter), or you manufacture false positives. Flapping leadership is the rebalance storm from Lesson 09 — you traded a few seconds of failover speed for chronic instability."},
+      {t:"Failover gets strictly better with no downside — shorter timeouts are always safer.",
+       ok:false,
+       fb:"There's a real downside: a shorter timeout can't tell a slow-but-alive leader from a dead one. Below the worst benign pause, every hiccup reads as death. Detection speed trades directly against false positives."},
+      {t:"It eliminates split-brain, because leaders are replaced before they can misbehave.",
+       ok:false,
+       fb:"Split-brain is prevented by the majority rule and fencing tokens, not by timeout length. A shorter timeout actually causes MORE elections and more chances for a slow old leader to wake up confused — making fencing more important, not less."}
+    ]
+  },
+  {
+    stem: "Leader A freezes for 4 s (long GC). The others elect C (epoch 2). A unfreezes, still thinks it's leader (epoch 1), and writes 'billing complete' to the DB. What cleanly prevents corruption?",
+    options: [
+      {t:"A fencing token: every write carries the leader's epoch, and the DB remembers the highest epoch it has seen and rejects anything lower. C already wrote with epoch 2, so A's epoch-1 write is refused.",
+       ok:true,
+       fb:"Right. Heartbeats detect a crashed leader but not a slow one that wakes up stale. The fencing token makes the resource itself reject the old reign's writes — the zombie is fenced without anyone having to 'kill' A."},
+      {t:"Nothing is needed — once C is elected, A automatically knows instantly and won't write.",
+       ok:false,
+       fb:"A was frozen and learns it's been replaced only when it next hears a higher term — which may be AFTER it tries its stale write. You can't rely on the zombie policing itself; the resource must reject the old epoch."},
+      {t:"Lower the heartbeat timeout so A is detected as dead faster.",
+       ok:false,
+       fb:"A shorter timeout shrinks the window but never closes it — a pause just under the timeout still lets a stale write through. Only fencing (reject epoch < high-water mark) guarantees the old reign's writes can't land."}
+    ]
+  },
+  {
+    stem: "You're choosing a cluster size for a coordination service. Why is 5 preferred over 6?",
+    options: [
+      {t:"Both tolerate 2 failures (quorum is 3 for N=5, 4 for N=6), but 6 needs an extra machine AND a higher quorum to make any decision. The even node buys no extra fault tolerance at higher cost — so odd sizes (3, 5, 7) win.",
+       ok:true,
+       fb:"Correct. Fault tolerance = N − quorum: N=5 gives 5−3=2, N=6 gives 6−4=2 — identical. The 6th node just raises the bar for reaching a majority. That's why real clusters run odd sizes."},
+      {t:"6 nodes tolerate 3 failures, which is wasteful overkill for most systems.",
+       ok:false,
+       fb:"6 tolerates only 2, not 3 (quorum is 4, so 6−4=2). That's the trap: the extra node doesn't raise fault tolerance at all — it just costs more and demands a larger majority. You'd need 7 to tolerate 3."},
+      {t:"More nodes always mean more split-brain risk, so fewer is safer.",
+       ok:false,
+       fb:"The majority rule prevents split-brain at any size — that's not the deciding factor. The real reason to prefer 5 is arithmetic: an even N gives the same fault tolerance as the odd number below it, for more money and a higher quorum."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
