@@ -86,7 +86,17 @@
     the zombie/slow leader fenced by an epoch (fencing token) the resource rejects
     if lower; odd N because even buys no extra fault tolerance (N−quorum); leans on
     a coordination service (ZK/etcd/Consul, Raft/Paxos). (Lesson 0010)
-11. CAP in practice — what you actually give up under partition.
+11. ✅ **CAP in practice** — one account balance ($100), three replicas, a cut
+    trans-atlantic cable: partition tolerance isn't optional (the network imposes
+    it), so CAP collapses to "choose C or A, and only while partitioned"; quorum
+    `W+R>N` overlap (pigeonhole, recap of L06/L10) makes reads linearizable and
+    the split forces the dilemma onto the *minority* side; CP refuses a non-quorum
+    write (errors, but the double-spend is impossible — L10's "minority steps down"
+    for data) vs AP answers both sides (divergence → a $60k last-write-wins
+    reconciliation bill; right for a mergeable cart, wrong for a scalar balance);
+    next wall = the choice CAP hides → **PACELC**, the everyday ~90 ms
+    latency-vs-consistency tax, and "AP is only as good as your ability to
+    reconcile" → idempotency. (Lesson 0011)
 12. DB indexing & search systems — B-trees, inverted indexes, when an index hurts.
 13. Idempotency — making retried writes safe (dedup keys, exactly-once effects).
 14. CDN design — edge caching, cache keys, invalidation, origin shielding.

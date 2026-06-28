@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 11 — CAP in Practice: What a Partition Forces You to Give Up</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 11 · Worked Example</div>
+  <h1>CAP in Practice: What a Partition Forces You to Give Up</h1>
+  <p class="lead">Lesson 10 ended on a deliberate sacrifice: when the network split, the minority side stayed alive but refused every write, so the cluster would never have two leaders. We chose <i>safety over availability</i> without naming the law behind it. This lesson states that law — <b>CAP</b> — and, more usefully, shows what it actually does to real reads and writes. We take ONE concrete system: an account-balance store replicated across three zones, holding <b>$100</b>. Then we cut the trans-atlantic cable and watch the same partition force two completely different systems into two opposite, painful choices — one returns errors, the other returns money it doesn't have. We name the trade-off behind each, and end on the thing CAP <i>doesn't</i> tell you (which matters more day-to-day).</p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0011-cap-in-practice.html"</code></p>
+</header>
+
+<h2>The one system we'll trace</h2>
+<p>We store one number per customer: their <b>account balance</b>. It's money, so a read must never lie. We keep <b>three copies</b> (replicas) of each balance, one in each of three zones — Virginia, Frankfurt, Singapore — so a whole zone can burn down and the balance survives. A client writes to the store; the store decides how many copies must agree before it answers. Here is the whole shape on one screen, in the healthy case and the broken one.</p>
+
+<div class="diagram"><pre>
+  ONE BALANCE (X=$100), THREE REPLICAS, A QUORUM TO ANSWER
+
+   HEALTHY                              PARTITIONED (cable cut)
+   ┌────┐  ┌────┐  ┌────┐               ┌────┐  ╳  ┌────┐  ┌────┐
+   │ Z1 │──│ Z2 │──│ Z3 │               │ Z1 │ ╳  │ Z2 │──│ Z3 │
+   └────┘  └────┘  └────┘               └────┘ ╳  └────┘  └────┘
+   all three can talk                   {Z1}  |  {Z2, Z3}
+   write reaches 2, read reaches 2      1 node|  2 nodes
+   → every read sees the latest write   minority | majority
+
+   The split forces a choice on the MINORITY side {Z1}:
+     • answer anyway (maybe stale/wrong) ........ keep AVAILABILITY, lose CONSISTENCY
+     • refuse to answer (return an error) ....... keep CONSISTENCY, lose AVAILABILITY
+   You cannot have both while the cable is cut. That is CAP.
+</pre></div>
+
+<p class="note"><span class="key">CAP says: when the network partitions, a system can keep every reply consistent OR keep every node available — not both.</span> That's the whole theorem in one line. The rest of this lesson is making those three words — consistent, available, partition — concrete enough that the choice stops being abstract and becomes "errors vs. wrong money."</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Replica</b> — one full copy of the data on one node. We keep three: <code>N = 3</code>.</li>
+  <li><b>Consistency</b> (the CAP "C", a.k.a. <b>linearizability</b>) — every read returns the value of the <i>most recent</i> completed write, as if there were a single copy. Not "ACID consistency" — same word, different idea.</li>
+  <li><b>Availability</b> — every request that reaches a working node gets a non-error answer (not necessarily the latest one).</li>
+  <li><b>Partition</b> — the network drops or delays messages so some nodes can't reach others. The cluster is split into groups that can't talk across the gap.</li>
+  <li><b>Partition tolerance</b> — the system keeps operating while a partition is happening, instead of seizing up entirely.</li>
+  <li><b>Quorum</b> — a minimum number of replicas that must take part. Write quorum <code>W</code>, read quorum <code>R</code> (we met these in Lesson 06).</li>
+  <li><b>CP system</b> — under a partition, prefers Consistency: it returns errors rather than a possibly-wrong answer. <b>AP system</b> — prefers Availability: it always answers, accepting that answers may be stale or conflict.</li>
+  <li><b>Eventual consistency</b> — replicas that diverged during a partition are reconciled <i>after</i> it heals, so they converge "eventually."</li>
+</ul>
+
+<h2>Move 1 — Estimate: is a partition even worth designing for?</h2>
+<p>Engineers love to wave CAP away with "partitions are rare." Let's put a number on "rare" and on what one costs, because that number decides whether this whole lesson matters.</p>
+
+<div class="card calc">
+  <p><b>Worked: the cost of one cable cut.</b></p>
+  <p>The store handles <b>15,000 requests/second</b>, spread evenly across the three zones, so each zone serves <b>~5,000 req/s</b>. A trans-atlantic link flaps a handful of times a month; say a partition that isolates one zone lasts <b>30 seconds</b> before routing recovers.</p>
+  <p>• Requests hitting the cut-off zone during the partition: <b>5,000 req/s × 30 s = 150,000 requests.</b><br>
+     • If we keep Consistency (refuse them): <b>150,000 errors</b>, but every answer ever returned is correct.<br>
+     • If we keep Availability (answer them anyway): <b>0 errors</b>, but some of those 150,000 answers are stale, and any writes accepted on both sides will <i>conflict</i> and must be untangled later.</p>
+  <p>150,000 wrong-or-refused operations from a single 30-second blip — several times a month — is not a rounding error. A partition is not an edge case you can ignore; it's a Tuesday.</p>
+</div>
+
+<p class="note why"><b>Name the first trade-off (the one you don't get to make):</b> Partition tolerance is <b>not optional</b>. The network <i>will</i> drop packets between data centers — that's physics and backhoes, not a design choice. So a real distributed system is always "P". The honest version of CAP is therefore not "pick 2 of 3." It is: <span class="key">because P is forced on you, your only real choice is C-or-A, and only while a partition is actually happening.</span> When the network is healthy you get both. CAP is a question that the network asks <i>you</i>, at a moment of its choosing.</p>
+
+<h2>Move 2 — Model: what "consistent" buys, and why a quorum gives it</h2>
+<p>We tune consistency with two dials from Lesson 06: how many replicas a write must reach (<code>W</code>) and how many a read must reach (<code>R</code>), out of <code>N=3</code>. The single rule that makes a read see the latest write is <code>W + R &gt; N</code>.</p>
+
+<div class="card calc">
+  <p><b>Worked: why <code>W + R &gt; N</code> means a read can't miss the latest write.</b></p>
+  <p>Pick <b>W = 2</b>, <b>R = 2</b>, <b>N = 3</b>. Then <code>W + R = 4 &gt; 3</code>. A write lands on some set of 2 replicas; a later read asks some set of 2 replicas. Two sets of size 2 inside a pool of 3 must <span class="key">share at least one node</span> — because 2 + 2 = 4, and 4 &gt; 3, so they can't be disjoint (the same pigeonhole count from Lesson 10's majority proof). That shared node saw the write, so the read sees it too. <b>Overlap guaranteed → linearizable read.</b></p>
+</div>
+
+<p>Now watch what the partition does to that arithmetic. The split is <b>{Z1}</b> on one side, <b>{Z2, Z3}</b> on the other.</p>
+<ul>
+  <li>The <b>majority side {Z2, Z3}</b> has 2 reachable replicas. It can still reach <code>W = 2</code> and <code>R = 2</code>. So it keeps <i>both</i> consistency and availability — for itself.</li>
+  <li>The <b>minority side {Z1}</b> has 1 reachable replica. It <i>cannot</i> reach a quorum of 2. Here, and only here, CAP bites: Z1 must choose to <b>answer with what it has</b> (available, maybe stale) or <b>return an error</b> (consistent, unavailable).</li>
+</ul>
+
+<div class="diagram"><pre>
+  THE CHOICE LIVES ON THE MINORITY SIDE
+
+   {Z1}  needs a quorum of 2, can reach only 1
+     │
+     ├─ CP:  "can't reach quorum" → return ERROR.  Never wrong, but down.
+     └─ AP:  answer from local copy → maybe STALE.  Always up, but may lie.
+
+   {Z2,Z3}  reaches quorum of 2 → stays consistent AND available. No dilemma.
+</pre></div>
+
+<h2>Move 3 — Trace the paths</h2>
+
+<h3>Path A — healthy network: you get C and A for free</h3>
+<div class="card calc">
+  <p><b>Worked:</b> Balance X = $100. A withdrawal of $40 writes X = $60 to Z1 and Z2 (W=2, acknowledged). A moment later a read asks Z2 and Z3 (R=2). Z2 holds $60; overlap is satisfied, so the read returns <b>$60</b> — the latest value. Every read is correct, every request is answered. <span class="key">CAP only charges you during a partition; the rest of the time both properties hold.</span> This is why "we're CP" or "we're AP" describes behavior <i>under partition</i>, not all the time.</p>
+</div>
+
+<h3>Path B — partition, and we choose CP (the bank's choice)</h3>
+<p>The cable cuts. A customer's request to withdraw $80 is routed to the isolated zone <b>Z1</b>. Z1 tries to write to a quorum of 2 and can reach only itself. As a <b>CP</b> system it refuses: it returns an error like <code>503 / try again</code> rather than record a balance change it can't make safely visible everywhere.</p>
+
+<div class="card calc">
+  <p><b>Worked: what CP protects.</b> Suppose a fraudster fires the same "$80 withdrawal" at <i>both</i> sides during the 30-second split, hoping each side approves against the same $100. The majority side {Z2,Z3} reaches quorum and records X = $20. The minority side {Z1} <i>cannot</i> reach quorum, so it returns an error and records nothing. Net: <b>exactly one</b> $80 withdrawal happens; the balance is $20 everywhere after the heal. The double-spend is impossible because the side that couldn't prove consistency refused to act — <span class="key">the very same "minority steps down" move as Lesson 10's leader election</span>, now applied to data instead of leadership. The cost: those ~150,000 requests on Z1 got errors for 30 seconds.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> CP buys <b>correctness</b> and pays with <b>uptime on the minority side</b>. For money, identity, inventory you can't oversell, or anything where a wrong answer is worse than no answer, you choose CP and you eat the errors. The discipline is honest failure: a <code>503</code> the client can retry beats a confidently wrong balance it will act on. (This is the load-shedding "honest 429" reflex from Lesson 07, pointed at consistency.)</p>
+
+<h3>Path C — same partition, but we choose AP (the shopping-cart's choice)</h3>
+<p>Now the exact same cut, in a system that picks <b>AP</b> — it answers no matter what, with <code>W = 1, R = 1</code> (a local write/read is enough). Nobody gets an error. But re-run the fraudster: each side sees its <i>local</i> $100, each approves an $80 withdrawal, each records X = $20 locally. The store stayed up. It also just let $160 leave a $100 account.</p>
+
+<div class="diagram"><pre>
+  AP UNDER PARTITION — both sides answer, both go wrong, reconcile later
+
+   start: X = $100 on all replicas
+   cut:   {Z1}            ╳            {Z2,Z3}
+   Z1:  withdraw $80 → local $20       Z2: withdraw $80 → local $20
+   heal: two writes meet. Which $20 wins? They describe DIFFERENT money.
+         conflict! → reconcile (last-write-wins? merge? human?)
+</pre></div>
+
+<div class="card calc">
+  <p><b>Worked: the reconciliation bill.</b> After the heal the replicas hold conflicting histories. If reconciliation is naive <b>last-write-wins</b>, one $80 withdrawal silently overwrites the other: the bank delivered $160 of cash but the ledger shows a single $80 debit, so the bank eats <b>$100 − $160 = −$60</b> per exploited account. Multiply by 1,000 exploited accounts in the window → <b>$60,000</b> gone. AP didn't avoid the cost of the partition; it <i>deferred and transformed</i> it from "errors I can see now" into "money I lose later." For a balance, that's the wrong trade. For a <b>shopping cart</b>, it's the right one: let both phones add items during a partition, then <b>merge</b> the carts on heal (union of items) — a worst case of a duplicate line a human happily removes, and the customer was never blocked from shopping.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> AP buys <b>uptime everywhere</b> and pays with <b>divergence you must reconcile</b>. The bill comes due at heal time, and how big it is depends entirely on your conflict-resolution rule: last-write-wins is cheap but loses data; a <b>merge</b> (set union, or a CRDT that's built to combine safely) keeps everything but only works for data whose conflicts <i>can</i> be merged. A bank balance can't be safely merged; a shopping cart, a "seen" flag, or a collaborative doc can. <span class="key">AP is the right call exactly when a stale-or-merged answer is cheaper than a refused one.</span></p>
+
+<h2>Move 4 — Find the next bottleneck: the choice CAP hides (PACELC)</h2>
+<p>Here's the trap CAP sets: it only speaks about the partition, which is rare. It says nothing about the 99.9% of the time the network is fine — yet you're <i>still</i> making a consistency choice then, and paying for it on every single request. That hidden choice has its own name: <b>PACELC</b>.</p>
+
+<div class="card">
+  <p style="margin:.2rem 0"><b>PACELC, read aloud:</b></p>
+  <p style="margin:.2rem 0">• <b>P</b>artitioned → choose <b>A</b> or <b>C</b>  <span style="color:var(--muted)">(that's plain CAP, the rare case)</span></p>
+  <p style="margin:.2rem 0">• <b>E</b>lse (normal operation) → choose <b>L</b>atency or <b>C</b>onsistency  <span style="color:var(--muted)">(the everyday case)</span></p>
+</div>
+
+<div class="card calc">
+  <p><b>Worked: the everyday tax of strong consistency.</b> To keep reads linearizable, a write must reach a quorum that may live in another region. Virginia↔Frankfurt round-trip ≈ <b>90 ms</b>. So a strongly-consistent write waits ~90 ms for the remote ack — <i>even when nothing is broken</i>. A write that's allowed to commit locally and replicate in the background returns in ~<b>1 ms</b>, but a read right after might miss it (eventual). At 5,000 writes/s the throughput can be hidden behind concurrency, but the <b>per-write latency</b> can't: choosing strong consistency makes every writer wait ~90× longer on the happy path. <span class="key">That 90 ms, paid billions of times, is what most teams are actually trading when they "go eventually consistent" — not the once-a-month partition.</span></p>
+</div>
+
+<p>So the real design space isn't a one-time "CP or AP" badge. It's per-piece-of-data, and it spans both halves of PACELC:</p>
+
+<table>
+  <tr><th>Data</th><th>Partition: A or C?</th><th>Normal: L or C?</th><th>Why</th></tr>
+  <tr><td>Account balance</td><td><b>C</b> (refuse)</td><td><b>C</b> (wait 90 ms)</td><td>a wrong number costs real money</td></tr>
+  <tr><td>Shopping cart</td><td><b>A</b> (merge later)</td><td><b>L</b> (1 ms)</td><td>a duplicate line is harmless; blocking shopping isn't</td></tr>
+  <tr><td>"Last seen" / view count</td><td><b>A</b></td><td><b>L</b></td><td>approximate is fine (Lesson 06's sharded counter)</td></tr>
+  <tr><td>Username availability</td><td><b>C</b></td><td><b>C</b></td><td>two people can't own one handle</td></tr>
+</table>
+
+<p>The wall this runs into — and the subject that comes next — is that <b>AP only works if you can actually reconcile</b>. "Eventually consistent" is a promise you have to keep: you need a rule that merges divergent writes <i>without losing or corrupting</i> them. Last-write-wins quietly drops data. The honest tools are <b>idempotency</b> (make a replayed write a no-op) and conflict-free merges (sets, counters, CRDTs). That's why the next lesson zooms into <b>idempotency</b>: the machinery that makes "answer now, reconcile later" safe instead of just optimistic.</p>
+
+<p class="note">In real systems you don't usually flip one global switch. A single product mixes both: the same company keeps balances in a CP store (a database doing quorum writes / Raft — the consensus from Lesson 10) and carts in an AP store (Dynamo-style, eventual). The skill CAP teaches isn't "pick a side." It's <span class="key">looking at each piece of data and asking: when the cable is cut, would I rather hand this user an error or a possibly-wrong answer? — and the rest of the time, would I rather they wait or get a fast maybe-stale read?</span></p>
+
+<h2>Where we landed</h2>
+<p>We took one account-balance store, three replicas, $100, and cut the cable. <b>Estimate</b> showed a single 30-second partition touches ~150,000 requests several times a month — not an edge case, a Tuesday — and that Partition tolerance isn't a choice you get to make, so CAP collapses to "C or A, but only while partitioned." <b>Model</b> recovered the quorum rule <code>W+R&gt;N</code> (overlap by pigeonhole → linearizable reads) and showed the split leaves the majority side fine and forces the dilemma onto the minority. <b>Tracing the paths</b> walked the healthy case (both C and A for free), the CP choice that refuses a write it can't make safe (errors, but the double-spend is impossible — Lesson 10's "minority steps down," applied to data), and the AP choice that answers both sides and pays a $60,000 reconciliation bill — right for a cart, wrong for a balance. The <b>next bottleneck</b> was the choice CAP hides: <b>PACELC</b>, the everyday latency-vs-consistency tax (~90 ms per strongly-consistent cross-region write) you pay even when nothing is broken, and the realization that AP is only as good as your ability to reconcile. The thread: <span class="key">a partition doesn't let you escape its cost — it only lets you choose whether to pay in errors now or in divergence later.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lessons build directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>12 — Idempotency:</b> the machinery that makes AP's "reconcile later" and Lesson 07's retries safe — dedup keys, exactly-once <i>effects</i> (not exactly-once delivery), and why a replayed write must be a no-op.</p>
+  <p style="margin:.2rem 0">• <b>DB indexing &amp; search:</b> once you've chosen where data lives, how it's found fast — B-trees, inverted indexes, and when an index hurts.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">CAP</span>
+    <span class="pill">consistency</span>
+    <span class="pill">linearizability</span>
+    <span class="pill">availability</span>
+    <span class="pill">partition</span>
+    <span class="pill">partition tolerance</span>
+    <span class="pill">replica</span>
+    <span class="pill">quorum</span>
+    <span class="pill">W+R&gt;N</span>
+    <span class="pill">CP system</span>
+    <span class="pill">AP system</span>
+    <span class="pill">eventual consistency</span>
+    <span class="pill">conflict resolution</span>
+    <span class="pill">last-write-wins</span>
+    <span class="pill">CRDT</span>
+    <span class="pill">merge</span>
+    <span class="pill">PACELC</span>
+    <span class="pill">latency vs consistency</span>
+    <span class="pill">double-spend</span>
+    <span class="pill">reconciliation</span>
+  </p>
+  <p>That's Lesson 11, built straight on Lesson 10's "minority steps down" sacrifice, the quorum <code>W+R&gt;N</code> rule of Lesson 06, and the "honest failure over a confident lie" reflex of Lesson 07. <b>Ask me follow-ups</b> — e.g. "show a CRDT counter that merges withdrawals safely", "why isn't ACID 'consistency' the same as CAP's C?", "what does a Dynamo-style sloppy quorum + hinted handoff change here?", "how do vector clocks detect the conflict instead of silently last-write-wins?", or "is a single-node database CA, and does that even mean anything?" When you're ready, say <b>next</b> and we'll go deeper on <i>Idempotency — making retried and replayed writes safe</i>.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "A teammate says: \"We'll be a CA system — consistent and available — and just skip partition tolerance.\" Why doesn't that make sense for a multi-zone store?",
+    options: [
+      {t:"Partitions are caused by the network (dropped/delayed packets between zones), which you don't control — so a real distributed system is always 'P'. CAP only forces a choice between C and A, and only while a partition is actually happening.",
+       ok:true,
+       fb:"Right. P isn't a property you opt into; the network imposes it. 'CA' only describes a single node with no network in between. For anything replicated across zones, the honest framing is: you're always P, so your real choice is C-or-A during the rare partition (and latency-vs-consistency the rest of the time)."},
+      {t:"You can skip partition tolerance by making the network reliable enough that partitions never happen.",
+       ok:false,
+       fb:"No network between data centers is partition-proof — backhoes, BGP flaps, and congestion happen. You can make partitions rarer, never impossible. Designing as if they won't occur means you've silently picked a behavior for when they do, without choosing it on purpose."},
+      {t:"CA is fine; you just lose consistency instead of availability during a partition.",
+       ok:false,
+       fb:"That's a contradiction — 'CA' claims to keep both, but a partition forces you to drop one. If you drop consistency you're AP; if you drop availability you're CP. There's no third option that keeps both while the cable is cut."}
+    ]
+  },
+  {
+    stem: "The cable cuts, splitting replicas into {Z1} and {Z2,Z3} with W=2, R=2, N=3. A write is routed to the isolated Z1. In a CP system, what happens and why is it the safe choice for a balance?",
+    options: [
+      {t:"Z1 can reach only 1 replica but needs a quorum of 2, so it returns an error rather than record a change it can't make consistently visible. The double-spend is impossible because the side that can't prove a quorum refuses to act.",
+       ok:true,
+       fb:"Exactly — it's Lesson 10's 'minority steps down', applied to data. The majority side {Z2,Z3} can still reach quorum and stays both consistent and available; the minority refuses, eating errors but never returning a wrong balance. For money, an honest 503-and-retry beats a confident lie."},
+      {t:"Z1 answers from its local copy so the customer isn't blocked, and the system fixes any inconsistency later.",
+       ok:false,
+       fb:"That's the AP choice, not CP. Answering from a non-quorum local copy is exactly what risks a stale read and a double-spend, then leaves you a reconciliation bill. A CP system refuses precisely to avoid that."},
+      {t:"Both sides keep serving writes because each still has at least one replica.",
+       ok:false,
+       fb:"'At least one replica' isn't a quorum. With W=2, the minority side {Z1} can't reach 2 and must refuse (CP) — only the majority {Z2,Z3} can still commit. Letting both sides write is the AP behavior that produced the $60,000 conflict."}
+    ]
+  },
+  {
+    stem: "An AP shopping-cart store and an AP bank-balance store both stay up during the partition. Why is AP right for the cart but wrong for the balance?",
+    options: [
+      {t:"Both diverge during the partition and must reconcile on heal. A cart's conflicts merge safely (union the items — worst case a duplicate line). A balance's conflicts can't merge: last-write-wins silently drops a withdrawal and lets more money out than the account held.",
+       ok:true,
+       fb:"Correct. AP doesn't avoid the partition's cost — it defers it to reconciliation time, and the size of the bill depends on whether the data can be merged. Set-union/CRDT-style data survives AP; a scalar balance doesn't, because there's no safe automatic merge for 'two people spent the same dollars'."},
+      {t:"The cart store is faster, and speed is why AP suits it.",
+       ok:false,
+       fb:"Latency is the PACELC/normal-operation trade, not what makes AP safe under partition. The deciding factor is reconcilability: can divergent writes be merged without losing or corrupting data? A cart's can; a balance's can't."},
+      {t:"AP guarantees no conflicts because every node always has the latest value.",
+       ok:false,
+       fb:"The opposite — AP's whole point is answering from a local copy during the partition, so nodes can and do diverge. Conflicts are expected; AP just promises to reconcile them later, which only works if the data type supports a safe merge."}
+    ]
+  },
+  {
+    stem: "Your network has been healthy for months, yet your team still argues about 'strong vs eventual consistency'. CAP says nothing about a healthy network — so what are they actually trading, and what's it called?",
+    options: [
+      {t:"PACELC's 'Else' half: with no partition you trade Latency vs Consistency. A strongly-consistent cross-region write waits for a remote quorum ack (~90 ms), while a local-then-replicate write returns in ~1 ms but may be read stale. That everyday tax, paid on every request, usually matters more than the rare partition.",
+       ok:true,
+       fb:"Right. CAP only covers the rare partition; PACELC adds the common case — Else, choose Latency or Consistency. The ~90 ms-vs-~1 ms gap, paid billions of times, is what most 'go eventually consistent' decisions are really about, not the once-a-month cable cut."},
+      {t:"Nothing — when the network is healthy you always get both consistency and availability with no cost.",
+       ok:false,
+       fb:"You get both C and A in the CAP sense, but consistency still has a price even with no partition: latency. Keeping reads linearizable forces writes to wait for a remote quorum. That's the latency-vs-consistency trade CAP is silent about and PACELC names."},
+      {t:"They're trading partition tolerance for speed.",
+       ok:false,
+       fb:"Partition tolerance isn't a dial you trade for speed — you're always P. With the network healthy there's no partition to tolerate; the live trade is latency vs consistency (the 'ELC' in PACELC), i.e. how long a write waits to be globally agreed."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
