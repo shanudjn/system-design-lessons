@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 12 — Indexing &amp; Search: How a Database Finds One Row in 100 Million</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 12 · Worked Example</div>
+  <h1>Indexing &amp; Search: How a Database Finds One Row in 100 Million</h1>
+  <p class="lead">Every lesson so far has decided <i>where</i> data lives — one counter, many shards, replicas across zones. This one is about <i>finding it again</i>. We take ONE concrete table: <b>100 million orders</b> sitting on disk. We ask it three questions — "give me order #84,213,905", "give me this customer's orders", and "find me the blue running shoes" — and watch the same table answer the first in under a millisecond, the second with one extra hop, and the third only once we bolt on a completely different structure. Along the way we build a <b>B-tree</b> from page size and arithmetic, build an <b>inverted index</b> for text, and then turn the whole thing around: we find the exact query where adding an index makes things <i>slower</i>, and name the trade-off every index silently charges you.</p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0012-db-indexing-search.html"</code></p>
+</header>
+
+<h2>The one system we'll trace</h2>
+<p>A table called <code>orders</code>. <b>100 million rows.</b> Each row is about <b>200 bytes</b> (an id, a customer id, a timestamp, an amount, a short text description of the product). The rows live on disk in the order they were inserted — we'll call that pile the <b>heap</b>. Here is the whole shape on one screen: the raw heap, plus the two helper structures this lesson builds.</p>
+
+<div class="diagram"><pre>
+  ONE orders TABLE (100,000,000 rows) — THREE WAYS TO FIND A ROW
+
+  THE HEAP  (rows on disk, in insert order)          Q: find order #84,213,905
+  ┌─────────────────────────────────────────────┐    └─ scan all 100M rows ...... 40 s   ✗
+  │ row · row · row · row · row · row · ... 100M │
+  └─────────────────────────────────────────────┘
+
+  B-TREE INDEX on order_id  (sorted, fan-out ~500)     └─ 3 page hops ............ 0.4 ms  ✓
+            [ root ]                                       point lookups AND ranges
+          /    |    \
+      [ ··· ][ ··· ][ ··· ]   ← internal nodes (separators only)
+        / | \   ...
+     [ leaf → row pointer ] ........... 125M slots reachable in 3 levels
+
+  INVERTED INDEX on the product text                   Q: find "blue running shoes"
+     "blue"  → [ 12, 88, 207, ... 200,000 docs ]        └─ intersect two postings
+     "run"   → [ 88, 91, 207, ... 120,000 docs ]           lists, not 10M scans .. fast ✓
+     "shoe"  → [ 88, 207, 404, ...  50,000 docs ]
+              AND = ids in ALL THREE = { 88, 207, ... }
+</pre></div>
+
+<p class="note"><span class="key">An index is a second, sorted copy of one column (plus a pointer back to the row), kept in a shape you can binary-search.</span> The table answers "where is everything"; the index answers "where is <i>this</i>" without reading everything. That's the whole idea — the rest of this lesson is making "without reading everything" concrete enough to predict in milliseconds.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Heap</b> — the rows themselves, stored on disk roughly in insert order. No search help on its own.</li>
+  <li><b>Full table scan</b> — reading every row to find the ones you want. Always correct, often far too slow.</li>
+  <li><b>Page (block)</b> — the fixed-size chunk a database reads from disk at once. We'll use <b>8 KB</b>, a common default.</li>
+  <li><b>Index</b> — a sorted auxiliary structure mapping a key to the location of its row(s). Speeds reads, costs writes + space.</li>
+  <li><b>B-tree</b> — the balanced, high-fan-out tree almost every relational index uses. "Balanced" = every leaf is the same depth, so every lookup costs the same.</li>
+  <li><b>Fan-out</b> — how many children one tree node points to. Big fan-out → shallow tree → few disk reads.</li>
+  <li><b>Selectivity</b> — what fraction of the table a query keeps. A query that returns 5 rows is highly selective; one that returns half the table is not.</li>
+  <li><b>Inverted index</b> — for text: a map from each <i>word</i> to the sorted list of documents that contain it (a <b>postings list</b>).</li>
+  <li><b>Write amplification</b> — one logical write turning into many physical writes, because every index also has to be updated.</li>
+</ul>
+
+<h2>Move 1 — Estimate: the scan we can't afford</h2>
+<p>Before reaching for an index, prove we need one. The honest baseline for "find order #84,213,905" with no index is: read the whole heap and check each row. Let's price that.</p>
+
+<div class="card calc">
+  <p><b>Worked: the cost of a full table scan.</b></p>
+  <p>• Table size: <b>100,000,000 rows × 200 bytes = 20,000,000,000 bytes = 20 GB.</b><br>
+     • A fast SSD streams sequential data at roughly <b>500 MB/s</b>.<br>
+     • Time to read it all: <b>20,000 MB ÷ 500 MB/s = 40 seconds.</b></p>
+  <p>Forty seconds, for <i>one</i> lookup, on every query that filters by something the heap isn't sorted on. At even 100 such queries per second you'd need 4,000 seconds of disk time per second — impossible by a factor of 4,000. The scan isn't slow because the disk is slow; it's slow because we're reading <b>100 million rows to return 1</b>. The waste is the 99,999,999 we touched for nothing.</p>
+</div>
+
+<p>Now the same lookup with a B-tree index on <code>order_id</code> (we'll build the structure in Move 2). A lookup walks from the root down to a leaf — a handful of page reads — instead of scanning everything.</p>
+
+<div class="card calc">
+  <p><b>Worked: the cost with an index.</b> A B-tree on <code>order_id</code> for 100M rows is <b>3 levels deep</b> (proven next). Finding the row reads 3 pages to reach the leaf, then 1 page to fetch the row from the heap = <b>4 page reads</b>. A random SSD read is about <b>0.1 ms</b>. Total ≈ <b>4 × 0.1 ms = 0.4 ms</b> — and the top two levels are tiny (a few MB) so they almost always sit in RAM, often making it just <i>one</i> real disk read. Either way: <b>40 s → ~0.4 ms, a ~100,000× speed-up</b>, because we read 4 pages instead of 2.5 million.</p>
+</div>
+
+<p class="note why"><b>Name the first trade-off:</b> an index is not free speed — it's <b>read speed bought with write cost and storage</b>. The sorted copy has to be kept sorted on every insert, update, and delete, and it occupies real disk. We'll cash that bill in Move 4. The rule of the whole lesson: <span class="key">an index trades cheaper reads for more expensive writes — so it pays off exactly when you read a column far more often than you write it.</span></p>
+
+<h2>Move 2 — Model: build the B-tree from arithmetic</h2>
+<p>Why is a 100-million-row index only 3 levels deep? Because each node is a whole 8 KB page, and a page holds a lot of keys. "Few levels" falls straight out of the page size — let's compute the <b>fan-out</b>.</p>
+
+<div class="card calc">
+  <p><b>Worked: fan-out, then depth (the Base62-style walk-through).</b></p>
+  <p>• One node = one page = <b>8 KB = 8,192 bytes.</b><br>
+     • One entry inside a node = a key + a pointer. For an 8-byte <code>order_id</code> plus a ~6–8 byte pointer, call it <b>~16 bytes</b> per entry.<br>
+     • Entries per node (the fan-out): <b>8,192 ÷ 16 ≈ 512</b>. Round down to <b>~500</b> for overhead.</p>
+  <p>Now stack the levels, each multiplying reach by ~500:</p>
+  <p style="margin:.3rem 0 .1rem"><code>Level 1 (root) ....... 500 children</code><br>
+     <code>Level 2 .............. 500 × 500&nbsp; = 250,000</code><br>
+     <code>Level 3 (leaves) ..... 500³&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; = 125,000,000 slots</code></p>
+  <p><b>125 million &gt; 100 million</b>, so <b>3 levels</b> index the whole table. Going from 100M rows to 1 <i>billion</i> rows? <code>500⁴ = 62,500,000,000</code> — still only <b>4 levels</b>. That's the magic of high fan-out: the tree's depth barely moves as the table explodes, so lookup cost stays nearly flat. Formally the depth is <code>log₅₀₀(rows)</code>, and a logarithm with base 500 grows <i>very</i> slowly.</p>
+</div>
+
+<p>Two properties make the B-tree the default index almost everywhere, and both are trade-offs worth naming:</p>
+<ul>
+  <li><b>It stays balanced.</b> When a leaf fills up it <b>splits</b> in two and pushes a separator up; the tree grows at the root, never lopsided. Cost: that occasional split is extra write work (Move 4). Benefit: <i>every</i> lookup is the same 3–4 reads, no slow cases.</li>
+  <li><b>Its leaves are sorted and linked.</b> Because keys sit in order, the B-tree answers not just "= this id" but "<b>between</b> these two dates" and "give me these in <b>sorted</b> order" — just find the start, then walk the linked leaves. This is the one thing to remember when choosing index <i>type</i>:</li>
+</ul>
+
+<table>
+  <tr><th>Index type</th><th>Answers</th><th>Can't do</th><th>Trade-off</th></tr>
+  <tr><td><b>B-tree</b></td><td><code>=</code>, <code>&lt; &gt;</code>, ranges, <code>ORDER BY</code>, prefix <code>LIKE 'abc%'</code></td><td>nothing big — it's the safe default</td><td>~3–4 reads; pays write cost on splits</td></tr>
+  <tr><td><b>Hash</b></td><td><code>=</code> only, in ~1 read</td><td>any range or sort (hashing destroys order)</td><td>fastest equality, useless for <code>&gt;</code> / <code>ORDER BY</code></td></tr>
+  <tr><td><b>Inverted</b></td><td>"which docs contain this <i>word</i>"</td><td>ranges, exact-row lookups</td><td>great for text; expensive to keep fresh</td></tr>
+</table>
+
+<p class="note">A <b>hash</b> index is tempting because <code>=</code> in one read beats <code>=</code> in three. But hashing throws away order — Lesson 03's hash-vs-range sharding trade-off, now <i>inside</i> a single table. The moment a query says <code>BETWEEN</code> or <code>ORDER BY</code>, the hash index is dead weight and the B-tree wins. That's why B-tree is the default and hash is the special case.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+
+<h3>Path A — point lookup by the primary key</h3>
+<p><code>SELECT * FROM orders WHERE order_id = 84213905</code>. The primary-key index <i>is</i> a B-tree on <code>order_id</code>. Walk root → internal → leaf (3 reads); the leaf points at the row; fetch it (1 read). <b>~0.4 ms</b>, exactly Move 1's number. Done.</p>
+
+<h3>Path B — a secondary index, and the extra hop</h3>
+<p>Now <code>SELECT * FROM orders WHERE customer_id = 5567</code>. The heap isn't sorted by customer, and neither is the primary-key tree. So we build a <b>second</b> B-tree, on <code>customer_id</code> — a "secondary index." But notice what its leaves can store: not the row, just a <i>pointer</i> to where the row lives (its primary key or heap location). So a secondary-index lookup is <b>two</b> lookups:</p>
+
+<div class="diagram"><pre>
+  SECONDARY-INDEX LOOKUP = TWO HOPS (the "bookmark lookup")
+
+  WHERE customer_id = 5567
+     │
+     ├─ 1) walk the customer_id B-tree ......... 3 reads → finds order_ids [771, 9930, 84213905]
+     │
+     └─ 2) for EACH match, look up the row ..... 3 reads each in the primary tree (or 1 heap read)
+                                                  └─ this second hop is the hidden cost
+</pre></div>
+
+<div class="card calc">
+  <p><b>Worked: when the second hop bites — and the fix.</b> If customer 5567 has 3 orders, that's 3 reads to find them + ~3 reads each to fetch them ≈ <b>12 reads</b>, still ~1 ms. Fine. But say all you needed was the <i>total</i>: <code>SELECT amount FROM orders WHERE customer_id = 5567</code>. You still pay the second hop just to read one number that could have lived in the index. The fix is a <b>covering index</b> — include <code>amount</code> in the index itself: <code>INDEX (customer_id, amount)</code>. Now the query is "index-only": the answer is in the leaf, the heap is never touched, and the second hop vanishes. <span class="key">Trade-off: a covering index is bigger (it duplicates the extra column) in exchange for skipping the row fetch.</span> Storage for latency — the same shape as Lesson 02's cache.</p>
+</div>
+
+<h3>Path C — a range query (where B-tree earns its keep)</h3>
+<p><code>SELECT * FROM orders WHERE created_at BETWEEN '2026-06-01' AND '2026-06-07'</code>. With a B-tree on <code>created_at</code>: descend once to the first row on June 1 (3 reads), then <b>walk the linked leaves</b> in order until you pass June 7. You read only the matching range, in sorted order, for free. A hash index <i>cannot do this at all</i> — its entries are scattered by the hash, so "everything between two dates" would mean scanning the whole index. This is the concrete payoff of "B-tree keeps order," and the reason you almost never pick hash.</p>
+
+<h3>Path D — "blue running shoes" (where B-trees give up)</h3>
+<p>Last question: <code>find products whose description contains "blue running shoes"</code>. A B-tree on the <code>description</code> column sorts whole strings. It can find descriptions that <i>start with</i> "blue" (a prefix), but it is useless for a word in the <i>middle</i> — <code>LIKE '%shoes%'</code> can't use it, because the tree is sorted by first letter, not by "contains." To search text by word, you need the structure built for it: the <b>inverted index</b>.</p>
+
+<div class="card calc">
+  <p><b>Worked: build and query an inverted index.</b> Take 10 million product descriptions. Building the index:</p>
+  <p>1. <b>Tokenize</b> each description into words: "Blue Running Shoes" → <code>["blue","running","shoes"]</code>.<br>
+     2. <b>Normalize</b>: lowercase, and <b>stem</b> to root forms so "running" and "runs" both become <code>run</code>, "shoes" → <code>shoe</code>.<br>
+     3. For each word, append this product's id to that word's <b>postings list</b> (kept sorted).</p>
+  <p>Result: <code>"blue" → [12, 88, 207, … 200,000 ids]</code>, <code>"run" → [88, 91, … 120,000]</code>, <code>"shoe" → [88, 207, … 50,000]</code>. To answer "blue running shoes" you take the <b>intersection (AND)</b> of the three sorted lists — ids that appear in all three. Because the lists are sorted, you merge them like three sorted decks, walking the <i>shortest</i> (50,000) and checking the others — on the order of <b>a few hundred thousand comparisons</b>, never reading a product row. Compare to the naive way: scan all <b>10,000,000</b> descriptions and substring-match each. The inverted index turns a 10M-row scan into a small merge of pre-built lists — and, as a bonus, it knows how <i>often</i> each word appears, which is exactly what ranking ("which match is most relevant") is built from.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> the inverted index makes word-search cheap by paying up front — it pre-computes a list for every distinct word, and every time a description changes it must add/remove that id from each affected list. So it's <b>fast, rich text search bought with build cost and update cost</b>, and it's usually kept in a <i>separate</i> system (Elasticsearch, Lucene, a search service) that trails the source database by a second or two. That staleness is deliberate: search trades <b>perfect freshness for query power</b>. You wouldn't compute an account balance from it — but "blue running shoes," ranked by relevance, is exactly what it's for.</p>
+
+<h2>Move 4 — Find the next bottleneck: when an index makes things worse</h2>
+<p>Indexes feel like pure win, so the instinct is to index every column. That instinct is the bottleneck. Two concrete ways an index <i>hurts</i>:</p>
+
+<h3>The write tax (write amplification)</h3>
+<div class="card calc">
+  <p><b>Worked: every index multiplies your writes.</b> Suppose <code>orders</code> has the primary key plus <b>5 secondary indexes</b> (customer, date, status, product, region). A single <code>INSERT</code> of one order now writes <b>the heap row + 5 index entries = 6 physical writes</b>, and any of those 5 B-trees might have to split a full page, adding more. So your "one insert" costs roughly <b>6×</b> the disk work, and your write throughput drops by about the same factor. <span class="key">Trade-off named: each index speeds the reads that use it and slows <i>every</i> write to the table.</span> On a write-heavy table (Lesson 03's 40,000 writes/sec), a careless 6th index can be the thing that tips you over the throughput wall.</p>
+</div>
+
+<h3>The selectivity trap (an index the planner refuses)</h3>
+<p>An index only helps if it lets you <i>skip</i> most of the table. Put one on a column that barely narrows anything and it can be slower than no index at all — because the random row-fetches cost more than a clean sequential scan.</p>
+
+<div class="card calc">
+  <p><b>Worked: the break-even point.</b> A full scan of our table is <b>40 s</b> (Move 1). A secondary-index lookup pays one <b>random</b> read (~0.1 ms) per matched row to fetch it from the heap. So index-with-fetches beats the scan only while:</p>
+  <p style="text-align:center; margin:.6rem 0"><code>matched_rows × 0.1 ms &lt; 40 s</code> &nbsp;→&nbsp; <code>matched_rows &lt; 400,000</code></p>
+  <p>That's <b>400,000 of 100,000,000 = ~0.4% of the table</b>. Index a high-cardinality column like <code>customer_id</code> (each value matches a handful of rows, well under 0.4%) and the index wins enormously. Index a low-cardinality column like <code>status</code> where <code>status='shipped'</code> matches <b>50,000,000 rows</b> — and using the index means 50M random reads ≈ <b>5,000 s</b>, <i>125× slower</i> than just scanning the heap in 40 s. A good query planner spots this from its statistics and <b>ignores the index</b>, scanning instead. So the index you built costs write tax and storage and is never even used. <span class="key">Trade-off: an index pays off in proportion to its selectivity — on a column with few distinct values it's all cost and no benefit.</span></p>
+</div>
+
+<p>So "find the first bottleneck" here flips the usual direction: the bottleneck isn't a missing index, it's the <b>wrong</b> ones. The discipline is to index the columns your real queries filter and sort on, make them cover when a hot query needs just a few columns, and delete indexes nothing uses — each one is a standing tax on every write.</p>
+
+<table>
+  <tr><th>Situation</th><th>Index?</th><th>Why</th></tr>
+  <tr><td>Lookup by <code>customer_id</code> (few rows each)</td><td><b>Yes</b>, B-tree</td><td>high selectivity — skips ~all the table</td></tr>
+  <tr><td>Range / sort by <code>created_at</code></td><td><b>Yes</b>, B-tree</td><td>ordered leaves answer ranges for free</td></tr>
+  <tr><td>Hot query reads 2 columns by <code>customer_id</code></td><td><b>Covering</b> index</td><td>bigger index, but skips the heap hop</td></tr>
+  <tr><td>Filter by <code>status</code> (3 values, huge buckets)</td><td><b>No</b></td><td>low selectivity — planner scans anyway</td></tr>
+  <tr><td>Full-text "blue running shoes"</td><td><b>Inverted</b> index / search system</td><td>B-tree can't match a mid-string word</td></tr>
+  <tr><td>Column never used in a <code>WHERE</code>/<code>ORDER BY</code></td><td><b>No</b></td><td>pure write tax + storage, zero reads</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We took one 100-million-row <code>orders</code> table and asked it three questions. <b>Estimate</b> priced the no-index baseline — a 20 GB heap scanned at 500 MB/s is <b>40 s</b> per lookup, because we read 100M rows to return 1 — and an index cuts it to <b>~0.4 ms</b>. <b>Model</b> built the B-tree straight from page size: 8 KB pages ÷ 16-byte entries ≈ <b>500 fan-out</b>, so <code>500³ = 125M &gt; 100M</code> means just <b>3 levels</b>, and a logarithm base 500 keeps depth nearly flat as the table grows — plus the leaves stay <b>sorted</b>, which is why B-tree (not hash) is the default. <b>Tracing the paths</b> walked a point lookup (~0.4 ms), a secondary index and its hidden <b>second hop</b> (fixed by a covering index — storage for latency), a range query where ordered leaves shine, and full-text search where B-trees give up and the <b>inverted index</b> turns a 10M-row scan into a small merge of postings lists. The <b>next bottleneck</b> reversed the lesson: indexes aren't free, so too many or the wrong ones hurt — a 6th index makes one insert <b>6 physical writes</b>, and a low-selectivity index on <code>status</code> is <b>125× slower</b> than a scan and gets ignored anyway. The thread: <span class="key">an index is a bet that a column will be read far more than written — right bets buy 100,000× reads, wrong bets are pure tax.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lessons build directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>Idempotency:</b> the search index trailing the database, and Lesson 05/07's at-least-once retries, both replay writes — so the next lesson is the machinery that makes a replayed or duplicated write a safe no-op: dedup keys and exactly-once <i>effects</i> (not exactly-once delivery).</p>
+  <p style="margin:.2rem 0">• <b>CDN design &amp; feed fan-out:</b> caching and pre-computing reads at the edge — the same "do the work before the query, not during it" instinct the inverted index just used.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">heap</span>
+    <span class="pill">full table scan</span>
+    <span class="pill">index</span>
+    <span class="pill">page / block</span>
+    <span class="pill">B-tree</span>
+    <span class="pill">fan-out</span>
+    <span class="pill">depth / log</span>
+    <span class="pill">page split</span>
+    <span class="pill">primary key index</span>
+    <span class="pill">secondary index</span>
+    <span class="pill">bookmark lookup</span>
+    <span class="pill">covering index</span>
+    <span class="pill">range query</span>
+    <span class="pill">hash index</span>
+    <span class="pill">selectivity</span>
+    <span class="pill">cardinality</span>
+    <span class="pill">query planner</span>
+    <span class="pill">write amplification</span>
+    <span class="pill">inverted index</span>
+    <span class="pill">postings list</span>
+    <span class="pill">tokenize / stem</span>
+    <span class="pill">intersection (AND)</span>
+  </p>
+  <p>That's Lesson 12, built on Lesson 02's "storage for latency" cache trade, Lesson 03's hash-vs-range ordering trade (now inside one table), and Lesson 05/07's replayed-write problem (the cliffhanger for idempotency). <b>Ask me follow-ups</b> — e.g. "why do databases use B-trees instead of binary search trees?", "what's an LSM-tree and why does Cassandra use it instead of a B-tree?", "how does a composite index's leftmost-prefix rule work?", "what exactly is stemming vs lemmatization?", or "how does the search index stay in sync with the database?" When you're ready, say <b>next</b> and we'll go deeper on <i>Idempotency — making retried and replayed writes safe</i>.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "A B-tree index on a 100-million-row table is only 3 levels deep, and growing the table to 1 billion rows makes it just 4. Why does depth barely move?",
+    options: [
+      {t:"Each node is a full page holding ~500 entries, so each level multiplies the rows reachable by ~500 (500³ = 125M, 500⁴ = 62.5B). Depth is log base 500 of the row count, and that logarithm grows extremely slowly.",
+       ok:true,
+       fb:"Right. High fan-out is the whole trick: a page that fits ~500 keys means three levels already reach 125M rows, so a lookup is ~3–4 page reads no matter how big the table gets. That flat cost is why almost every relational index is a B-tree."},
+      {t:"The database keeps the entire index in RAM, so the number of disk levels doesn't matter.",
+       ok:false,
+       fb:"The top levels are often cached, but that's not why depth is small — a 100M-row index is gigabytes and won't fully fit. Depth is small because of fan-out: ~500 children per node means very few levels are needed. Caching the top reduces the real disk reads further, but the shallow shape comes from the math."},
+      {t:"It uses a binary tree, and binary trees are always balanced and shallow.",
+       ok:false,
+       fb:"A binary tree has fan-out 2, so 100M rows would be ~27 levels = ~27 disk reads — far too slow. The point of a B-tree is the opposite: pack ~500 keys per node so the tree is wide and shallow, turning 27 reads into 3."}
+    ]
+  },
+  {
+    stem: "You run SELECT amount FROM orders WHERE customer_id = 5567 against a B-tree index on customer_id, and it's slower than expected even though customer 5567 has just a few orders. What's the cost, and the standard fix?",
+    options: [
+      {t:"A secondary index leaf holds only a pointer to the row, so each match needs a second 'bookmark' lookup into the heap to read 'amount'. A covering index — INDEX(customer_id, amount) — stores amount in the leaf, so the query is answered index-only and the heap hop disappears.",
+       ok:true,
+       fb:"Exactly. The secondary index finds the rows but doesn't contain them, so reading any non-indexed column costs a second hop per row. Putting the needed column into the index (a covering index) trades extra index size for skipping the heap fetch — storage for latency, the same shape as a cache."},
+      {t:"The index on customer_id is corrupt; rebuilding it removes the extra reads.",
+       ok:false,
+       fb:"Nothing is corrupt — this is normal secondary-index behavior. The leaf stores a pointer, not the row, so fetching a column that isn't in the index always costs a second lookup. The fix is a covering index, not a rebuild."},
+      {t:"customer_id has low selectivity, so the planner is scanning the whole table.",
+       ok:false,
+       fb:"customer_id is high-selectivity here (a few rows per customer), so the index is used. The slowdown is the per-row second hop to fetch 'amount' from the heap, which a covering index eliminates. Low selectivity is the opposite problem (next question)."}
+    ]
+  },
+  {
+    stem: "Your orders table has a 'status' column with 3 values, and 'shipped' matches 50 million of the 100 million rows. Why might adding a B-tree index on 'status' make that query slower, not faster?",
+    options: [
+      {t:"Using the index means ~50M random row fetches (~0.1 ms each ≈ 5,000 s), far worse than a single sequential scan of the 20 GB heap (~40 s). Index-with-fetches only beats a scan below ~0.4% selectivity, so the planner ignores the index — and you've added write tax for nothing.",
+       ok:true,
+       fb:"Correct. An index only helps when it lets you skip most of the table. Matching half the rows means a flood of scattered random reads that's dramatically slower than streaming the heap sequentially. The planner sees this from its stats and scans anyway, so the low-selectivity index is pure cost: storage plus a tax on every write."},
+      {t:"B-tree indexes can't store text columns like 'status', so the query falls back to a scan.",
+       ok:false,
+       fb:"B-trees index text fine. The problem isn't the type, it's the selectivity: 'shipped' matches 50M rows, so using the index means 50M random fetches — slower than a sequential scan. The index is ignored because it doesn't narrow the result, not because of the column type."},
+      {t:"Three distinct values is too few for a B-tree to balance, so it degrades into a linked list.",
+       ok:false,
+       fb:"B-trees stay balanced regardless of how many distinct values exist — duplicates are fine. The issue is downstream: a value matching half the table can't be served efficiently by random row fetches, so the scan wins and the index goes unused."}
+    ]
+  },
+  {
+    stem: "Searching 10 million product descriptions for 'blue running shoes', a B-tree on the description column is no help, but an inverted index answers it fast. What's the core difference?",
+    options: [
+      {t:"A B-tree sorts whole strings, so it can match a prefix ('blue%') but not a word in the middle ('%shoes%'). An inverted index pre-maps each word to a sorted list of doc ids (a postings list), so the query is just the intersection of the 'blue', 'run', and 'shoe' lists — a small merge instead of a 10M-row scan.",
+       ok:true,
+       fb:"Right. The B-tree's order is by the whole string's first characters, useless for a mid-string word. The inverted index pays up front to list every doc per word, turning text search into intersecting pre-sorted postings lists — and it tracks word frequencies, which is what relevance ranking is built on."},
+      {t:"The inverted index is faster only because it's stored in RAM while the B-tree is on disk.",
+       ok:false,
+       fb:"Storage location isn't the difference — either structure can be cached. The difference is shape: a B-tree can't look up a word inside a string, while an inverted index is organized word → documents, so 'contains shoes' is a direct list lookup rather than a scan."},
+      {t:"A B-tree can't index a column larger than a page, so long descriptions overflow it.",
+       ok:false,
+       fb:"That's not the reason. Even short descriptions can't be word-searched by a B-tree, because the tree is sorted by the whole string, not by the individual words it contains. The inverted index exists precisely to index by word — which a B-tree fundamentally can't do."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

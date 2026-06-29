@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0012-db-indexing-search.html">
+    <div class="num">LESSON 12</div>
+    <div class="title">Indexing &amp; Search: How a Database Finds One Row in 100 Million</div>
+    <div class="blurb">One 100M-row orders table, three questions. Price the no-index baseline (a 20 GB scan = 40 s) and watch an index cut it to ~0.4 ms; build a B-tree from page size (8 KB ÷ 16 B ≈ 500 fan-out → just 3 levels); trace a point lookup, a secondary index's hidden second hop (fixed by a covering index), a range query, and full-text "blue running shoes" via an inverted index. Then flip it: when an index hurts — the 6× write tax and the low-selectivity index that's 125× slower than a scan.</div>
+  </a>
   <a class="lesson" href="lessons/0011-cap-in-practice.html">
     <div class="num">LESSON 11</div>
     <div class="title">CAP in Practice: What a Partition Forces You to Give Up</div>

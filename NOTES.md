@@ -97,7 +97,17 @@
     next wall = the choice CAP hides → **PACELC**, the everyday ~90 ms
     latency-vs-consistency tax, and "AP is only as good as your ability to
     reconcile" → idempotency. (Lesson 0011)
-12. DB indexing & search systems — B-trees, inverted indexes, when an index hurts.
+12. ✅ **DB indexing & search** — one 100M-row orders table, three queries:
+    estimate the no-index scan (20 GB ÷ 500 MB/s = 40 s for 1 row) vs ~0.4 ms
+    indexed; build the B-tree from page size (8 KB ÷ 16 B ≈ 500 fan-out → 500³ =
+    125M > 100M so 3 levels, depth = log₅₀₀ rows grows slowly); B-tree keeps order
+    (ranges/sort) vs hash (= only) — L03's hash-vs-range trade inside one table;
+    secondary index = a second hop (bookmark lookup) → covering index (storage for
+    latency, L02 shape); full-text "blue running shoes" → inverted index (tokenize/
+    stem → postings lists → intersect, not a 10M scan); next walls = write
+    amplification (5 indexes → 6× writes) and the selectivity trap (status matches
+    50M → index 125× slower than scan, planner ignores it). Break-even ≈ 0.4% of
+    table. (Lesson 0012)
 13. Idempotency — making retried writes safe (dedup keys, exactly-once effects).
 14. CDN design — edge caching, cache keys, invalidation, origin shielding.
 15. Notification/feed fan-out — push vs pull, fan-out-on-write vs read.
