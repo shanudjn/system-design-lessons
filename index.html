@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0013-idempotency.html">
+    <div class="num">LESSON 13</div>
+    <div class="title">Idempotency: How to Retry a Payment Without Charging Twice</div>
+    <div class="blurb">One <code>POST /charge $50</code>, retried after a timeout — and now it's $100. Price the bug (10M charges/day × 2% duplicates = $10M/day of double-charges) and use Little's Law to see ~93 charges in flight at once. Build the fix: a client-chosen idempotency key plus a durable dedup store the server checks before touching the card network. Trace the happy path, the easy retry (replay the saved response), the concurrent-retry race (closed by an atomic unique-key claim), and the crash-in-the-middle (one transaction, or push the key downstream). Then the walls: the TTL trap and the natural idempotency that needs no key at all.</div>
+  </a>
   <a class="lesson" href="lessons/0012-db-indexing-search.html">
     <div class="num">LESSON 12</div>
     <div class="title">Indexing &amp; Search: How a Database Finds One Row in 100 Million</div>

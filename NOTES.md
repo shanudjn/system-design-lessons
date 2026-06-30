@@ -108,9 +108,23 @@
     amplification (5 indexes → 6× writes) and the selectivity trap (status matches
     50M → index 125× slower than scan, planner ignores it). Break-even ≈ 0.4% of
     table. (Lesson 0012)
-13. Idempotency — making retried writes safe (dedup keys, exactly-once effects).
+13. ✅ **Idempotency** — one `POST /charge $50` retried after a timeout turns
+    $50 into $100; price it (10M/day × 2% dup = $10M/day) and use Little's Law
+    (L=λW≈93) to show retries race a live original; the fix = client-chosen
+    idempotency key + durable dedup store (`key→status,response`) checked before
+    the card network; trace happy path, retry-after-success (replay saved
+    response), the concurrent-retry check-then-act race (closed by an atomic
+    unique-key claim, L06's race again), and the crash-in-the-middle (commit
+    effect+record in one transaction, or push the key downstream); exactly-once
+    *effect* on at-least-once *delivery* (no exactly-once on the wire); next
+    walls = the TTL trap (forget too soon → late redelivery double-charges; too
+    long → bloat) and natural idempotency (absolute PUT/delete/conditional needs
+    no key). (Lesson 0013)
 14. CDN design — edge caching, cache keys, invalidation, origin shielding.
 15. Notification/feed fan-out — push vs pull, fan-out-on-write vs read.
+16. Search systems — query parsing, ranking (TF-IDF/BM25), relevance vs recall.
+17. Distributed tracing & observability — trace IDs, spans, sampling, the
+    p99-vs-mean gap, and finding the slow hop in a 20-service request.
 
 ## Lesson format conventions
 - Four reusable "moves" framing introduced in Lesson 01: estimate → model →

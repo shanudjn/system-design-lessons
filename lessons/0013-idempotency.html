@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 13 — Idempotency: How to Retry a Payment Without Charging Twice</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 13 · Worked Example</div>
+  <h1>Idempotency: How to Retry a Payment Without Charging Twice</h1>
+  <p class="lead">Lesson 07 told you to retry a timed-out call, and Lessons 05 and 09 told you a queue redelivers anything it isn't sure was handled. Both create the same danger: <b>the same write happens twice.</b> This lesson takes the most unforgiving version of that danger — a <b>payments API</b> charging a card <b>$50</b> — and traces it end to end. We'll watch a single retry turn $50 into $100, then build the one mechanism that makes a repeated write a safe no-op: the <b>idempotency key</b>. We'll size the bug with real money, walk the dedup store that fixes it, trace the nasty concurrent-retry race, and find the bottleneck that catches everyone — the gap where the charge succeeds but the record of it doesn't.</p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0013-idempotency.html"</code></p>
+</header>
+
+<h2>The one system we'll trace</h2>
+<p>A payments service with one endpoint: <code>POST /charge</code>. The client sends "charge customer 5567 <b>$50</b>"; the server calls the card network, moves the money, and replies <code>200 OK</code>. <b>10 million charges a day.</b> The whole trouble starts with one fact from Lesson 07: <span class="key">a timeout is not an answer.</span> When the client's request times out, the charge may have already happened — the reply just got lost on the way back. The client can't tell "never charged" from "charged, reply lost." So it retries. Here is the whole problem and its fix on one screen.</p>
+
+<div class="diagram"><pre>
+  ONE CHARGE, RETRIED — WHY $50 BECOMES $100, AND THE FIX
+
+  WITHOUT a key                                WITH an idempotency key  (key = "ik_9f3a")
+  ─────────────                                ────────────────────────────────────────
+  client ─POST /charge $50─▶ [server]          client ─POST /charge $50  key=ik_9f3a─▶ [server]
+      ✗ timeout (reply lost)    charges $50         ✗ timeout (reply lost)    charges $50, SAVES key→result
+  client ─retry───────────▶ [server]           client ─retry  key=ik_9f3a─────────▶ [server]
+                                charges $50 AGAIN                              sees key → REPLAYS saved result
+                                                                              (does NOT charge again)
+  ┌───────────────────────────────┐            ┌───────────────────────────────┐
+  │  result: $100   ✗  DOUBLE      │            │  result: $50    ✓  EXACTLY ONCE │
+  └───────────────────────────────┘            └───────────────────────────────┘
+</pre></div>
+
+<p class="note"><span class="key">An operation is <b>idempotent</b> when doing it twice has the same effect as doing it once.</span> "Set the light switch to ON" is idempotent — flip it twice, still on. "Charge $50" is <i>not</i> — do it twice, you're out $100. The whole lesson is about taking a non-idempotent operation and wrapping it so the <i>second</i> attempt safely does nothing.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Idempotent</b> — an operation where N&nbsp;≥&nbsp;1 identical applications give the same result as exactly one. Retrying it is free.</li>
+  <li><b>Idempotency key</b> — a unique id the <i>client</i> picks for one logical operation and sends with every attempt (including retries), so the server can recognize "this is the same request again."</li>
+  <li><b>Dedup store</b> — the server's table mapping <code>key → (status, saved response)</code>. The memory that lets a retry be recognized.</li>
+  <li><b>At-least-once delivery</b> — the network/queue guarantee from Lessons 05/09: a message arrives one or more times, never zero. Duplicates are normal, not a bug.</li>
+  <li><b>Exactly-once effect</b> — the goal: no matter how many times a request is delivered, the <i>money moves once</i>. Built from at-least-once delivery + idempotent processing.</li>
+  <li><b>In-flight window</b> — the span while the first attempt is still running. A retry that arrives <i>inside</i> it races the original (Lesson 06's concurrency, now over the network).</li>
+  <li><b>Atomic commit</b> — two changes that both happen or neither does. We'll need the charge and its key-record to commit together.</li>
+  <li><b>TTL</b> — time-to-live: how long the dedup store remembers a key before forgetting it.</li>
+</ul>
+
+<h2>Move 1 — Estimate: what the bug costs, and how often it fires</h2>
+<p>Before building the fix, price the problem. Two numbers matter: how often a duplicate actually arrives, and what each duplicate costs.</p>
+
+<div class="card calc">
+  <p><b>Worked: the daily cost of doing nothing.</b></p>
+  <p>• Volume: <b>10,000,000 charges/day</b> — about <b>10,000,000 ÷ 86,400 ≈ 116 charges/second.</b><br>
+     • Retry rate: timeouts, dropped replies, user double-clicks, and queue redeliveries mean a small slice of requests arrive twice. Say a conservative <b>2%</b>.<br>
+     • Duplicate attempts: <b>10,000,000 × 2% = 200,000 duplicate charges/day.</b><br>
+     • Average charge: <b>$50</b>.</p>
+  <p><b>200,000 × $50 = $10,000,000 of erroneous double-charges every day.</b> That is the bug, in dollars. It isn't a rare edge case you can patch later — at this scale it fires 200,000 times a day, and every one is a refund, a chargeback, and a furious customer. Idempotency isn't a nicety here; it's the difference between a working payments system and a non-working one.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Worked: how many retries collide with a still-running original.</b> A retry is only <i>dangerous in a new way</i> if it arrives while the first attempt is still in flight (a finished-and-recorded charge is easy to recognize; an in-progress one is the hard case). Use <b>Little's Law</b> — the average number in flight is arrival rate × time each takes: <code>L = λ × W</code>. With <code>λ = 116/s</code> and a p99 charge latency of <code>W ≈ 0.8 s</code> (Lesson 07's "set the timeout from p99"), <b>L = 116 × 0.8 ≈ 93 charges in flight at any instant.</b> So at any moment ~93 operations are mid-charge, and a retry of any of them lands in a live race. That ~0.8 s in-flight window is exactly the case Move 3 has to get right.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off up front:</b> you cannot fix this by making delivery perfect. <span class="key">Exactly-once <i>delivery</i> over a network is impossible — the sender can never be sure its message (or its acknowledgement) arrived, so it must either risk losing it or risk sending it again.</span> Every real system therefore chooses <b>at-least-once</b> delivery (duplicates) and then kills the duplicates at the <i>receiver</i>. Idempotency is how you buy an exactly-once <b>effect</b> on top of an at-least-once <b>wire</b> — you trade "no duplicates ever arrive" (unachievable) for "duplicates arrive but cost nothing" (achievable).</p>
+
+<h2>Move 2 — Model: the idempotency key and the dedup store</h2>
+<p>The fix has two halves. First, the client names the operation. Second, the server remembers the name.</p>
+
+<h3>Half 1 — the client picks a key</h3>
+<p>Before its <i>first</i> attempt, the client generates a unique <b>idempotency key</b> — a random UUID like <code>ik_9f3a...</code> — for this one logical charge. It sends that key with the request (an <code>Idempotency-Key</code> header) and reuses <i>the same key on every retry</i>. The key says: "all of these requests are the same operation; perform it at most once." The key must come from the client, because only the client knows that its retry is a retry — to the server, two requests with two different keys are simply two different charges.</p>
+
+<h3>Half 2 — the server remembers</h3>
+<p>The server keeps a <b>dedup store</b>: a table keyed by the idempotency key. Each row records the request's <b>status</b> and, once finished, the <b>saved response</b>.</p>
+
+<table>
+  <tr><th>idempotency_key</th><th>status</th><th>saved_response</th><th>created_at</th></tr>
+  <tr><td><code>ik_9f3a</code></td><td><code>COMPLETED</code></td><td><code>{charge_id: 88, amount: 50}</code></td><td>10:00:01</td></tr>
+  <tr><td><code>ik_7b21</code></td><td><code>IN&nbsp;PROGRESS</code></td><td><code>(none yet)</code></td><td>10:00:02</td></tr>
+</table>
+
+<p>The rule the server follows on every request: <b>look up the key first.</b></p>
+<div class="diagram"><pre>
+  ON EVERY REQUEST, BEFORE TOUCHING THE CARD NETWORK:
+
+  key seen before?
+    ├─ no  ──▶ claim it (INSERT key, status=IN PROGRESS) ─▶ do the charge ─▶ save response, status=COMPLETED ─▶ reply
+    ├─ COMPLETED ──▶ skip the charge, REPLAY the saved response ───────────────────────────────────────────▶ reply
+    └─ IN PROGRESS ─▶ a retry caught the original mid-flight ─▶ wait, or reply 409 "in progress, retry shortly"
+</pre></div>
+
+<div class="card calc">
+  <p><b>Worked: sizing the dedup store.</b> One row ≈ the key (16 B) + status + a saved response blob (~1 KB for a charge result). At <b>10M charges/day</b> that's <b>10M × ~1 KB ≈ 10 GB/day</b> of new rows. You don't keep them forever — you set a <b>TTL</b>. With a <b>24-hour</b> TTL the store holds ~one day of keys ≈ <b>10 GB</b> steady; a <b>7-day</b> TTL holds ~<b>70 GB</b>. Tiny next to the actual ledger, and easily a fast key-value store (Lesson 02's cache shape, but here it must be durable — losing it re-opens the double-charge). The TTL length is a real decision we'll pay for in Move 4.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> the dedup store buys safety with <b>a write and a lookup on the hot path of every request</b>, plus a durable store you must run and pay for. <span class="key">Idempotency is correctness bought with one extra round-trip to a store you must never lose.</span> That's why you apply it to operations that <i>must not</i> repeat (charges, transfers, "send the email") and skip it for operations that are already safe to repeat (a plain read, or a write that's naturally idempotent — Move 4).</p>
+
+<h2>Move 3 — Trace the paths</h2>
+
+<h3>Path A — first attempt (the happy path)</h3>
+<p>Key <code>ik_9f3a</code> has never been seen. The server <b>claims</b> it (insert row, <code>IN PROGRESS</code>), calls the card network, the $50 moves, the server writes the result and flips the row to <code>COMPLETED</code>, and replies <code>200 OK</code>. One charge. Exactly what we want.</p>
+
+<h3>Path B — retry after success (the easy duplicate)</h3>
+<p>The reply to Path A got lost, so the client retries with <i>the same</i> <code>ik_9f3a</code>. The server looks it up, finds <code>COMPLETED</code>, and — <b>without touching the card network</b> — replays the saved response: same <code>200 OK</code>, same <code>charge_id: 88</code>. The client can't tell it from the original, which is the point. <b>Money moved once; the client got its answer.</b> Notice the bonus: replaying the saved response means the retry even returns the <i>same</i> charge id, so anything the client built on that id still lines up.</p>
+
+<h3>Path C — retry <i>during</i> the first attempt (the race)</h3>
+<p>This is the one that catches people. The first attempt is still mid-charge (we computed ~93 of these in flight at once) when the retry arrives. Now <b>two requests with the same key</b> are running at the same time. A naïve "check if seen, else charge" has a gap between the check and the write — both check "not seen," both charge. That's Lesson 06's <b>lost-update race</b>, except instead of losing an update we <i>duplicate</i> one.</p>
+
+<div class="diagram"><pre>
+  THE CHECK-THEN-ACT GAP (same idempotency key, two concurrent requests):
+
+  req 1:  check key → "not seen"  ┐
+  req 2:  check key → "not seen"  ┘  ← both passed the check in the gap
+  req 1:  charge $50
+  req 2:  charge $50              ← DOUBLE CHARGE, even though we "checked"
+
+  THE FIX — make CLAIMING the key atomic (one winner):
+  req 1:  INSERT key  ✓ wins the unique constraint → proceeds to charge
+  req 2:  INSERT key  ✗ violates unique constraint → it's a duplicate → wait / return 409
+</pre></div>
+
+<div class="card calc">
+  <p><b>Worked: why a unique constraint, not a check.</b> Make the idempotency key a <b>unique primary key</b> in the dedup store and have each request <i>try to insert it</i> as the very first step. The database guarantees <b>exactly one</b> insert of a given key succeeds — the second gets a duplicate-key error. So the winner charges; the loser, seeing the key already exists, knows a twin is handling it and either waits for the result or returns <code>409 In&nbsp;Progress</code> so the client retries in a moment. The atomic <i>claim</i> is what closes the check-then-act gap — the same move as Lesson 06's atomic increment and Lesson 10's "only one leader," here applied to "only one charge per key."</p>
+</div>
+
+<h3>Path D — the crash in the middle (atomicity)</h3>
+<p>The hardest path: the server charges the $50, then <b>crashes before it writes <code>COMPLETED</code></b>. The money moved, but the dedup store still says <code>IN PROGRESS</code> (or nothing). The retry can't see that the charge happened, so it charges again. The whole mechanism just failed at the one moment it existed for. The cause is that "move the money" and "record that we moved it" were <b>two separate steps</b>, and we died between them.</p>
+
+<p>There are two honest fixes, and which you can use is itself the trade-off:</p>
+<ul>
+  <li><b>If the effect lives in your own database</b> (e.g. "debit this account row"), put the effect <i>and</i> the key-record update in <b>one atomic transaction</b>. They commit together or not at all — there is no "between." A crash leaves both undone; the retry redoes both cleanly.</li>
+  <li><b>If the effect lives in another system</b> (the card network — you can't share a transaction with it), you can't make it atomic with your store. So you <b>push idempotency down</b>: send <i>your</i> idempotency key to the card network too, and let <i>it</i> dedupe. Now even if you retry the downstream call, the card network charges once. Idempotency composes — each hop must be individually idempotent for the whole chain to be exactly-once.</li>
+</ul>
+
+<p class="note why"><b>Name the trade-off:</b> exactly-once effect demands that the action and the memory-of-the-action commit <b>together</b>. <span class="key">When you control both, use one transaction; when you don't, every downstream hop must carry the key and dedupe on its own.</span> The failure mode to fear isn't the duplicate you catch — it's the <i>gap</i> between doing and recording, where a crash turns "remembered" into "forgotten."</p>
+
+<h2>Move 4 — Find the next bottleneck</h2>
+<p>The key + store + atomic claim make a single charge exactly-once. Now the walls.</p>
+
+<h3>The TTL trap (forgetting too soon vs storing forever)</h3>
+<div class="card calc">
+  <p><b>Worked: how short is too short.</b> The dedup store forgets a key after its TTL. If a retry arrives <i>after</i> the key is forgotten, it looks brand-new — and you double-charge. So the TTL must be <b>at least as long as the longest possible retry horizon</b>. How long is that? A timed-out client retries in seconds. But a stuck queue message (Lesson 05's visibility timeout) can redeliver <b>hours</b> later, and a human re-submitting a saved form can come back <b>days</b> later. Set the TTL to <b>24 hours</b> and a 30-hour-late redelivery double-charges; set it to 30 days and the store is 30× bigger (~300 GB here). <span class="key">Trade-off: a short TTL risks correctness (a late retry slips through); a long TTL costs storage. Size it to the slowest realistic retry, not the fastest.</span></p>
+</div>
+
+<h3>Natural idempotency (the key you don't need)</h3>
+<p>An idempotency key is the <i>general</i> tool, and it isn't free — a store, a lookup, a TTL to tune. Sometimes you can dodge it by designing the operation to be idempotent <b>by nature</b>, so repeating it is harmless with no bookkeeping at all.</p>
+
+<table>
+  <tr><th>Operation</th><th>Idempotent by nature?</th><th>Why</th></tr>
+  <tr><td><code>GET /balance</code></td><td><b>Yes</b></td><td>a read changes nothing — repeat freely</td></tr>
+  <tr><td><code>PUT status = "shipped"</code></td><td><b>Yes</b></td><td>sets an <i>absolute</i> value; twice = once</td></tr>
+  <tr><td><code>DELETE order 88</code></td><td><b>Yes</b></td><td>second delete finds it already gone</td></tr>
+  <tr><td><code>balance += 50</code> (a delta)</td><td><b>No</b></td><td>each apply adds again — Lesson 06's non-idempotent increment</td></tr>
+  <tr><td><code>POST /charge $50</code></td><td><b>No</b></td><td>creates a new effect each time → <b>needs a key</b></td></tr>
+</table>
+
+<p>The pattern: <b>absolute "set to X" is idempotent; relative "change by X" is not.</b> Where you can express the operation as a <code>PUT</code> of a final state or a conditional write ("set to <i>shipped</i> only if currently <i>packed</i>" — Lesson 06's compare-and-set), you get idempotency for free and skip the dedup store entirely. Where the operation genuinely creates something new each time — a charge, a "send money," an "append a row" — there is no natural version, and the idempotency key is the only tool.</p>
+
+<p class="note why"><b>Name the trade-off:</b> <span class="key">natural idempotency is free but only available for some operations (absolute writes, deletes, conditional updates); the idempotency key is universal but costs a durable store, a hot-path lookup, and a TTL you must tune.</span> Reach for natural idempotency first; fall back to the key when the operation has no idempotent shape.</p>
+
+<h2>Where we landed</h2>
+<p>We took one <code>POST /charge $50</code> and made a retry safe. <b>Estimate</b> priced the bug: at 10M charges/day and a 2% duplicate rate, doing nothing is <b>200,000 double-charges = $10M/day</b>, and Little's Law put <b>~93 charges in flight at once</b>, so retries routinely race a live original. <b>Model</b> built the fix: a client-chosen <b>idempotency key</b> sent on every attempt, plus a durable <b>dedup store</b> (<code>key → status, saved response</code>, ~10 GB/day at a 24 h TTL) that the server checks <i>before</i> touching the card network. <b>Tracing the paths</b> walked the happy first attempt, the easy retry-after-success (replay the saved response, no second charge), the dangerous concurrent retry (closed with an <b>atomic claim</b> — a unique-key insert, so exactly one winner, Lesson 06's race solved again), and the crash-in-the-middle (fixed by committing effect + record in <b>one transaction</b>, or pushing the key <b>downstream</b> when you can't). The <b>next bottleneck</b> was the <b>TTL trap</b> (forget too soon → a late redelivery double-charges; remember too long → storage bloats) and the escape hatch of <b>natural idempotency</b> (absolute <code>PUT</code>/delete/conditional writes need no key at all). The thread of the whole lesson: <span class="key">you can't stop duplicates from arriving, so make the second one a no-op — exactly-once <i>effect</i> on top of at-least-once <i>delivery</i>.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lessons build directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>CDN design:</b> the other half of "do the work before the query, not during it" — caching reads at the edge, cache keys, and invalidating a value the moment it goes stale.</p>
+  <p style="margin:.2rem 0">• <b>Notification / feed fan-out:</b> delivering one event to millions — at-least-once again, so every delivered action (push, email, counter bump) has to be idempotent, exactly the machinery we just built.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">idempotent</span>
+    <span class="pill">idempotency key</span>
+    <span class="pill">dedup store</span>
+    <span class="pill">at-least-once delivery</span>
+    <span class="pill">exactly-once effect</span>
+    <span class="pill">exactly-once delivery (impossible)</span>
+    <span class="pill">in-flight window</span>
+    <span class="pill">Little's Law</span>
+    <span class="pill">check-then-act gap</span>
+    <span class="pill">atomic claim</span>
+    <span class="pill">unique constraint</span>
+    <span class="pill">atomic commit / transaction</span>
+    <span class="pill">downstream idempotency</span>
+    <span class="pill">TTL</span>
+    <span class="pill">natural idempotency</span>
+    <span class="pill">absolute vs relative write</span>
+    <span class="pill">conditional write / compare-and-set</span>
+  </p>
+  <p>That's Lesson 13, built on Lesson 05/07/09's "retries and queues replay writes," Lesson 06's lost-update race (now solved as an atomic claim), and Lesson 10's "exactly one." <b>Ask me follow-ups</b> — e.g. "where exactly should the client store the key so a refreshed browser reuses it?", "how do Stripe and PayPal implement idempotency keys in their APIs?", "what's the difference between idempotency and a distributed transaction / two-phase commit?", "how does an outbox pattern make my DB write and my queue publish atomic?", or "is HTTP PUT really idempotent if two clients PUT different values?" When you're ready, say <b>next</b> and we'll go deeper on <i>CDN design — caching and invalidating reads at the edge</i>.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your payments API gets duplicate requests from timeouts and queue redeliveries. A teammate says \"let's just guarantee exactly-once delivery so no duplicate ever arrives.\" Why is that the wrong fix?",
+    options: [
+      {t:"Exactly-once delivery over a network is impossible — a sender can never be certain its message (or the ack) arrived, so it must risk loss or risk a resend. The achievable goal is exactly-once effect: accept at-least-once delivery (duplicates) and make processing idempotent so the second arrival does nothing.",
+       ok:true,
+       fb:"Right. You can't stop duplicates on the wire, so you stop them at the receiver. At-least-once delivery + idempotent processing buys an exactly-once effect — the money moves once even though the request may arrive several times."},
+      {t:"Exactly-once delivery is easy with TCP, so the teammate is right and no idempotency key is needed.",
+       ok:false,
+       fb:"TCP gives reliable delivery within one connection, but timeouts, crashes, retries, and queue redeliveries all happen above that layer — the request itself can still arrive twice. The receiver must dedupe; the network can't promise once-and-only-once end to end."},
+      {t:"Duplicates are actually fine for a charge endpoint, so neither delivery guarantees nor idempotency matter.",
+       ok:false,
+       fb:"Duplicates are the opposite of fine here — at 10M charges/day and 2% duplicates that's 200,000 double-charges (~$10M/day). The point is precisely that you must neutralize duplicates, and idempotency is how."}
+    ]
+  },
+  {
+    stem: "A retry arrives while the first attempt with the same idempotency key is still mid-charge. Your code does \"if key not in store, charge; then store it.\" Both requests charge $50. What actually went wrong, and the fix?",
+    options: [
+      {t:"There's a gap between the check and the store-write, so both requests read 'not seen' and both charge — a check-then-act race. Fix: make the idempotency key a unique constraint and have each request try to INSERT it first; exactly one insert wins and charges, the loser gets a duplicate-key error and waits or returns 409.",
+       ok:true,
+       fb:"Exactly. Checking is not claiming. An atomic insert on a unique key lets the database pick a single winner, closing the gap — the same atomic-claim move as Lesson 06's atomic increment and Lesson 10's single leader."},
+      {t:"The dedup store was too small and evicted the key between the check and the charge.",
+       ok:false,
+       fb:"Size isn't the issue — the key was never durably claimed in the first place. Both requests passed the check before either wrote, so even an infinite store would double-charge. The fix is an atomic claim, not more capacity."},
+      {t:"The client sent two different keys, so the server correctly saw two different operations.",
+       ok:false,
+       fb:"The premise is that both retries carry the same key. The bug is server-side: a non-atomic check-then-act lets two same-key requests both pass. With one shared key, an atomic insert would have stopped the second."}
+    ]
+  },
+  {
+    stem: "Your server charges the $50 successfully, then crashes before it records the key as COMPLETED. The client retries and gets charged again — the idempotency mechanism failed. What's the root cause and a correct remedy?",
+    options: [
+      {t:"Moving the money and recording that we moved it were two separate steps, and the crash landed between them. Remedy: commit the effect and the key-record together (one atomic transaction when the effect is in your own DB), or push the same idempotency key to the downstream provider so it dedupes the charge itself.",
+       ok:true,
+       fb:"Correct. Exactly-once effect requires the action and the memory-of-the-action to commit atomically. When you own both, use one transaction; when the effect is in another system, every hop must carry the key and dedupe on its own."},
+      {t:"The TTL was too long, so the stale key caused a re-charge.",
+       ok:false,
+       fb:"TTL length isn't the issue here — the COMPLETED record was never written at all, because the crash hit before it. A too-long TTL would, if anything, help the retry be recognized. The gap to close is between charging and recording, via atomicity."},
+      {t:"The client should have generated a fresh key for the retry to avoid the stuck record.",
+       ok:false,
+       fb:"A fresh key would guarantee a second charge — the whole point is that retries reuse the same key so the server can recognize them. The real fix is making the charge and its record commit together so there's no 'in between' for a crash to exploit."}
+    ]
+  },
+  {
+    stem: "You're adding two endpoints: one sets an order's status to \"shipped\", another adds $50 of credit to a balance. Which needs an idempotency key, and why?",
+    options: [
+      {t:"Only the add-credit endpoint. 'Set status = shipped' is an absolute write — applying it twice leaves the same value, so it's idempotent by nature and needs no key. 'Add $50' is a relative delta — each apply adds again, so a retry over-credits and it needs an idempotency key (or redesign to set an absolute balance).",
+       ok:true,
+       fb:"Right. Absolute 'set to X' is naturally idempotent; relative 'change by X' is not. Prefer the naturally-idempotent shape (PUT/set/conditional write) and fall back to a key only when the operation truly creates a new effect each time."},
+      {t:"Both need a key, because every write endpoint must have one.",
+       ok:false,
+       fb:"Not every write — only the ones that aren't idempotent by nature. 'Set status = shipped' is safe to repeat with no bookkeeping, so adding a key (a store, a lookup, a TTL) there is pure cost for no benefit."},
+      {t:"Neither needs a key, because retries are rare enough to ignore.",
+       ok:false,
+       fb:"Rare isn't never — at scale 'rare' duplicates still mean thousands of wrong balances. The add-credit delta over-credits on any retry, so it needs protection; the absolute status write happens to be safe regardless."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
