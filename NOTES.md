@@ -120,7 +120,22 @@
     walls = the TTL trap (forget too soon → late redelivery double-charges; too
     long → bloat) and natural idempotency (absolute PUT/delete/conditional needs
     no key). (Lesson 0013)
-14. CDN design — edge caching, cache keys, invalidation, origin shielding.
+14. ✅ **CDN design** — one 200 KB photo in Virginia, one shopper in Sydney
+    15,500 km away: the speed-of-light tax (~200 ms RTT × 4 handshake/request
+    round trips ≈ 800 ms cold) that no faster origin can beat, and the egress
+    bill (2 PB/day × $0.08/GB = $160k/day) — both fixed by a nearby copy;
+    model = edges keyed by host+path+query (a stray tracking param mints a key
+    per request → hit ratio → 0; strip/whitelist), per-content TTL whose payoff
+    rides on popularity (hit ratio ≈ 1−1/R, hot 99.9% / cold ~0%, Zipf recap of
+    L02); trace the hit (~20 ms, origin untouched, ~95% offload → 20× bill cut),
+    the miss (one-time regional tax), and the synchronized-expiry miss storm
+    (L02 thundering herd × #PoPs) collapsed 300→1 by an origin shield + request
+    coalescing; next wall = invalidation — purge (direct but eventually
+    consistent + stampede-prone) vs versioned immutable URLs (rename, cache a
+    year, nothing to invalidate; default for anything renameable, purge as the
+    escape hatch), plus the cold long tail and un-cacheable personalized content
+    (cache the shell, personalize the slice). Trade named throughout: freshness
+    vs speed. (Lesson 0014)
 15. Notification/feed fan-out — push vs pull, fan-out-on-write vs read.
 16. Search systems — query parsing, ranking (TF-IDF/BM25), relevance vs recall.
 17. Distributed tracing & observability — trace IDs, spans, sampling, the

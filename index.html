@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0014-cdn-design.html">
+    <div class="num">LESSON 14</div>
+    <div class="title">CDN Design: Serving a Photo to Sydney in 20 ms Instead of 800</div>
+    <div class="blurb">One 200 KB photo in Virginia, one shopper in Sydney 15,500 km away. Measure why a fresh transatlantic fetch costs ~800 ms (4 round trips at the speed of light in fiber) and why serving 2 PB/day from origin costs ~$160k/day. Build the CDN: edges keyed by host+path+query (watch a tracking param crater the hit ratio), a per-content TTL whose payoff rides on popularity (hot 99.9%, cold ~0%). Trace the hit (~20 ms, origin untouched), the miss, and the miss storm an origin shield collapses from 300 origin requests to 1. Then the hard half: invalidation — purge vs versioned immutable URLs.</div>
+  </a>
   <a class="lesson" href="lessons/0013-idempotency.html">
     <div class="num">LESSON 13</div>
     <div class="title">Idempotency: How to Retry a Payment Without Charging Twice</div>

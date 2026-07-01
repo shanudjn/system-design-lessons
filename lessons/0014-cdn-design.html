@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 14 — CDN Design: Serving a Photo to Sydney in 20 ms Instead of 800</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 14 · Worked Example</div>
+  <h1>CDN Design: Serving a Photo to Sydney in 20&nbsp;ms Instead of 800</h1>
+  <p class="lead">Lesson 02 ended on a promise: a cache in front of your data can serve most reads, and a cache <i>near the user</i> beats the speed of light. This lesson cashes that promise. We take one concrete file — a <b>200&nbsp;KB product photo</b> stored on a server in Virginia — and follow a shopper in Sydney asking for it. First we'll measure why the raw trip takes the better part of a second. Then we'll build the <b>CDN</b> (Content Delivery Network) that cuts it to a few dozen milliseconds, size the bandwidth and money it saves, and trace the two paths that decide everything: the <b>cache hit</b> at the edge and the <b>cache miss</b> that falls back to origin. We finish on the problem that has haunted caching since the beginning — <b>invalidation</b>: getting a changed file to replace a stale one across a few hundred edge servers without knocking your origin over.</p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0014-cdn-design.html"</code></p>
+</header>
+
+<h2>The one system we'll trace</h2>
+<p>A shopping site. Its <b>origin</b> — the one authoritative server (really a cluster, but think of it as one place) — lives in a data center in <b>Virginia, USA</b>. It stores static assets: product photos, the CSS and JavaScript bundles, thumbnails. A shopper opens a product page in <b>Sydney, Australia</b> and her browser needs <code>/img/shoe-882.jpg</code>, a <b>200&nbsp;KB</b> photo. The site serves <b>10&nbsp;billion</b> such asset requests a day to users on every continent. Two things are wrong with fetching every one from Virginia: it is <b>slow</b> for anyone far away, and it is <b>expensive</b> because every byte leaves the origin. A CDN fixes both by keeping copies of the file close to the user. Here is the whole idea on one screen.</p>
+
+<div class="diagram"><pre>
+  ONE PHOTO, TWO WORLDS — WITHOUT A CDN vs WITH ONE
+
+  WITHOUT (every request crosses the ocean)      WITH a CDN (a copy waits nearby)
+  ───────────────────────────────────────       ─────────────────────────────────
+   Sydney browser                                 Sydney browser
+        │  ~15,500 km each way                         │  ~50 km
+        ▼                                              ▼
+   [ ORIGIN, Virginia ]  ← every byte, every user  [ EDGE PoP, Sydney ]  cache HIT → serve in ~20 ms
+        every request pays ~800 ms + full egress        │ (only on a MISS, once per TTL)
+                                                         ▼
+                                              [ SHIELD ] ─▶ [ ORIGIN, Virginia ]
+                                                 one miss refills the edge; the next
+                                                 million Sydney requests are local
+</pre></div>
+
+<p class="note">A <b>CDN</b> is a fleet of caching servers spread across the world, sitting <i>in front of</i> your origin. Each location is a <b>PoP</b> (Point of Presence) or <b>edge</b>. When a user asks for a file, they're routed to the nearest PoP; if that PoP already has the file (a <b>cache hit</b>) it answers immediately, and the request never touches your origin. The CDN is Lesson 02's cache, but distributed by geography and run by someone else.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Origin</b> — the one authoritative server that holds the real file. Everything a CDN serves is ultimately a copy of what the origin has.</li>
+  <li><b>Edge / PoP</b> — a CDN caching server physically close to users. "Edge" = the edge of the network, near people; "PoP" = one such site. A big CDN has a few hundred PoPs.</li>
+  <li><b>Cache hit / miss</b> — a <i>hit</i>: the edge already has the file and serves it. A <i>miss</i>: it doesn't, so it fetches from origin (or a shield), stores a copy, then serves.</li>
+  <li><b>Hit ratio (offload)</b> — the fraction of requests served from the edge. 95% hit ratio = only 5% ever reach origin. This one number decides your latency and your bill.</li>
+  <li><b>TTL</b> — time-to-live: how long an edge may serve a cached copy before it must recheck with origin. Set by <code>Cache-Control</code> headers.</li>
+  <li><b>Cache key</b> — the string the edge uses to decide "is this the same file?" Usually <code>host + path + query string</code>. Two requests with the same key share one cached copy.</li>
+  <li><b>Origin shield</b> — one designated PoP that all other PoPs miss <i>through</i>, so origin sees one refill request instead of hundreds. Also called a tiered cache.</li>
+  <li><b>Invalidation / purge</b> — telling the CDN "forget this file, it changed," so edges stop serving the stale copy.</li>
+  <li><b>Speed of light in fiber</b> — light in glass travels ~200,000&nbsp;km/s (about ⅔ of its vacuum speed). This is a hard floor on how fast a far-away byte can arrive; no money removes it.</li>
+</ul>
+
+<h2>Move 1 — Estimate: why Virginia→Sydney is slow, and what it costs</h2>
+
+<h3>The latency floor (why "just make the server faster" can't help)</h3>
+<div class="card calc">
+  <p><b>Worked: the speed-of-light tax.</b> Sydney to Virginia is about <b>15,500&nbsp;km</b>. Light in fiber goes ~<b>200,000&nbsp;km/s</b>. One way: <b>15,500 ÷ 200,000 = 0.0775&nbsp;s ≈ 78&nbsp;ms</b>. A round trip (RTT) is therefore <b>~155&nbsp;ms</b> at the theoretical best; real routes bend and pass through routers, so measured RTT is ~<b>200&nbsp;ms</b>. Now count the round trips before the first byte of the photo arrives over a fresh HTTPS connection:</p>
+  <p>• TCP handshake: <b>1 RTT</b><br>
+     • TLS handshake (1.2): <b>2 RTTs</b><br>
+     • HTTP request → first byte: <b>1 RTT</b><br>
+     • <b>≈ 4 RTTs × 200&nbsp;ms = ~800&nbsp;ms</b> before the image even starts loading.</p>
+  <p>Route the same request to a <b>PoP in Sydney</b> at ~5&nbsp;ms RTT: <b>4 × 5 = ~20&nbsp;ms</b>. <span class="key">The photo didn't get smaller and the origin didn't get faster — the bytes just have less distance to cross.</span> A faster CPU in Virginia cannot beat physics; only moving the copy closer can.</p>
+</div>
+
+<h3>The bandwidth and the bill</h3>
+<div class="card calc">
+  <p><b>Worked: how much data, and what origin egress costs.</b></p>
+  <p>• Volume: <b>10,000,000,000 requests/day × 200&nbsp;KB = 2×10<sup>15</sup> bytes = 2&nbsp;PB/day.</b><br>
+     • Per second: <b>2&nbsp;PB ÷ 86,400&nbsp;s ≈ 23&nbsp;GB/s ≈ 185&nbsp;Gbps</b> of egress if it <i>all</i> came from origin.<br>
+     • Egress price (typical cloud): ~<b>$0.08/GB</b>. Daily bytes = <b>2,000,000&nbsp;GB</b>.<br>
+     • <b>Without a CDN: 2,000,000 × $0.08 = $160,000/day</b> just to push the bytes out of Virginia — before you've paid for the servers to survive 185&nbsp;Gbps.</p>
+  <p>Now put a CDN in front at a <b>95% hit ratio</b> (realistic for static assets). Only 5% of bytes reach origin:</p>
+  <p>• Origin egress: <b>5% × 2,000,000&nbsp;GB = 100,000&nbsp;GB/day × $0.08 = $8,000/day</b> — a <b>20×</b> cut.<br>
+     • Origin bandwidth drops from 185&nbsp;Gbps to <b>~9&nbsp;Gbps</b>. The edges absorb the other 176&nbsp;Gbps, spread across hundreds of PoPs and priced lower per GB.</p>
+  <p><span class="key">The hit ratio is the whole game: at 95% offload the origin does 1/20th of the work; at 99% it does 1/100th.</span> Push it up and both your bill and your origin load fall with it.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off up front:</b> a CDN buys you low latency and origin offload, and the price is <b>a second copy of the truth</b>. The moment a file is cached at 300 edges, you have 300 places that can be <i>wrong</i> — serving yesterday's price, last week's photo. Everything hard about CDNs (TTLs, invalidation, cache keys) is the cost of keeping those copies honest. <span class="key">You trade freshness for speed, and the design job is choosing exactly how much staleness each file can tolerate.</span></p>
+
+<h2>Move 2 — Model: cache key, TTL, and how the edge decides</h2>
+<p>An edge server is a lookup table plus a rule. The table maps a <b>cache key</b> to a stored response. The rule, on every request, is: build the key, look it up, and check whether the copy is still fresh.</p>
+
+<h3>The cache key — "is this the same file?"</h3>
+<p>By default the key is <code>scheme + host + path + query string</code>. So <code>/img/shoe-882.jpg</code> and <code>/img/shoe-883.jpg</code> are different keys (good — different photos), and two shoppers both asking for <code>/img/shoe-882.jpg</code> hit the <i>same</i> key (good — they share one copy). The danger is in the query string, and it's worth a worked example.</p>
+
+<div class="card calc">
+  <p><b>Worked: how a tracking parameter destroys your hit ratio.</b> Marketing appends a per-click id: shopper A requests <code>/img/shoe-882.jpg?utm=fb&sid=a1</code>, shopper B requests <code>/img/shoe-882.jpg?utm=fb&sid=b2</code>. If the cache key includes the <i>full</i> query string, these are <b>two different keys for the identical photo</b> — every shopper mints a brand-new key, every request is a miss, and your hit ratio collapses toward <b>0%</b>. The image bytes don't depend on <code>sid</code> at all. Fix: tell the CDN to <b>ignore</b> (or whitelist only) query parameters that don't change the bytes. Now all those requests collapse to one key <code>/img/shoe-882.jpg</code> and the hit ratio climbs back to ~99%.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> the cache key sets the <b>precision-vs-hit-rate</b> dial. <span class="key">A broader key (strip params, normalize) merges more requests onto one copy → higher hit ratio, but if you strip a parameter that <i>does</i> change the content you serve the wrong bytes.</span> A narrower key is always correct but shatters the cache into many rarely-reused entries. Include exactly the inputs that change the response — no more (wasted misses), no less (wrong answers). The header <code>Vary</code> is the standard way to say "this response also depends on <code>Accept-Encoding</code>" so gzip and Brotli copies don't collide.</p>
+
+<h3>TTL — how long a copy may be served</h3>
+<p>Origin stamps each response with <code>Cache-Control</code>. Two fields matter: <code>max-age</code> (how long <i>browsers</i> may reuse it) and <code>s-maxage</code> (how long <i>shared caches</i> like the CDN may). While the copy is younger than its TTL, the edge serves it with zero contact with origin. When it expires, the next request becomes a miss and refills.</p>
+
+<div class="card calc">
+  <p><b>Worked: why popularity, not TTL alone, sets the hit ratio.</b> In steady state an object costs <b>one miss per TTL window</b> (to refetch), and every other request in that window is a hit. If an object is requested <code>R</code> times per window, hit ratio for it ≈ <b>1 − 1/R</b>.</p>
+  <p>• A <b>hot</b> photo: 100 requests/minute, TTL 10&nbsp;min → <b>R = 1,000</b> per window → hit ratio <b>1 − 1/1000 = 99.9%</b>.<br>
+     • A <b>cold</b> photo: 1 request/hour, TTL 10&nbsp;min → it usually <b>expires before it's asked for again</b> → nearly every request is a miss → hit ratio ≈ <b>0%</b>.</p>
+  <p>So your 95% overall hit ratio comes almost entirely from the popular head of the catalog (Lesson 02's skew / Zipf) — the long tail barely caches. Two levers raise it: a <b>longer TTL</b> (more requests fall inside one window) and a <b>shield</b> (Move 3) that lets cold objects share one origin fetch instead of many.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> TTL is <b>freshness vs offload</b>. <span class="key">A long TTL means more hits and a quieter origin, but a change takes up to one TTL to appear; a short TTL keeps content fresh but hammers origin with refills.</span> Set it per content type: immutable bundles get a year, a product photo gets hours, a price or stock count gets seconds — or isn't cached at all.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+
+<h3>Path A — the cache hit (the common case)</h3>
+<p>The Sydney shopper's browser resolves the asset hostname; the CDN's routing (anycast or DNS) points it at the <b>Sydney PoP</b>. The edge builds the key <code>/img/shoe-882.jpg</code>, finds a fresh copy, and returns it in ~20&nbsp;ms. <b>Origin is never contacted.</b> This is 95% of traffic and it's why the origin only needs to survive 9&nbsp;Gbps instead of 185. The response carries a header like <code>X-Cache: HIT</code> so you can measure your hit ratio.</p>
+
+<h3>Path B — the cache miss (first request, or after expiry)</h3>
+<p>Nobody in Sydney has asked for this photo since it expired. The edge has no fresh copy, so it fetches from origin, stores the copy with its TTL, and serves it. This one shopper pays the ~800&nbsp;ms transatlantic cost; <b>everyone after her, until the TTL expires, pays ~20&nbsp;ms.</b> A miss is a one-time tax that a whole region shares.</p>
+
+<div class="diagram"><pre>
+  EDGE LOGIC ON EVERY REQUEST:
+
+  build cache key (host + path + chosen query params)
+      │
+  fresh copy for this key?
+    ├─ yes ─▶ serve from edge  (HIT, ~20 ms, origin untouched)
+    └─ no  ─▶ fetch from SHIELD → origin ─▶ store copy + TTL ─▶ serve  (MISS, ~800 ms, once per region per TTL)
+</pre></div>
+
+<h3>Path C — the miss storm, and the origin shield</h3>
+<p>Here's the trap. Suppose a popular file expires (or is purged) everywhere at once. Now hundreds of PoPs miss <i>simultaneously</i> and all stampede origin for the same file — Lesson 02's thundering herd, but multiplied by every PoP on Earth. Origin, sized for 9&nbsp;Gbps, suddenly takes a spike it can't serve, and slows for <i>everyone</i>.</p>
+
+<div class="card calc">
+  <p><b>Worked: what the shield saves.</b> Say the CDN has <b>300 PoPs</b>. Without a shield, one expiry can send <b>300 concurrent misses</b> to origin for the same object. With an <b>origin shield</b> — one PoP (per region) that every other PoP misses <i>through</i> — the 300 edge misses collapse into <b>1 request to origin</b>: the shield fetches once, and the other 299 PoPs get their copy from the shield. <span class="key">The shield turns "300 misses hit origin" into "1 miss hits origin, 299 hit the shield."</span> Combined with request coalescing (Lesson 02's single-flight: many misses for the same key at one node wait on one fetch), origin sees one refill per object, not thousands.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> the shield is <b>an extra hop for protection</b>. <span class="key">On a shield-miss the request now travels edge → shield → origin instead of edge → origin, adding a few milliseconds; in return origin's worst-case load drops by a factor of the PoP count.</span> You pay a little latency on the rare miss to make the origin survivable. This is the same shape as Lesson 05's queue absorbing a spike: put something in front that flattens the burst.</p>
+
+<h2>Move 4 — Find the next bottleneck: invalidation</h2>
+<p>Caching reads was the easy half. The hard half is what happens when the truth <i>changes</i> — a photo is reshot, a price drops, a legal takedown lands. Now up to 300 edges hold a copy that must die. There are two honest strategies, and choosing between them is the core CDN design decision.</p>
+
+<h3>Strategy 1 — Purge (evict the stale copy)</h3>
+<p>You call the CDN's API: "purge <code>/img/shoe-882.jpg</code>." The CDN tells every PoP to drop that key; the next request re-fetches the new version. It's direct, but it has teeth:</p>
+<ul>
+  <li><b>It's not instant.</b> The purge must reach hundreds of PoPs; propagation takes seconds. For those seconds, different users see different versions.</li>
+  <li><b>A mass purge is a self-inflicted stampede.</b> "Purge everything" expires the whole cache at once → every object misses → the herd hits origin (why the shield in Move 3 exists).</li>
+</ul>
+
+<h3>Strategy 2 — Versioned (immutable) URLs (never invalidate at all)</h3>
+<p>Instead of changing a file in place, change its <b>name</b>. Build tooling renames <code>app.js</code> to <code>app.9f3a2c.js</code> where the suffix is a hash of the contents. That URL is stamped <code>Cache-Control: max-age=31536000, immutable</code> — cache it for a year, and never recheck. To ship a new version you produce a <i>new</i> filename <code>app.7b21e0.js</code>; the HTML that references it now points at the new URL, so edges serve the new file immediately and the old copies simply age out, never requested again.</p>
+
+<div class="card calc">
+  <p><b>Worked: why versioning beats purging for assets.</b> With immutable URLs there is <b>nothing to invalidate</b> — a changed file is a different URL, so there's no stale copy to chase across 300 PoPs and no purge storm. The only file you can't version is the <b>HTML</b> that names the others (its URL is fixed), so you cache <i>it</i> for a short TTL (say 60&nbsp;s) or not at all. <span class="key">The pattern: cache the things that name other things briefly, and cache the named, content-addressed things forever.</span> Purge is the escape hatch for the one URL you can't rename and for emergencies (a takedown); versioning is the default for everything you deploy.</p>
+</div>
+
+<h3>The other wall — the long tail and the un-cacheable</h3>
+<p>A CDN shines on shared, static bytes. It struggles on two things. First, the <b>cold long tail</b>: files asked for less often than their TTL expire between requests, so they barely cache (the 0%-hit photo from Move 2) — a longer TTL and a shield help, but you can't cache your way out of "nobody asks for it twice." Second, <b>personalized or dynamic content</b>: a logged-in user's cart or a per-user price can't share one cached copy without leaking one user's data to another. The move there is to <b>split the response</b>: cache the shared shell (layout, images, JS) at the edge and fetch only the tiny personalized slice from origin — or run logic at the edge itself. <span class="key">Cache what's shared; personalize what isn't.</span></p>
+
+<p class="note why"><b>Name the trade-off:</b> <span class="key">purge is universal but eventually-consistent and stampede-prone; versioned URLs are instant and stampede-free but only work for files you can rename.</span> Reach for immutable versioned URLs by default; keep purge for the un-renameable HTML and for "take it down now." Both are answers to the one question a CDN can never dodge — <i>which copy is the truth, and how fast can a change reach 300 of them?</i></p>
+
+<h2>Where we landed</h2>
+<p>We took one 200&nbsp;KB photo and a shopper 15,500&nbsp;km from it. <b>Estimate</b> showed the two problems: the speed of light makes a fresh transatlantic HTTPS fetch cost <b>~800&nbsp;ms</b> (4 round trips × ~200&nbsp;ms), and serving all 2&nbsp;PB/day from origin costs <b>~$160,000/day</b> in egress. <b>Model</b> built the CDN: edges keyed by <code>host+path+query</code> (with a warning that a stray tracking param can crater the hit ratio), and a per-content <b>TTL</b> whose payoff depends on popularity (a hot object hits 99.9%, a cold one ~0%). <b>Tracing the paths</b> walked the <b>hit</b> (~20&nbsp;ms, origin untouched, ~95% of traffic → a 20× bill cut), the <b>miss</b> (a one-time regional tax), and the <b>miss storm</b> that an <b>origin shield</b> collapses from 300 origin requests down to 1. The <b>next bottleneck</b> was <b>invalidation</b>: purge (direct but eventually-consistent and stampede-prone) versus versioned immutable URLs (instant and storm-free, the default for anything you can rename), plus the long tail and personalized content a CDN can't cache. The thread of the whole lesson: <span class="key">a CDN trades a single source of truth for many nearby copies — fast and cheap to read, and the entire craft is keeping those copies honest.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lessons build directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>Notification / feed fan-out:</b> delivering one event to millions of users — push-on-write vs pull-on-read, the same "do the work before the request or during it?" trade you just made for bytes, now for timelines.</p>
+  <p style="margin:.2rem 0">• <b>Search systems:</b> ranking results with TF-IDF / BM25 — where the cache key idea returns as "which queries share a cached result set?"</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">CDN</span>
+    <span class="pill">origin</span>
+    <span class="pill">edge / PoP</span>
+    <span class="pill">cache hit / miss</span>
+    <span class="pill">hit ratio (offload)</span>
+    <span class="pill">TTL</span>
+    <span class="pill">Cache-Control (max-age / s-maxage)</span>
+    <span class="pill">cache key</span>
+    <span class="pill">Vary</span>
+    <span class="pill">TTFB</span>
+    <span class="pill">speed of light in fiber</span>
+    <span class="pill">RTT</span>
+    <span class="pill">origin shield / tiered cache</span>
+    <span class="pill">request coalescing</span>
+    <span class="pill">invalidation / purge</span>
+    <span class="pill">versioned / immutable URLs</span>
+    <span class="pill">long tail</span>
+    <span class="pill">cache the shell, personalize the slice</span>
+  </p>
+  <p>That's Lesson 14, building on Lesson 02's cache + speed-of-light bottleneck, Lesson 05's spike-absorbing queue, and Lesson 13's "do the work once, near the request." <b>Ask me follow-ups</b> — e.g. "how does anycast routing actually send a Sydney user to the Sydney PoP?", "what's the difference between a pull CDN and a push CDN?", "how does <code>stale-while-revalidate</code> serve a slightly-old copy while it refreshes in the background?", "how do I cache a page that's the same for everyone except a logged-in header?", or "why is TLS 1.3's handshake one round trip faster than 1.2?" When you're ready, say <b>next</b> and we'll go deeper on <i>notification &amp; feed fan-out — pushing one event to millions</i>.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your origin is in Virginia and your team wants faster page loads for users in Sydney (~800 ms to first byte). A colleague suggests \"buy a much faster origin server.\" Why won't that fix it, and what does?",
+    options: [
+      {t:"Most of the 800 ms is round-trip time across ~15,500 km at the speed of light in fiber (~4 handshake/request RTTs × ~200 ms), not origin CPU. A faster server can't shrink distance. Put a CDN edge in Sydney so the bytes travel ~50 km instead of ~15,500 — ~20 ms.",
+       ok:true,
+       fb:"Right. The latency is dominated by distance, not computation. Light in fiber is a hard floor; the only lever is moving a copy of the file closer to the user, which is exactly what a CDN edge does."},
+      {t:"A faster CPU will cut the 800 ms directly, because that time is the server rendering the image.",
+       ok:false,
+       fb:"The image is a static 200 KB file — there's almost no rendering. The ~800 ms is ~4 round trips across an ocean (~200 ms each for TCP + TLS + request). No CPU upgrade changes the distance the bytes must travel."},
+      {t:"Nothing can help; cross-ocean requests are just slow and users must accept it.",
+       ok:false,
+       fb:"Distance to the *origin* is fixed, but you don't have to serve from origin. A CDN keeps a copy at an edge near Sydney, turning a 15,500 km trip into a ~50 km one — the whole reason CDNs exist."}
+    ]
+  },
+  {
+    stem: "Marketing starts appending a unique click id to image URLs: /img/shoe.jpg?utm=fb&sid=<random>. Your CDN hit ratio crashes from 95% toward 0%. What happened, and the fix?",
+    options: [
+      {t:"The cache key includes the full query string, so every unique sid mints a brand-new key for the identical photo — every request is a miss. Fix: configure the CDN to ignore (or whitelist) query params that don't change the bytes, collapsing them to one key.",
+       ok:true,
+       fb:"Exactly. The image bytes don't depend on sid, but the cache key did. Normalizing the key to only the inputs that actually change the response merges all those requests back onto one cached copy."},
+      {t:"The edge servers ran out of disk, so they evicted everything.",
+       ok:false,
+       fb:"Capacity isn't the cause — the same photo is now stored under millions of distinct keys because each sid differs. Even infinite disk wouldn't help: no two requests share a key, so nothing is ever reused. The fix is the cache key, not more storage."},
+      {t:"The TTL got too short, so copies expire instantly.",
+       ok:false,
+       fb:"TTL isn't the issue; a fresh copy is stored each time but under a never-repeated key, so it's never hit before it (or the next unique request) comes. Stripping the irrelevant query params restores the shared key and the hit ratio."}
+    ]
+  },
+  {
+    stem: "A popular file's TTL expires at the same moment across all ~300 PoPs. Origin, sized for the steady 9 Gbps, briefly gets slammed and slows for everyone. What's the mechanism and the standard mitigation?",
+    options: [
+      {t:"A synchronized expiry makes all 300 PoPs miss at once and stampede origin for the same object — a distributed thundering herd. Mitigation: an origin shield (a tiered cache) that all PoPs miss *through*, collapsing 300 origin requests into 1, plus request coalescing so concurrent misses for one key share a single fetch.",
+       ok:true,
+       fb:"Correct. The shield turns 'every edge hits origin' into 'edges hit the shield, the shield hits origin once.' It's the same spike-flattening idea as Lesson 05's queue and Lesson 02's single-flight, applied across PoPs."},
+      {t:"Origin was under-provisioned; the only fix is to make origin big enough to serve all 300 misses at once.",
+       ok:false,
+       fb:"Sizing origin for the worst-case simultaneous-miss spike is hugely wasteful when a shield removes the spike entirely. The design fix is to put a coalescing layer (shield) in front so origin only ever refills once per object."},
+      {t:"The TTLs were too long, which caused the stampede.",
+       ok:false,
+       fb:"Long TTLs reduce total misses; the stampede came from many caches expiring *together* and refilling at once. Shortening TTLs would make it worse (more frequent refills). The fix is funnelling those refills through a shield, and optionally jittering expiry."}
+    ]
+  },
+  {
+    stem: "You ship a new version of app.js. You could (a) purge /app.js across all PoPs, or (b) publish it as app.<hash>.js and reference the new name from your HTML. Which is the better default and why?",
+    options: [
+      {t:"Versioned immutable URLs (b). A content-hashed filename means the new file is a different URL, so there's nothing stale to invalidate and no purge to propagate across 300 PoPs; old copies just age out unused. Cache the hashed assets for a year and keep only the HTML on a short TTL. Purge stays as the escape hatch for the un-renameable HTML and takedowns.",
+       ok:true,
+       fb:"Right. Renaming sidesteps invalidation entirely — the hardest part of caching — and avoids the purge propagation delay and stampede. Purge is still needed for the one URL you can't version (the HTML) and for emergencies."},
+      {t:"Purge (a), because purging is instant and consistent everywhere the moment you call it.",
+       ok:false,
+       fb:"Purge is neither instant nor perfectly consistent — it must reach hundreds of PoPs over seconds, during which users see mixed versions, and a broad purge can stampede origin. Versioned URLs avoid all of that by never needing a purge."},
+      {t:"It doesn't matter; both give identical behavior, so pick either.",
+       ok:false,
+       fb:"They differ sharply: purge chases a stale copy across every PoP (propagation delay, possible stampede), while a versioned URL has no stale copy to chase. For deployable assets, versioning is the safer, faster default."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
