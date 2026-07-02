@@ -136,10 +136,30 @@
     escape hatch), plus the cold long tail and un-cacheable personalized content
     (cache the shell, personalize the slice). Trade named throughout: freshness
     vs speed. (Lesson 0014)
-15. Notification/feed fan-out — push vs pull, fan-out-on-write vs read.
+15. ✅ **Notification/feed fan-out** — one post to every follower's home feed:
+    a read-heavy app (100M DAU, follow ~200, post 2×/day, read 5×/day → 2.5:1)
+    so precompute the read = push (fan-out on write, ~40 B cheap inbox appends/day,
+    O(1) read) beats pull (fan-out on read, ~100 B fan-in fetches/day); model push
+    as durable post + async fan-out worker (queue, idempotent appends → eventual
+    consistency, read-your-writes special-cased); inbox stores ids not bodies (~1.25 TB);
+    trace the cheap push read (1 lookup + batched hydrate) vs the 200-way pull gather;
+    the celebrity breaks push (1,000 accounts × 5M followers = 25 B writes/day = 60%
+    of fan-out from 0.0025% of posts, spiky + wasted on inactive followers) → HYBRID:
+    push normal, pull celebrities (cached once per celeb), merge at read; follower
+    THRESHOLD = the dial between read fan-in and write amplification; next walls =
+    ranked feeds (precompute candidate set, rank at read), deletes (tombstone +
+    filter-at-read), inactive-user tax, cold-start backfill. (Lesson 0015)
 16. Search systems — query parsing, ranking (TF-IDF/BM25), relevance vs recall.
 17. Distributed tracing & observability — trace IDs, spans, sampling, the
     p99-vs-mean gap, and finding the slow hop in a 20-service request.
+18. API design & pagination — REST vs RPC vs GraphQL, offset vs cursor paging
+    (why offset breaks under inserts), versioning, and the N+1 problem.
+19. Geo / proximity systems — "find drivers near me": geohash vs quadtree vs
+    S2 cells, the cell-boundary problem, and hot-cell load.
+20. Object / blob storage — how to store 100 PB of files: chunking, erasure
+    coding vs replication, metadata service, and the small-file problem.
+21. Analytics & counting at scale — approximate structures (HyperLogLog for
+    unique counts, Count-Min sketch, Bloom filters): trade exactness for memory.
 
 ## Lesson format conventions
 - Four reusable "moves" framing introduced in Lesson 01: estimate → model →

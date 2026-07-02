@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 15 — Feed Fan-out: Delivering One Post to a Million Timelines</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 15 · Worked Example</div>
+  <h1>Feed Fan-out: Delivering One Post to a Million Timelines</h1>
+  <p class="lead">Lesson 14 asked "do the work before the request or during it?" for bytes, and answered <i>before</i> — precompute a copy near the reader. This lesson asks the exact same question for <b>timelines</b>. We take one concrete system — a social app where you post short updates and see a <b>home feed</b> of recent posts from the people you follow — and trace what happens when you tap <b>Post</b>. There are two honest ways to build the feed: do the work when someone <b>writes</b> a post (copy it into every follower's inbox), or do the work when someone <b>reads</b> their feed (gather posts from everyone they follow, on the spot). We'll estimate which is cheaper, model both, trace the post-path and the read-path, and then hit the wall that breaks the simple answer: <b>the celebrity with 50 million followers</b>.</p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0015-feed-fanout.html"</code></p>
+</header>
+
+<h2>The one system we'll trace</h2>
+<p>A social app. Every user has a <b>home feed</b>: a reverse-chronological list of recent posts from the accounts they <b>follow</b>. When Ada taps <b>Post</b>, her update must eventually appear in the feed of each of her followers. When Ben opens the app, he must see a fresh feed built from the ~200 accounts <i>he</i> follows. The whole design turns on one choice: <span class="key">at post time, do we push Ada's post into each follower's inbox, or do we leave it in one place and pull it together at read time?</span> Here is both approaches on one screen.</p>
+
+<div class="diagram"><pre>
+  ONE POST → MANY FEEDS — PUSH (fan-out on write) vs PULL (fan-out on read)
+
+  PUSH: work happens when Ada POSTS            PULL: work happens when Ben READS
+  ─────────────────────────────────           ──────────────────────────────────
+   Ada taps Post                                Ada taps Post
+       │                                            │
+       ▼  copy into every follower's inbox          ▼  just store the post once
+   ┌───────────────────────────────┐           [ POSTS table ]  (one row)
+   │ inbox[f1] += post              │
+   │ inbox[f2] += post   (N writes) │           Ben opens app
+   │  ...                           │               │  gather from the 200
+   │ inbox[fN] += post              │               ▼  accounts Ben follows
+   └───────────────────────────────┘           SELECT ... WHERE author IN (…200…)
+       Ben opens app                                ORDER BY time  (fan-IN read)
+       │  read own inbox (ONE lookup)                  merge + sort on the spot
+       ▼
+   [ inbox[Ben] ]  already built → fast read     read is heavy, write was cheap
+</pre></div>
+
+<p class="note">Two names for the same fork. <b>Fan-out on write</b> = <b>push</b>: spraying one post out to N inboxes at post time. <b>Fan-out on read</b> = <b>pull</b>: gathering ("fanning in") from N sources at read time. Push makes the write expensive and the read trivial; pull makes the write trivial and the read expensive. The entire lesson is deciding <i>which cost you'd rather pay</i> — and, at the end, refusing to pick just one.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Post</b> — one update Ada writes. Stored once in a <code>posts</code> table, keyed by a time-sortable id (Lesson 03's Snowflake id gives you "newest first" for free).</li>
+  <li><b>Home feed / timeline</b> — the list Ben sees: recent posts from accounts he follows, newest first.</li>
+  <li><b>Follow graph</b> — who follows whom. "Ada has N <b>followers</b>" (they see her posts); "Ben follows M <b>followees</b>" (he sees theirs). The two counts are different numbers for the same person.</li>
+  <li><b>Inbox / timeline cache</b> — a per-user precomputed list of post ids, one per user. Push writes into it; a push read just reads it.</li>
+  <li><b>Fan-out on write (push)</b> — at post time, copy the post id into every follower's inbox.</li>
+  <li><b>Fan-out on read (pull)</b> — at read time, query every followee's recent posts and merge them.</li>
+  <li><b>Fan-out worker</b> — a background job (fed by a queue, Lessons 05 & 09) that does the N inbox writes, so the person posting doesn't wait for them.</li>
+  <li><b>Read:write ratio</b> — how many feed opens happen per post. This number decides which side to precompute.</li>
+</ul>
+
+<h2>Move 1 — Estimate: which side is cheaper to precompute?</h2>
+<p>The rule from Lesson 02 and 14: <b>precompute the side that's read far more often than it changes.</b> So the first question isn't "push or pull," it's "how lopsided is read vs write?" Let's put real numbers on our app.</p>
+
+<div class="card calc">
+  <p><b>Worked: the app's traffic shape.</b></p>
+  <p>• <b>100 million</b> daily active users.<br>
+     • Each user follows ~<b>200</b> accounts (so, on average, each account has ~200 followers).<br>
+     • Each user <b>posts 2×/day</b> → <b>200 million posts/day</b>.<br>
+     • Each user <b>opens the feed 5×/day</b> → <b>500 million feed reads/day</b>.</p>
+  <p>Read:write ratio at the app level = <b>500M reads : 200M posts ≈ 2.5 : 1</b>. Reads win — so our instinct should be to <b>precompute the read</b>, i.e. <b>push</b>. But "which is cheaper" isn't about the app-level counts; it's about the total <i>work</i> each strategy generates. Let's price both.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Worked: total work, push vs pull.</b></p>
+  <p><b>Push (fan-out on write).</b> Every post is copied to each follower's inbox:<br>
+     • Inbox writes = <b>200M posts × 200 followers = 40,000,000,000 = 40 B writes/day</b>.<br>
+     • Per second: <b>40 B ÷ 86,400 ≈ 463,000 inbox writes/sec</b> — but each is a tiny append (add one id to a list).<br>
+     • Reads: <b>500M/day ≈ 5,800/sec</b>, and each is <b>one</b> lookup of an already-built inbox. Cheap and O(1).</p>
+  <p><b>Pull (fan-out on read).</b> A post is stored once; the read gathers from all followees:<br>
+     • Writes: <b>200M/day ≈ 2,300/sec</b> — almost free.<br>
+     • Read work = <b>500M reads × 200 followees = 100,000,000,000 = 100 B post-fetches/day ≈ 1,160,000/sec</b> of scatter-gather, each read doing a 200-way query + merge + sort.</p>
+  <p><span class="key">Push generates 40 B heavy ops; pull generates 100 B. Push does ~2.5× less total work <i>and</i> makes the common operation (the read) a single fast lookup.</span> That matches the 2.5:1 read-heaviness exactly — the same posts get read many times, so paying once at write time and amortizing across reads is the better deal. <b>For the average user, push wins.</b></p>
+</div>
+
+<div class="card calc">
+  <p><b>Worked: does the inbox storage even fit?</b> Keep the last <b>800</b> post ids per inbox; each entry is a post id + author id ≈ <b>16 bytes</b>. Per inbox: <b>800 × 16 = 12,800 B ≈ 12.5 KB</b>. Across 100M users: <b>12.5 KB × 100M ≈ 1.25 TB</b> of timeline cache — a modest sharded key-value / Redis footprint, and it stores <i>ids</i>, not the posts themselves (the post bodies live once in the posts table and are hydrated at read). So push's storage cost is real but small. Its problem is elsewhere.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off up front:</b> push vs pull is <b>write-time work vs read-time work</b> — the same "precompute vs compute-on-demand" dial as the CDN (Lesson 14) and the covering index (Lesson 12). <span class="key">Push pays a lot at write time to make reads instant; pull pays nothing at write time but makes every read expensive. You precompute the side that is read more than it changes — and you keep watching for the case where "write once" secretly means "write ten million times."</span></p>
+
+<h2>Move 2 — Model: the inbox, and fan-out as async work</h2>
+<p>Push needs two pieces: a per-user <b>inbox</b> and a <b>fan-out worker</b>. The inbox is a list of post ids per user (our 1.25 TB cache). The worker is what actually performs the N writes — and it must run <i>in the background</i>, because Ada should not wait for her post to reach 200 inboxes before her screen says "Posted."</p>
+
+<div class="diagram"><pre>
+  THE POST PATH (push), done asynchronously so the poster never waits:
+
+  Ada taps Post
+      │
+      ▼
+  1. INSERT into posts table            (durable: the one true copy)
+      │  return "Posted ✓" to Ada now   (she's done in ~50 ms)
+      ▼
+  2. enqueue fan-out job {post_id, author=Ada}   (Lesson 05/09 queue)
+      │
+      ▼
+  3. FAN-OUT WORKER pulls the job:
+        look up Ada's followers  ──▶  for each follower f:  inbox[f] += post_id
+        (N appends, spread across timeline-cache shards; retried on failure)
+</pre></div>
+
+<p>Storing the post (step 1) is synchronous and fast — one row. The expensive part (step 3, the N inbox appends) happens after Ada is told "Posted," driven by the queue. This is Lesson 05's whole point: <span class="key">the slow part of a request should not block the fast part.</span> If the worker crashes mid-fan-out, the queue's visibility timeout redelivers the job (Lesson 05/09) and the appends must be <b>idempotent</b> — "add post_id to inbox if not present" — so a retried job doesn't double-list the post (Lesson 13).</p>
+
+<p class="note why"><b>Name the trade-off:</b> doing fan-out async buys Ada a fast post but costs you <b>eventual consistency on the feed</b>. <span class="key">For a few seconds after Ada posts, some followers' inboxes have the post and some don't — the fan-out is still draining.</span> For a social feed that's completely fine (nobody notices a 3-second delay). For something where the writer must see their own change immediately — "read-your-writes," Lesson 06 — you special-case it: show Ada her own post from the posts table right away rather than waiting for it to appear in her own inbox.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+
+<h3>Path A — the read, under push (the common case)</h3>
+<p>Ben opens the app. The server reads <b>one</b> key: <code>inbox[Ben]</code> — a ready-made list of ~800 recent post ids, already merged and time-sorted because the fan-out worker appended them in order. It takes the top ~50, <b>hydrates</b> them (fetch the post bodies for those 50 ids, a batched lookup often served from cache — Lesson 02), and returns the feed. Total: <b>two</b> round trips (inbox read, then a 50-id batch fetch), no per-followee queries, no sort over hundreds of rows. This is why push exists: 500M times a day, the read is trivial.</p>
+
+<h3>Path B — the read, under pull (for contrast)</h3>
+<p>The same read without precomputation: fetch Ben's 200 followees, query each one's recent posts (or one big <code>WHERE author IN (…200…) ORDER BY time LIMIT 50</code>), merge and sort potentially thousands of candidate rows, keep the top 50, hydrate. Every feed open pays this. It's correct and it needs almost no write-time work — but it's the 100 B-ops/day monster from Move 1, and its latency grows with how many people you follow.</p>
+
+<h3>Path C — the post, when the author is a celebrity</h3>
+<p>Now the crack. Push assumed ~200 followers per post. But follower counts are <b>not uniform</b> — they follow a power law. A handful of accounts have <i>millions</i> of followers. Watch what one of them does to the push model.</p>
+
+<div class="card calc">
+  <p><b>Worked: the celebrity fan-out storm.</b> Suppose there are <b>1,000</b> celebrity accounts, each with an average of <b>5 million</b> followers, each posting <b>5×/day</b>.<br>
+     • Inbox writes from celebrities alone = <b>1,000 × 5 posts × 5,000,000 followers = 25,000,000,000 = 25 B writes/day</b>.<br>
+     • That's <b>25 B out of our 40 B</b> total push writes — <b>~60% of all fan-out work</b> — generated by <b>5,000 posts</b>, which is <b>0.0025%</b> of the 200M daily posts.</p>
+  <p>Worse, it arrives as a <b>spike</b>: one celebrity post = <b>5 million</b> inbox appends that all want to happen at once (a distributed thundering herd, Lesson 02/14). And most of it is <b>wasted</b>: if only 20% of those 5M followers open the app today, then <b>4 million</b> of the 5 million appends land in inboxes nobody will read before the entries age out. <span class="key">Push does its most work exactly where it pays off least — spraying a post to millions of mostly-inactive followers.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> push trades read speed for write amplification, and <span class="key">for a high-follower account the amplification is unbounded — one action becomes millions of writes.</span> The average said "push wins." The <i>distribution</i> says "push is catastrophic at the tail." Averages hide tails; system design lives in the tail (Lesson 12's selectivity trap and Lesson 07's p99 were the same lesson).</p>
+
+<h2>Move 4 — Find the next bottleneck: the hybrid, and what still bites</h2>
+<p>The fix is not to pick a side but to <b>route by follower count</b>. Push for the many normal accounts (cheap fan-out, fast reads); pull for the few celebrities (skip the write storm, gather their posts at read time). The read merges the two.</p>
+
+<div class="diagram"><pre>
+  HYBRID: push the normal accounts, pull the celebrities, merge at read
+
+  POST time:
+    author's follower count < THRESHOLD  ──▶  fan-out on write (push to inboxes)
+    author's follower count ≥ THRESHOLD  ──▶  do NOTHING extra (just store the post)
+
+  READ time (Ben opens app):
+    A = inbox[Ben]                       (pushed posts from his normal followees)
+    B = for each CELEBRITY Ben follows:  fetch their recent posts
+                                         (cached once per celebrity — shared by all fans)
+    feed = merge_sort(A, B), top 50, hydrate
+</pre></div>
+
+<div class="card calc">
+  <p><b>Worked: why the hybrid read stays cheap.</b> Ben follows 200 accounts; say <b>5</b> of them are celebrities. His read is now <b>1</b> inbox lookup <b>+ 5</b> celebrity fetches. And those 5 fetches are the <i>same</i> "recent posts of celebrity X" that every one of X's fans needs — so they're cached once and served from memory (Lesson 02's hot key done right, because now the hot key is a <i>feature</i> not an accident). So the read went from "1 lookup" to "1 lookup + a handful of cache hits" — still tiny — while the write side <b>shed the 25 B celebrity writes entirely</b>. The 40 B/day push cost drops toward 15 B, the spikes vanish, and no work is wasted on inactive followers of celebrities.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — the threshold is the dial.</b> <span class="key">Set the celebrity threshold too <b>low</b> and too many accounts get pulled → reads fan in to many sources and slow down (drifting toward pure pull). Set it too <b>high</b> and a few huge accounts still trigger million-write storms (drifting toward pure push).</span> Real systems put it in the tens of thousands to ~1M followers, and can even decide per-read (pull an account only if it's both high-follower <i>and</i> posted recently). The threshold trades read fan-in against write amplification — the whole push/pull tension, now a tunable number instead of a fixed choice.</p>
+
+<h3>The other walls this opens</h3>
+<ul>
+  <li><b>Ranking vs chronological.</b> If the feed is <b>ranked</b> by a relevance score (not just newest-first), the precomputed inbox can't just be a sorted list of ids — the score depends on Ben and changes over time. The common shape: push builds the <b>candidate set</b> (what's eligible), and a ranking pass scores it at read time. You precompute <i>membership</i>, compute <i>order</i> on demand — a push/pull split <i>within one feed</i>.</li>
+  <li><b>Deletes and edits.</b> Ada deletes a post that push already copied into millions of inboxes. You either fan-out the delete too (another N writes) or — cheaper — leave a tombstone and <b>filter at read</b>: when hydrating the 50 ids, drop any whose post row is gone. Storage vs read-time work, again.</li>
+  <li><b>The inactive-user tax.</b> Even for normal accounts, pushing to followers who never log in is wasted. A refinement: only fan out to <b>recently-active</b> followers, and lazily backfill a dormant user's inbox by pulling on their next login. Push for the live audience, pull to rehydrate the rest.</li>
+  <li><b>New follow / cold start.</b> When Ben follows someone new, their past posts aren't in his inbox. You backfill by pulling that followee's recent posts once and merging — the same read-path pull, used to patch the write-path gap.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We took one post and asked how it reaches every follower's feed. <b>Estimate</b> showed the app is read-heavy (2.5 reads per post) and that push generates ~40 B ops/day versus pull's ~100 B, so precomputing the read (push) wins for the average user — while the inbox cache fits in ~1.25 TB because it stores ids, not bodies. <b>Model</b> built push as a durable post write plus an <b>async fan-out worker</b> (a queue job, idempotent appends), buying a fast post at the price of a few seconds' eventual consistency. <b>Tracing the paths</b> walked the cheap push read (one inbox lookup + a batched hydrate), the expensive pull read (200-way scatter-gather), and the post path that <b>breaks</b> when the author is a celebrity: 1,000 accounts generate 60% of all fan-out writes from 0.0025% of posts, in spikes, mostly wasted on inactive followers. The <b>next bottleneck</b> was that tail, fixed by a <b>hybrid</b> — push normal accounts, pull celebrities (cached once per celebrity), merge at read — with the <b>follower threshold</b> as the dial between read fan-in and write amplification, plus the follow-on walls of ranking, deletes, inactive users, and cold-start backfill. The thread of the whole lesson: <span class="key">a feed is a bet about where to spend work — at write time or read time — and the winning design refuses a single bet, routing each post to the cheaper side.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lessons build directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>Search systems:</b> ranking results by relevance (TF-IDF / BM25) — the same "precompute the candidate set, compute the order on demand" split you just saw inside the ranked feed.</p>
+  <p style="margin:.2rem 0">• <b>Distributed tracing &amp; observability:</b> when a feed read fans in to a dozen services, which hop is the slow one? Finding the p99 culprit across a request.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">home feed / timeline</span>
+    <span class="pill">follow graph</span>
+    <span class="pill">followers vs followees</span>
+    <span class="pill">inbox / timeline cache</span>
+    <span class="pill">fan-out on write (push)</span>
+    <span class="pill">fan-out on read (pull)</span>
+    <span class="pill">fan-out worker</span>
+    <span class="pill">read:write ratio</span>
+    <span class="pill">write amplification</span>
+    <span class="pill">hydration</span>
+    <span class="pill">hybrid fan-out</span>
+    <span class="pill">celebrity / follower threshold</span>
+    <span class="pill">eventual consistency</span>
+    <span class="pill">read-your-writes</span>
+    <span class="pill">candidate set vs ranking</span>
+    <span class="pill">tombstone / filter-at-read</span>
+    <span class="pill">cold-start backfill</span>
+  </p>
+  <p>That's Lesson 15, building on Lesson 02's cache + hot keys, Lesson 05/09's queues and workers, Lesson 13's idempotent retries, and Lesson 14's "precompute near the reader." <b>Ask me follow-ups</b> — e.g. "how do you keep the inbox capped at 800 without a slow trim on every append?", "what exactly makes a celebrity's recent-posts fetch a good cache key when a random query param wasn't?", "how would you A/B test moving the follower threshold?", "how do ranked feeds page (offset vs cursor) when the score keeps changing?", or "why not just pull for everyone if reads can be cached too?" When you're ready, say <b>next</b> and we'll go deeper on <i>search systems — parsing a query and ranking the results</i>.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your app has 100M users, each follows ~200 accounts, posts 2×/day and opens the feed 5×/day. A teammate argues for pure fan-out on READ (pull) because \"writes stay cheap.\" Why is push usually the better default here?",
+    options: [
+      {t:"Reads outnumber posts ~2.5:1 and the same post is read by many followers, so precomputing each feed once at write time (push ≈ 40 B cheap appends/day) is less total work than recomputing it on every read (pull ≈ 100 B fan-in fetches/day) — and it makes the common op, the read, a single O(1) inbox lookup.",
+       ok:true,
+       fb:"Right. Precompute the side that's read more than it changes. Push pays once at write time and amortizes across the many reads; pull redoes a 200-way scatter-gather on every feed open. Push is both less total work and a far faster read."},
+      {t:"Pull is always slower because databases can't do IN-list queries efficiently.",
+       ok:false,
+       fb:"Databases handle IN-lists fine; that's not the issue. The issue is that pull repeats a 200-way gather + sort on every one of 500M daily reads, whereas push does the merge once at write time. It's about where the work lands, not a query-engine limitation."},
+      {t:"Push uses less storage than pull, and storage is the bottleneck.",
+       ok:false,
+       fb:"Backwards on storage — push ADDS a ~1.25 TB inbox cache that pull doesn't need. Push still wins, but on read latency and total work, not storage. Storage is the cheap part here; write amplification is the thing to watch."}
+    ]
+  },
+  {
+    stem: "In the push design, when Ada taps Post the server INSERTs her post, immediately returns \"Posted ✓\", and only THEN a background worker copies the post id into her followers' inboxes. Why split it this way?",
+    options: [
+      {t:"The N inbox appends are the slow part and must not block the fast part (Ada's response). A queue + fan-out worker lets Ada finish in ~50 ms while the appends drain in the background; if the worker crashes, the queue redelivers and idempotent appends avoid double-listing.",
+       ok:true,
+       fb:"Exactly. Slow work goes async behind a queue (Lesson 05/09). The trade is a few seconds of eventual consistency on followers' feeds — fine for a social timeline — and retries stay safe because the append is idempotent (Lesson 13)."},
+      {t:"To guarantee every follower sees the post at the exact same instant.",
+       ok:false,
+       fb:"Async fan-out gives the opposite: followers get the post at slightly different times as the worker drains. That staggered, eventually-consistent delivery is the accepted cost of not making Ada wait — simultaneity is neither promised nor needed."},
+      {t:"Because storing the post in the posts table isn't durable, so the worker makes it durable.",
+       ok:false,
+       fb:"The synchronous INSERT is the durable, authoritative copy — that's exactly why it's done first and before returning. The worker only copies ids into inboxes (a cache); durability was already handled in step 1."}
+    ]
+  },
+  {
+    stem: "One celebrity with 5,000,000 followers posts. Under pure push, what goes wrong, and what's the standard fix?",
+    options: [
+      {t:"That one post becomes 5,000,000 inbox appends — a write-amplification spike — and most land in inboxes of followers who won't open the app before the entries age out (wasted work). Fix: a hybrid — pull for high-follower accounts (fetch their recent posts, cached once per celebrity, at read time) and push only for normal accounts, merging both at read.",
+       ok:true,
+       fb:"Correct. Follower counts are power-law, so the tail breaks the push average. The hybrid skips the storm for celebrities and serves their posts from a single shared cache entry, while the read stays cheap (one inbox lookup + a few cached celebrity fetches)."},
+      {t:"Nothing special — 5M appends is fine, just add more inbox-cache shards to absorb it.",
+       ok:false,
+       fb:"More shards don't remove the problem: the work itself is largely wasted (inactive followers) and arrives as a spike per celebrity post. Scaling capacity to serve wasteful, bursty writes is the expensive way out; routing celebrities to pull removes the writes entirely."},
+      {t:"Switch the ENTIRE app to pull so no account ever fans out on write.",
+       ok:false,
+       fb:"That fixes the tail but re-breaks the 99.99% of normal posts, making every one of 500M daily reads a 200-way scatter-gather again. The point of the hybrid is to pull only the few accounts where push is catastrophic, and keep push for everyone else."}
+    ]
+  },
+  {
+    stem: "You add a follower-count THRESHOLD: accounts above it are pulled, below it are pushed. What's the tension in choosing that number?",
+    options: [
+      {t:"Too low → many accounts get pulled, so reads fan in to more sources and slow down (drifting toward pure pull). Too high → a few huge accounts still trigger million-write storms (drifting toward pure push). The threshold is the dial between read fan-in cost and write amplification.",
+       ok:true,
+       fb:"Right. The threshold is literally the push/pull trade made tunable. Real systems set it in the tens-of-thousands-to-~1M range and can even decide per read (pull an account only if it's high-follower AND posted recently)."},
+      {t:"There's no tension — just set it to 1 so everything is pulled and never worry about fan-out.",
+       ok:false,
+       fb:"Threshold = 1 is pure pull, which reintroduces the 200-way scatter-gather on every read that push existed to eliminate. The threshold has a real cost on both sides; picking an extreme just moves you back to a strategy you already rejected."},
+      {t:"Set it as high as possible so almost everything is pushed — pushing is always cheapest.",
+       ok:false,
+       fb:"A very high threshold means the biggest accounts still fan out to millions of inboxes in spiky, mostly-wasted writes — the exact failure the hybrid was built to avoid. Higher isn't free; it trades read speed back for write amplification at the tail."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

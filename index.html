@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0015-feed-fanout.html">
+    <div class="num">LESSON 15</div>
+    <div class="title">Feed Fan-out: Delivering One Post to a Million Timelines</div>
+    <div class="blurb">One post, and the question of where the work goes: push it into every follower's inbox at write time (fan-out on write), or gather it from everyone you follow at read time (fan-out on read)? Estimate both for a 100M-user app (push ≈ 40 B cheap appends/day and O(1) reads; pull ≈ 100 B fan-in fetches/day) and see why the read-heavy average favors push. Model fan-out as an async queue + worker, trace the cheap push read and the expensive pull read, then watch one celebrity with 5M followers turn a single post into 5M writes — 60% of all fan-out from 0.0025% of posts. Fix it with the hybrid: push normal accounts, pull celebrities, merge at read, with the follower threshold as the dial.</div>
+  </a>
   <a class="lesson" href="lessons/0014-cdn-design.html">
     <div class="num">LESSON 14</div>
     <div class="title">CDN Design: Serving a Photo to Sydney in 20 ms Instead of 800</div>
