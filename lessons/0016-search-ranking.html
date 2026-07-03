@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 16 — Search Ranking: Which 10 of 40,000 Matches Come First</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 16 · Worked Example</div>
+  <h1>Search Ranking: Which 10 of 40,000 Matches Come First</h1>
+  <p class="lead">Lesson 12 built the <b>inverted index</b> that answers "<i>which</i> documents contain these words" — it turned a 10-million-row scan into a small merge of postings lists. But it stopped one step short of a real search box. A shopper types <b>"red running shoes"</b> into a catalog of 10 million products and 40,000 of them match. You can show <b>10</b>. Which 10? That question — <b>ranking</b> — is the whole difference between a search that feels magic and one that feels broken. This lesson takes that one query and traces it end to end: parse it, retrieve the candidates (Lesson 12's job), then <b>score</b> each one with real arithmetic — TF-IDF, then why it's naive, then BM25 — sort the top 10, and find the bottleneck that forces every large search system into <b>two phases</b>. We name the trade-off underneath it all: <b>recall vs precision</b>.</p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0016-search-ranking.html"</code></p>
+</header>
+
+<h2>The one system we'll trace</h2>
+<p>A product catalog: <b>10,000,000 products</b>, each with a short text title. We already have the inverted index from Lesson 12 — a map from each word to the sorted list of product ids that contain it. A shopper searches <code>red running shoes</code>. Lesson 12 tells us <i>who matches</i>; this lesson decides <i>who wins</i>. Here is the whole pipeline on one screen.</p>
+
+<div class="diagram"><pre>
+  ONE SEARCH: "red running shoes"  →  10 results, best first
+
+  QUERY ──▶ [1 PARSE] ──▶ [2 RETRIEVE] ──▶ [3 SCORE] ──▶ [4 TOP-K] ──▶ results
+            tokenize        inverted index    give each      keep the
+            lowercase       postings lists     candidate a     best 10
+            stem            (Lesson 12)         number         (a heap)
+            drop stopwords
+                                 │
+                                 ▼
+   postings (from L12):   "red"  → [ 12, 88, 500,003 ids ]
+                          "run"  → [ 88, 91, 120,000 ids ]     ← df = how many docs have it
+                          "shoe" → [ 88, 207,  40,000 ids ]
+                                 │
+              OR-merge → ~600,000 candidates match at least one word
+                                 │
+   SCORE each candidate d:   score(d) = Σ  tf(term,d) × idf(term)
+                                       over query terms
+                                 │
+   rarer word = higher idf:   idf("shoe") ≫ idf("red") ≫ idf("the")≈0
+                                 │
+              ┌──────────────────┴───────────────────┐
+              │  sort by score, cut to top 10 (heap)  │  ← the answer the shopper sees
+              └───────────────────────────────────────┘
+</pre></div>
+
+<p class="note"><span class="key">Retrieval finds the set that matches; ranking sorts that set so the best few float to the top.</span> Lesson 12 was retrieval. This lesson is ranking. The core insight is that not all matches are equal and not all words are equal — a product that matches the <i>rare, specific</i> word "shoe" should beat one that only matches the common word "red," and a product whose title is <i>about</i> shoes should beat one that merely mentions the word once in passing. Turning "should" into a number is the job.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Query parsing</b> — turning the raw text into search terms: tokenize into words, lowercase, <b>stem</b> to roots ("running"→"run"), drop <b>stopwords</b> (ultra-common words like "the").</li>
+  <li><b>Candidate set</b> — the products retrieved as possible matches, before ranking. Bigger set = higher recall, more to score.</li>
+  <li><b>Term frequency (TF)</b> — how many times a query word appears in one document. More = the doc is more "about" that word… up to a point.</li>
+  <li><b>Document frequency (DF)</b> — how many documents in the whole corpus contain a word. High DF = common word = weak signal.</li>
+  <li><b>Inverse document frequency (IDF)</b> — <code>log(N / DF)</code>. Turns "rare word" into "high weight." The math that makes "shoe" matter more than "red."</li>
+  <li><b>TF-IDF</b> — the classic score: sum over query words of <code>TF × IDF</code>. Rewards docs that use rare query words often.</li>
+  <li><b>BM25</b> — the modern default: TF-IDF with two fixes — <b>saturation</b> (the 5th occurrence of a word adds almost nothing) and <b>length normalization</b> (a long doc doesn't win just for being long).</li>
+  <li><b>Recall vs precision</b> — recall = of all the relevant products, what fraction did we return; precision = of what we returned, what fraction is relevant. The central tension.</li>
+</ul>
+
+<h2>Move 1 — Estimate: why ranking is unavoidable</h2>
+<p>Maybe we don't need scoring. Maybe the matching set is small enough to just show. Let's price it.</p>
+
+<div class="card calc">
+  <p><b>Worked: how big is the candidate set?</b></p>
+  <p>• The word "shoe" appears in <b>40,000</b> of the 10M titles (it's a shoe store; lots of shoes).<br>
+     • "red" appears in <b>500,000</b> (a common color word).<br>
+     • "run" appears in <b>120,000</b>.</p>
+  <p>If we require <i>all three</i> words (a strict AND, Lesson 12's intersection) we might get a few thousand. But most real search uses <b>OR</b> — return anything matching <i>at least one</i> word — so we don't miss "crimson jogging sneakers" that lacks the exact words. That OR-merge is roughly <b>600,000 candidates</b>. The shopper will look at the first <b>10</b>, maybe scroll to 20. So we must choose 10 out of 600,000 — and <b>the order is the entire product.</b> Results 11–600,000 might as well not exist; 99.998% of the matched set is never seen. Everything rides on which 10 we put first.</p>
+</div>
+
+<p class="note why"><b>Name the first trade-off — recall vs precision.</b> Requiring all words (AND) gives high <b>precision</b> (every result truly is a red running shoe) but poor <b>recall</b> (you miss "crimson sneakers for jogging"). Requiring any word (OR) gives high recall (you catch the near-matches) but poor precision (you also catch a red dress and a running watch). <span class="key">You can't maximize both at once — so the standard move is retrieve broadly (OR, high recall) and then let <i>ranking</i> restore precision by pushing the true matches to the top.</span> Ranking is how you get recall's coverage without paying precision's price at the top of the page.</p>
+
+<h2>Move 2 — Model: score a document, from TF-IDF to BM25</h2>
+<p>We need a number for each candidate. Start with the two intuitions and turn each into math.</p>
+
+<h3>Intuition 1 — rare words matter more (IDF)</h3>
+<p>If a product matches "shoe," that's informative — few products do. If it matches "the," that's worthless — almost everything does. We want a weight that is <b>high for rare words, near zero for common ones</b>. That's inverse document frequency: <code>idf(term) = log(N / df(term))</code>, with <code>N</code> = total docs. Let's compute it (base-10 logs, N = 10,000,000):</p>
+
+<div class="card calc">
+  <p><b>Worked: IDF of each query word.</b></p>
+  <p>• <code>idf("shoe") = log(10,000,000 / 40,000) = log(250) ≈ <b>2.40</b></code><br>
+     • <code>idf("run")&nbsp; = log(10,000,000 / 120,000) = log(83.3) ≈ <b>1.92</b></code><br>
+     • <code>idf("red")&nbsp; = log(10,000,000 / 500,000) = log(20) ≈ <b>1.30</b></code><br>
+     • <code>idf("the")&nbsp; = log(10,000,000 / 9,000,000) = log(1.11) ≈ <b>0.05</b></code></p>
+  <p>Look at "the": it lands near <b>zero</b>, so matching it barely moves the score. That's IDF automatically discovering what a stopword list does by hand — a word in 90% of docs carries almost no information. And "shoe" (2.40) outweighs "red" (1.30) by nearly 2×, exactly the ranking we wanted: the specific word beats the generic one <i>without anyone hand-tuning it</i>. The logarithm is what compresses the huge DF range into a gentle weight.</p>
+</div>
+
+<h3>Intuition 2 — a doc that uses the word more is more about it (TF)</h3>
+<p>Term frequency is just the count of the word in the doc. TF-IDF multiplies the two intuitions and sums over the query: <code>score(d) = Σ tf(term,d) × idf(term)</code>. Let's rank two real candidates for "red running shoes":</p>
+
+<div class="card calc">
+  <p><b>Worked: TF-IDF of two candidates.</b></p>
+  <p><b>Doc A</b> — title "<i>Red Running Shoes</i>": tf(red)=1, tf(run)=1, tf(shoe)=1.<br>
+     <code>score(A) = 1×1.30 + 1×1.92 + 1×2.40 = <b>5.62</b></code></p>
+  <p><b>Doc B</b> — a spammy title "<i>Running shoes, best running shoe, running running</i>": tf(red)=0, tf(run)=4, tf(shoe)=2.<br>
+     <code>score(B) = 0×1.30 + 4×1.92 + 2×2.40 = 7.68 + 4.80 = <b>12.48</b></code></p>
+  <p>Doc B wins by a mile — even though Doc A is the <i>perfect</i> match ("red running shoes") and Doc B isn't even red. Raw TF-IDF let a seller <b>keyword-stuff</b> "running running running" straight to the top. This is TF-IDF's fatal flaw: term frequency grows without limit, so repeating a word keeps paying. We need to cap the reward.</p>
+</div>
+
+<h3>The fix — BM25: saturate the TF, normalize by length</h3>
+<p>BM25 is TF-IDF with the two flaws patched. The key patch is <b>saturation</b>: instead of <code>tf</code> growing forever, it feeds through <code>tf × (k+1) / (tf + k)</code>, which rises fast at first then flattens to a ceiling of <code>k+1</code>. With the common <code>k = 1.2</code> (so the ceiling is 2.2):</p>
+
+<div class="card calc">
+  <p><b>Worked: the saturation curve.</b></p>
+  <p>• <code>tf = 1 →&nbsp; 1×2.2 / (1+1.2) = 2.2/2.2 = <b>1.00</b></code><br>
+     • <code>tf = 2 →&nbsp; 2×2.2 / (2+1.2) = 4.4/3.2 = <b>1.38</b></code><br>
+     • <code>tf = 4 →&nbsp; 4×2.2 / (4+1.2) = 8.8/5.2 = <b>1.69</b></code><br>
+     • <code>tf = 10 → 10×2.2 / (10+1.2) = 22/11.2 = <b>1.96</b></code>&nbsp; (creeping toward the 2.2 ceiling)</p>
+  <p>Going from 1 to 4 occurrences raises the factor from 1.00 to only <b>1.69</b> — not 4×. The 4th "running" adds almost nothing; the 10th nearly nothing. So Doc B's spam of "running running" stops helping after the first couple, and Doc A's clean, complete match — which also covers the rare word "shoe" <i>and</i> matches "red" — climbs back above it. BM25's second patch, <b>length normalization</b>, further penalizes Doc B for padding its title: a long document is expected to contain more words, so each occurrence in a bloated title counts for less. <span class="key">BM25 = IDF weighting + saturating TF + length normalization — the reason a 40-year-old formula is still the default first-pass ranker everywhere.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off:</b> saturation trades a little "more is better" linearity for robustness against manipulation and noise. A perfectly linear TF ranks by raw keyword count — easy to game and dominated by long, repetitive documents. Saturating it says "the first mention tells me a lot, the tenth tells me almost nothing," which matches how relevance actually works and closes the keyword-stuffing hole.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+
+<h3>Path A — parsing the query (garbage in, garbage out)</h3>
+<p>Before retrieval, the raw string <code>"Red Running Shoes!"</code> becomes clean terms — and it must be the <b>same</b> transformation used when the index was built, or nothing matches. Tokenize → lowercase → drop punctuation → <b>stem</b> ("running"→"run", "shoes"→"shoe") → drop stopwords. If the index stored the stem "run" but the query searches the literal "running," the postings list lookup misses and a relevant product vanishes. <span class="key">Query-time analysis must mirror index-time analysis exactly.</span> This is the quiet source of half of all "why isn't my product showing up?" bugs.</p>
+
+<h3>Path B — retrieve, then score, then top-K</h3>
+<p>Parsed terms go to the inverted index (Lesson 12): fetch the postings list for each, OR-merge to ~600,000 candidates. Score each with BM25. Now we need the top 10 — but we do <b>not</b> sort all 600,000 (that's <code>N log N</code> work to throw away 599,990 of them). Instead keep a <b>min-heap of size 10</b>: scan the candidates once, and for each, if it beats the smallest score in the heap, swap it in. That's <code>N log 10</code> — linear in candidates, tiny constant. The heap is the standard "top-K without a full sort" trick.</p>
+
+<h3>Path C — the same query, two intents (why text score isn't enough)</h3>
+<p>Two products tie on BM25 for "running shoes": one is a best-seller in stock, the other is a discontinued item nobody's bought in a year. Pure text relevance can't tell them apart — both match the words equally. Real rankers add <b>non-text signals</b> to the score: popularity (sales, clicks), recency, availability, personalization. The final score is a <i>blend</i>: <code>score = w₁·BM25 + w₂·popularity + w₃·recency + …</code>. Text relevance decides <i>who is eligible</i>; the other signals decide <i>who wins among the relevant</i>. This is why the same words can rank differently for different shoppers, and why a search team spends most of its time tuning these weights, not the BM25 formula.</p>
+
+<h2>Move 4 — Find the next bottleneck: scoring cost forces two phases</h2>
+<p>BM25 over 600,000 candidates is cheap. But two things break as the system grows.</p>
+
+<h3>Wall 1 — the expensive ranker can't touch every candidate</h3>
+<div class="card calc">
+  <p><b>Worked: why you can't run the good ranker on everything.</b> The best rankers today are <b>machine-learned</b> models that look at hundreds of signals per document — and they cost, say, <b>1 millisecond per document</b> to score. Run that on all 600,000 candidates and you spend <code>600,000 × 1 ms = 600 seconds</code> — <b>10 minutes</b> for one search. Impossible against a ~200 ms latency budget. But run it on just the top <b>100</b> and it's <code>100 × 1 ms = 100 ms</code> — fine. So search splits into <b>two phases</b>:</p>
+  <p style="margin:.4rem 0">1. <b>Retrieval / first-pass rank</b> — cheap BM25 over all 600,000, keep the top <b>~1,000</b>. Fast, approximate, high recall.<br>
+     2. <b>Re-rank</b> — the expensive ML model over just those 1,000 (or 100), producing the final order. Slow, precise, applied only where it matters.</p>
+  <p><span class="key">Trade-off named: you can have a cheap ranker over everything or an expensive ranker over a few, so you use both — cheap to narrow, expensive to perfect.</span> This "retrieve cheap, re-rank rich" funnel is the backbone of every large search and recommendation system. It's the same shape as Lesson 12's covering index (do the cheap thing first, pay for precision only where needed) and Lesson 14's edge/origin split.</p>
+</div>
+
+<h3>Wall 2 — the index is stale the moment you build it</h3>
+<p>A seller adds a new "red running shoe" at noon. When can a shopper find it? The inverted index (Lesson 12) is a separate structure that <b>trails</b> the source database — it must be updated, and updating a 10M-doc index in real time is expensive. So search runs <b>near-real-time indexing</b>: new and changed documents are batched and folded into the index on a short refresh interval (often ~1 second). <span class="key">Trade-off: index freshness vs indexing cost — refresh every second and you burn CPU constantly; refresh every hour and new products are invisible for an hour.</span> This is Lesson 06's replication lag and Lesson 14's TTL, wearing a search hat: the index is an eventually-consistent copy, and you choose how far behind it may fall.</p>
+
+<table>
+  <tr><th>Situation</th><th>Choice</th><th>Trade-off named</th></tr>
+  <tr><td>Might miss near-matches ("crimson sneakers")</td><td><b>OR retrieval</b>, high recall</td><td>recall vs precision — restore precision by ranking</td></tr>
+  <tr><td>Rare word vs common word</td><td><b>IDF weighting</b></td><td>informative words count more; stopwords ≈ 0</td></tr>
+  <tr><td>Keyword-stuffed / long documents</td><td><b>BM25</b> (saturate TF + length-normalize)</td><td>robustness vs raw "more is better" linearity</td></tr>
+  <tr><td>Two text-ties, different quality</td><td><b>Blend non-text signals</b> (popularity, recency)</td><td>relevance decides eligibility, signals decide the winner</td></tr>
+  <tr><td>Best ranker too slow for all candidates</td><td><b>Two-phase</b>: cheap retrieve → rich re-rank</td><td>coverage vs cost — narrow cheap, perfect expensive</td></tr>
+  <tr><td>New product must be findable fast</td><td><b>Near-real-time indexing</b></td><td>freshness vs indexing cost</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We took one query — <b>"red running shoes"</b> over 10M products — and ranked it. <b>Estimate</b> showed why ranking is unavoidable: OR-retrieval matches ~600,000, the shopper sees 10, so the order <i>is</i> the product, and we named the tension underneath — <b>recall vs precision</b>, resolved by retrieving broadly and ranking to restore precision at the top. <b>Model</b> built the score from two intuitions: <b>IDF</b> = <code>log(N/DF)</code> makes the rare word "shoe" (2.40) beat "red" (1.30) and drives "the" to ~0.05 for free; <b>TF-IDF</b> multiplies and sums — but its unbounded TF let a keyword-stuffed title (12.48) crush a perfect match (5.62), so <b>BM25</b> patches it with a <b>saturating</b> TF (1→4 occurrences only lifts the factor 1.00→1.69) and length normalization. <b>Tracing the paths</b> covered query parsing that must mirror the index exactly, the retrieve→score→<b>top-K heap</b> pipeline, and why pure text score needs a blend of popularity and recency to break ties. The <b>next bottleneck</b> forced the universal shape: an ML ranker at 1 ms/doc would take 10 minutes over 600,000, so search splits into <b>two phases</b> — cheap BM25 to narrow to ~1,000, expensive re-rank on those — and the index runs <b>near-real-time</b>, an eventually-consistent copy trading freshness for cost. The thread: <span class="key">retrieval finds what matches; ranking decides what wins — and every scaling decision is some version of "narrow cheaply, then perfect expensively."</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lessons build directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>Distributed tracing &amp; observability:</b> a search request now fans out across a parser, a retrieval service, a re-ranker, and a feature store — when it's slow, which hop ate the 200 ms? The next lesson follows one request through 20 services with trace IDs and spans.</p>
+  <p style="margin:.2rem 0">• <b>API design &amp; pagination:</b> the shopper scrolls past result 10 to result 30 — how do you page a ranked, shifting result set without duplicates or gaps? Cursor vs offset paging, next.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">retrieval vs ranking</span>
+    <span class="pill">query parsing</span>
+    <span class="pill">tokenize / stem</span>
+    <span class="pill">stopword</span>
+    <span class="pill">candidate set</span>
+    <span class="pill">term frequency (TF)</span>
+    <span class="pill">document frequency (DF)</span>
+    <span class="pill">inverse document frequency (IDF)</span>
+    <span class="pill">TF-IDF</span>
+    <span class="pill">BM25</span>
+    <span class="pill">TF saturation</span>
+    <span class="pill">length normalization</span>
+    <span class="pill">recall vs precision</span>
+    <span class="pill">AND vs OR retrieval</span>
+    <span class="pill">top-K heap</span>
+    <span class="pill">signal blending</span>
+    <span class="pill">two-phase ranking</span>
+    <span class="pill">re-rank</span>
+    <span class="pill">near-real-time indexing</span>
+  </p>
+  <p>That's Lesson 16, built directly on Lesson 12's inverted index (retrieval → now ranking), Lesson 06's replication lag and Lesson 14's TTL (both reappear as index freshness), and the "narrow cheap, perfect expensive" funnel from Lessons 12 and 14. <b>Ask me follow-ups</b> — e.g. "what do the BM25 parameters k1 and b actually control?", "how does learning-to-rank / a re-ranker get trained?", "what's the difference between precision@10 and recall, and how do you measure relevance?", "how do vector / semantic search and embeddings change retrieval?", or "how does a search index shard across machines and merge results?" When you're ready, say <b>next</b> and we'll go deeper on <i>Distributed tracing — finding the slow hop in a 20-service request</i>.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "A search for 'red running shoes' over 10M products OR-matches ~600,000 items, but the shopper only looks at the first 10. Why is ranking, not retrieval, the hard part here?",
+    options: [
+      {t:"Because 99.998% of the matched set is never seen — results 11 onward might as well not exist — so the entire value is in which 10 come first. Retrieval just finds the eligible set; ranking decides who wins, and that ordering is the product.",
+       ok:true,
+       fb:"Right. Retrieval (Lesson 12) is a solved merge of postings lists; the open question is order. With hundreds of thousands of matches and a 10-slot page, getting the ordering right is the whole game — a system that retrieves perfectly but ranks badly feels broken."},
+      {t:"Because retrieving 600,000 postings entries is the slow step, and ranking is trivial once you have them.",
+       ok:false,
+       fb:"The OR-merge of sorted postings lists is fast and well understood — that's Lesson 12. The hard, high-value work is scoring and ordering those candidates so the best 10 surface. Retrieval finds the set; ranking is where relevance is won or lost."},
+      {t:"Because you must show all 600,000 results, so they all need to be sorted perfectly.",
+       ok:false,
+       fb:"You never show 600,000 — the shopper sees ~10. You don't even fully sort them (a top-K heap keeps just the best 10). The difficulty isn't ordering everything; it's making sure the true best few land in those 10 slots."}
+    ]
+  },
+  {
+    stem: "IDF is defined as log(N / DF). For 10M docs, 'shoe' appears in 40,000 and 'the' in 9,000,000. What does IDF accomplish, and why the logarithm?",
+    options: [
+      {t:"It weights rare words high and common words near zero: idf('shoe')=log(250)≈2.40 while idf('the')=log(1.11)≈0.05, so matching 'shoe' counts ~50× more than 'the'. The log compresses the huge DF range into a gentle weight and makes stopwords fall out automatically.",
+       ok:true,
+       fb:"Exactly. A word in almost every document carries almost no information, so its weight should be ~0 — which is what log(N/DF) gives for 'the'. IDF discovers the stopword list on its own, and the logarithm keeps a word that's 200× rarer from being 200× more important — just meaningfully more."},
+      {t:"It counts how many times each word appears in a document, rewarding documents that repeat the query words.",
+       ok:false,
+       fb:"That's term frequency (TF), a different factor. IDF is about the word's rarity across the whole corpus (document frequency), not its count within one doc. TF-IDF multiplies the two: TF (in-doc count) × IDF (corpus rarity)."},
+      {t:"It normalizes document length so long documents don't score higher just for being long.",
+       ok:false,
+       fb:"Length normalization is a BM25 feature, not what IDF does. IDF's job is to make rare query words weigh more than common ones via log(N/DF). Don't conflate the corpus-rarity weight (IDF) with the length penalty (BM25)."}
+    ]
+  },
+  {
+    stem: "Under raw TF-IDF, a spam title 'running shoes best running shoe running running' outscores a clean 'Red Running Shoes'. BM25 fixes this. What's the core mechanism?",
+    options: [
+      {t:"Saturation: TF feeds through tf·(k+1)/(tf+k), which rises fast then flattens to a ceiling (k+1). With k=1.2, going tf 1→4 lifts the factor only 1.00→1.69, so the 4th 'running' adds almost nothing — repeating a word stops paying. BM25 also length-normalizes, penalizing the padded title further.",
+       ok:true,
+       fb:"Correct. Raw TF grows without limit, so keyword stuffing always wins. BM25 says the first mention is highly informative and each extra one much less so — the score saturates. Combined with length normalization, the clean complete match climbs back above the spam."},
+      {t:"BM25 removes stopwords more aggressively, so the repeated words get filtered out.",
+       ok:false,
+       fb:"'running' and 'shoe' aren't stopwords — they're the query terms, and you can't drop them. The fix isn't filtering; it's capping the reward for repetition via a saturating TF function so the 10th occurrence barely counts, plus penalizing the longer, padded document."},
+      {t:"BM25 switches from OR to AND retrieval, so the spam document no longer matches.",
+       ok:false,
+       fb:"BM25 is a scoring formula, not a retrieval mode — it doesn't change AND/OR. The spam document still matches; BM25 just scores its repeated words with diminishing returns (saturation) and penalizes its length, so it no longer dominates."}
+    ]
+  },
+  {
+    stem: "A modern ML ranker scores ~1 ms per document. Your query has ~600,000 candidates and a ~200 ms budget. How do large search systems resolve this?",
+    options: [
+      {t:"Two phases: a cheap first-pass ranker (BM25) scores all 600,000 and keeps the top ~1,000; the expensive ML model re-ranks only those (100 × 1 ms = 100 ms). You can have a cheap ranker over everything or an expensive one over a few, so you use both — narrow cheaply, perfect expensively.",
+       ok:true,
+       fb:"Right. 600,000 × 1 ms = 10 minutes, impossible; but the ML ranker only needs to reorder the already-good candidates. Cheap-and-broad to narrow the field, then expensive-and-precise where it matters — the same funnel as Lesson 12's covering index and Lesson 14's edge/origin split."},
+      {t:"Run the ML ranker on all 600,000 candidates in parallel across enough machines that each finishes in 200 ms.",
+       ok:false,
+       fb:"That would need ~3,000 machines per query — economically absurd at search volumes. The insight is that you don't need the expensive model on all 600,000; a cheap first pass narrows to ~1,000 that are worth the expensive scoring. Narrow first, then spend."},
+      {t:"Cache the ranked results so the ML model only runs once per unique query.",
+       ok:false,
+       fb:"Caching helps repeat queries but not the first (cold) run of each unique query, and ranked results shift with inventory, personalization, and freshness — so you can't rely on it for correctness. The structural fix is the two-phase retrieve-then-re-rank funnel, which makes even a cold query affordable."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

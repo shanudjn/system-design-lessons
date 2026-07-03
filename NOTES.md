@@ -149,7 +149,20 @@
     THRESHOLD = the dial between read fan-in and write amplification; next walls =
     ranked feeds (precompute candidate set, rank at read), deletes (tombstone +
     filter-at-read), inactive-user tax, cold-start backfill. (Lesson 0015)
-16. Search systems — query parsing, ranking (TF-IDF/BM25), relevance vs recall.
+16. ✅ **Search systems (ranking)** — one query "red running shoes" over 10M
+    products: L12's inverted index found ~600k OR-matches, but the shopper sees
+    10 so the ORDER is the product; recall vs precision (AND=precise/misses,
+    OR=broad/noisy → retrieve broad, rank to restore precision). Model the
+    score: IDF=log(N/DF) makes rare "shoe"≈2.40 beat "red"≈1.30, "the"≈0.05
+    (stopwords fall out free); TF-IDF=Σ tf×idf, but unbounded TF lets a
+    keyword-stuffed title (12.48) crush a perfect match (5.62) → BM25 patches
+    with saturating TF (tf·(k+1)/(tf+k), k=1.2: tf 1→4 only 1.00→1.69) +
+    length normalization. Trace parse-must-mirror-index, retrieve→score→top-K
+    heap (N log 10 not N log N), and text-ties broken by blended signals
+    (popularity/recency); next walls = ML ranker at 1 ms/doc × 600k = 10 min
+    → two-phase (cheap BM25 narrows to ~1k, expensive re-rank on those, the
+    L12/L14 "narrow cheap, perfect expensive" funnel) and near-real-time
+    indexing (freshness vs cost, L06 lag / L14 TTL again). (Lesson 0016)
 17. Distributed tracing & observability — trace IDs, spans, sampling, the
     p99-vs-mean gap, and finding the slow hop in a 20-service request.
 18. API design & pagination — REST vs RPC vs GraphQL, offset vs cursor paging

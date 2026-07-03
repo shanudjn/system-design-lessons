@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0016-search-ranking.html">
+    <div class="num">LESSON 16</div>
+    <div class="title">Search Ranking: Which 10 of 40,000 Matches Come First</div>
+    <div class="blurb">Lesson 12's inverted index found <i>which</i> products match "red running shoes" — 600,000 of them. Now the hard half: which 10 come first? Score each candidate with real arithmetic — IDF (log(N/DF) makes "shoe"≈2.40 beat "red"≈1.30 and drives "the" to ≈0.05), then TF-IDF, then watch a keyword-stuffed title crush a perfect match and fix it with BM25's saturating TF and length normalization. Trace parse → retrieve → score → top-K heap, blend in popularity and recency, then hit the wall: an ML ranker at 1 ms/doc would take 10 minutes over 600k, forcing the universal two-phase funnel — retrieve cheap, re-rank rich. Trade named throughout: recall vs precision.</div>
+  </a>
   <a class="lesson" href="lessons/0015-feed-fanout.html">
     <div class="num">LESSON 15</div>
     <div class="title">Feed Fan-out: Delivering One Post to a Million Timelines</div>
