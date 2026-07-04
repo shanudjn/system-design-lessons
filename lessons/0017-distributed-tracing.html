@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 17 — Distributed Tracing: Finding the Slow Hop in a 20-Service Request</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 17 · Worked Example</div>
+  <h1>Distributed Tracing: Finding the Slow Hop in a 20-Service Request</h1>
+  <p class="lead">Lesson 16 ended with a search request that now fans out across a parser, a retrieval service, a re-ranker, and a feature store. Here is the problem that creates: the search box's <b>average</b> response is a healthy <b>44 ms</b>, but 1 shopper in 100 waits almost a <b>full second</b> — and no single service's dashboard shows anything wrong. Each of the 20 services it touches looks fast. So <i>which hop</i> ate the time? You can't answer that from per-service metrics, because none of them can see the request as one connected thing. This lesson takes that one slow request and traces it end to end: <b>estimate</b> why you can't just log everything, <b>model</b> the request as a tree of timed <b>spans</b> stitched by one <b>trace ID</b>, <b>trace the waterfall</b> to spot the culprit, and hit the bottleneck that forces every large system to choose <b>which</b> traces to keep. The trade-off underneath: <b>observability cost vs coverage</b>.</p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0017-distributed-tracing.html"</code></p>
+</header>
+
+<h2>The one system we'll trace</h2>
+<p>The search backend from Lesson 16, in production. One user query — <code>red running shoes</code> — enters an <b>API gateway</b> and fans out: auth check, query parser, retrieval (the inverted index), re-ranker (the ML model), and a feature store the re-ranker reads from. About <b>20 service calls</b> in all. Most requests come back in ~40 ms. A few come back in ~950 ms, and the user who waited has no idea why — neither do you, from the outside. Here is the whole idea on one screen.</p>
+
+<div class="diagram"><pre>
+  ONE REQUEST, traced:  trace_id = 7f3a...  (one id stamped on every hop)
+
+  time ──────────────────────────────────────────────────────────▶  (ms)
+  [ api-gateway ============================================= ] 950   ← root span
+    [ auth = ]                                                    4
+    [ parser == ]                                                 6
+    [ retrieval ==== ]                                           45
+    [ re-ranker ======================================= ]       890   ← where did it go?
+        [ feature-store call  #1  = ]  8ms                             │
+        [ feature-store call  #2  = ]  8ms   ...100 calls, one       │ 800 ms
+        [ feature-store call #100 = ]  8ms   after another          │ of serial
+        [ model-scoring ==== ] 90ms                                   │ waiting
+                                                                 └────────────┘
+                                                                 the SLOW HOP
+
+  A span = one unit of work: {trace_id, span_id, parent_id, name, start, duration}
+  A trace = all spans sharing one trace_id, linked parent→child into a tree.
+  The picture above is that tree drawn on a time axis = a "waterfall."
+</pre></div>
+
+<p class="note"><span class="key">A metric tells you the system is slow; a trace tells you <i>where</i>.</span> The re-ranker's own work (model-scoring) is only 90 ms. The other 800 ms is spent making <b>100 separate calls to the feature store, one after another</b> — a fan-out hidden inside one service. No per-service dashboard reveals this, because from the feature store's point of view each of those 100 calls was a fast, healthy 8 ms. Only by stitching them into one request — one trace — does the 800 ms of serial waiting become visible. That stitching is what distributed tracing does.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Span</b> — one timed unit of work: a service handling a request, or one outbound call. It records a name, a start time, a duration, and who its parent was.</li>
+  <li><b>Trace</b> — all the spans for one request, sharing one <b>trace ID</b>, linked into a tree by parent pointers. The request's whole story.</li>
+  <li><b>Trace context propagation</b> — passing the trace ID + current span ID across every service boundary (usually as request headers) so the next hop can attach its span to the right parent.</li>
+  <li><b>Waterfall</b> — the trace drawn on a time axis: each span a horizontal bar. Gaps and long bars are where the time went.</li>
+  <li><b>Sampling</b> — keeping only <i>some</i> traces, because keeping all of them costs too much. <b>Head-based</b> decides at the start; <b>tail-based</b> decides after seeing the whole trace.</li>
+  <li><b>Percentile (p50 / p99)</b> — p99 = the latency that 99% of requests beat. The number that describes the <i>tail</i> the average hides.</li>
+  <li><b>The three pillars</b> — <b>metrics</b> (cheap aggregate numbers), <b>logs</b> (per-event text), <b>traces</b> (per-request causal structure). Different jobs.</li>
+</ul>
+
+<h2>Move 1 — Estimate: why you can't just keep everything</h2>
+<p>The naïve fix is "record every span of every request forever, then search it when something's slow." Let's price that against the search service's real traffic.</p>
+
+<div class="card calc">
+  <p><b>Worked: the raw firehose of spans.</b></p>
+  <p>• Search handles <b>50,000 requests/second</b> at peak.<br>
+     • Each request fans out to ~<b>20 spans</b> (gateway, auth, parser, retrieval, re-ranker, 100 feature-store calls collapsed here to a typical 20 on the average request).<br>
+     • So: <code>50,000 × 20 = 1,000,000 spans/second</code>.<br>
+     • A span with its name, timings, and a few tags is ~<b>500 bytes</b>.<br>
+     • <code>1,000,000 × 500 B = 500 MB/second = 43.2 TB/day</code>.</p>
+  <p>Storing and indexing <b>43 terabytes a day</b>, forever, to occasionally debug one slow request, is absurd — it would cost more than the search service itself. So you <b>sample</b>: keep 1 trace in 100. <code>43.2 TB/day × 1% = 432 GB/day</code> — large but sane. <span class="key">This is the core tension of observability: you cannot afford to see everything, so you must choose what to keep — coverage vs cost.</span></p>
+</div>
+
+<p class="note why"><b>Name the first trade-off — observability cost vs coverage.</b> The more you record, the more you can debug, and the more you pay to store, index, and query it. Sampling buys affordability by throwing away most traces. But that raises the question that will become our final bottleneck: if you keep a <i>random</i> 1%, and the slow requests are a <i>rare</i> 1%, you'll usually throw the interesting one away. Hold that thought.</p>
+
+<h3>Why metrics alone can't do this job</h3>
+<p>Couldn't we skip traces and just watch metrics — a latency number per service? Metrics are cheap because they're <b>aggregates</b>: "the feature store served 8 ms at p50 this second" is one number for millions of calls. That's their strength and their blindness. An aggregate has <b>no per-request identity</b> — it can't tell you that <i>these particular 100 feature-store calls all belonged to one slow search</i>. Metrics tell you <i>that</i> something is slow and roughly where; only a trace, which keeps each request as a connected object, tells you the causal chain. That's why you need all three pillars, not one.</p>
+
+<h2>Move 2 — Model: a request is a tree of spans</h2>
+<p>To see a request as one thing, every hop must agree on an id and record its slice of time. Two pieces of machinery make that work.</p>
+
+<h3>Piece 1 — the span, and the trace ID that binds them</h3>
+<p>When the request enters the gateway, it gets one <b>trace ID</b> — a random 128-bit number, say <code>7f3a…</code>. The gateway opens the <b>root span</b>. Every unit of work below it opens a <b>child span</b> that records four things: the same trace ID, its own new span ID, its <b>parent's</b> span ID, and <code>{name, start, duration}</code>. Because each span points at its parent, the flat list of spans reassembles into the exact tree — no service needs to know the whole shape, only its own parent.</p>
+
+<div class="diagram"><pre>
+  span records (flat list, arriving from 5 different machines):
+
+   {trace:7f3a, span:01, parent:  —, name:api-gateway, start:0,   dur:950}
+   {trace:7f3a, span:02, parent:01, name:auth,         start:1,   dur:4}
+   {trace:7f3a, span:03, parent:01, name:parser,       start:6,   dur:6}
+   {trace:7f3a, span:04, parent:01, name:retrieval,    start:13,  dur:45}
+   {trace:7f3a, span:05, parent:01, name:re-ranker,    start:59,  dur:890}
+   {trace:7f3a, span:06, parent:05, name:feature-get,  start:60,  dur:8}   ← ×100
+   ...
+              │  group by trace, link parent→child  │
+              ▼
+   the waterfall tree at the top of this page — rebuilt from parent pointers
+</pre></div>
+
+<h3>Piece 2 — propagation: the id must cross the wire</h3>
+<p>Here is the part that makes it "distributed." When the re-ranker calls the feature store, the feature store is a <b>different process on a different machine</b> — it has no idea it's part of trace <code>7f3a</code> unless someone tells it. So the re-ranker attaches the trace ID and its own span ID to the outbound call, as headers (the open standard is <code>traceparent</code>, e.g. <code>00-7f3a…-0000005-01</code>). The feature store reads those headers, opens its span with <code>parent = 05</code>, and passes its own context onward. <span class="key">Trace context propagation is the whole trick: one id, carried across every boundary, is what lets 20 independent services describe a single shared request.</span> Miss the propagation on one hop and the trace <b>breaks</b> — the spans past that point become orphans with no parent, and your waterfall has a hole exactly where you most need it.</p>
+
+<p class="note why"><b>Name the trade-off:</b> instrumentation cost vs visibility. Propagating context and emitting spans adds a little code to every service and a few bytes to every call. Skip it on the hot path and that service becomes a <b>blind spot</b> — a bar you can't draw. The discipline is that tracing is only as complete as its <i>least</i> instrumented hop, so it's an all-or-nothing investment across a request path.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+
+<h3>Path A — the mean lies; the tail is the story</h3>
+<p>Start with why the dashboard looked fine. Suppose 99 of every 100 searches take 35 ms and 1 takes 950 ms. The <b>average</b> is:</p>
+<div class="card calc">
+  <p><b>Worked: what the mean hides.</b></p>
+  <p><code>mean = (99 × 35 ms + 1 × 950 ms) / 100 = (3,465 + 950) / 100 = <b>44.15 ms</b></code></p>
+  <p>The average barely twitches — 44 ms looks great — yet <b>1% of your users wait almost a full second</b>. The mean is dominated by the many fast requests and drowns the few slow ones. That's why you watch <b>percentiles</b>: <code>p50 = 35 ms</code> (the typical request) but <code>p99 = 950 ms</code> (the tail). The gap between p50 and p99 <i>is</i> the pain your average is hiding. <span class="key">You alarm on p99, not the mean — the mean tells you the common case is fine while a real slice of users suffers.</span></p>
+</div>
+
+<h3>Path B — reading the waterfall to find the culprit</h3>
+<p>Now take one of those p99 traces and open its waterfall (the picture at the top). Read it top-down: gateway 950 ms total, auth 4, parser 6, retrieval 45 — all healthy. The re-ranker bar is <b>890 ms</b> and swallows nearly the whole request. Expand it: model-scoring is only 90 ms, but underneath sit <b>100 feature-store spans of 8 ms each, laid end to end</b>. <code>100 × 8 ms = 800 ms</code> of pure serial waiting. That's the <b>N+1 pattern</b>: the re-ranker fetches features one document at a time in a loop instead of asking once for all 100. The trace didn't just say "the re-ranker is slow" — it showed the <i>shape</i> of the slowness (many small serial calls), which points straight at the fix.</p>
+
+<div class="card calc">
+  <p><b>Worked: the fix the trace suggests.</b> Replace 100 serial single-key reads with <b>one batched call</b> for all 100 keys. A batch fetch of 100 keys costs, say, 8 ms once (not 800 ms).</p>
+  <p>• Before: <code>gateway 5 + auth 4 + parser 6 + retrieval 45 + (800 serial + 90 model) = 950 ms</code><br>
+     • After:&nbsp; <code>5 + 4 + 6 + 45 + (8 batched + 90 model) = <b>158 ms</b></code></p>
+  <p>A ~<b>6× cut</b> to the p99, from one insight the waterfall handed you — and one you could <i>never</i> have gotten from the feature store's own dashboard, where all 100 calls looked like healthy 8 ms hits. This is the payoff of per-request causal structure.</p>
+</div>
+
+<h3>Path C — why fan-out makes the tail everyone's problem</h3>
+<p>Here's the deeper reason the tail matters so much when a request touches many services. Suppose each of the 20 services is individually great: only <b>1% of its calls</b> are slow. What fraction of <i>whole requests</i> hit at least one slow hop?</p>
+<div class="card calc">
+  <p><b>Worked: tail amplification under fan-out.</b></p>
+  <p>A whole request is fast only if <i>every</i> hop is fast: <code>P(all 20 fast) = 0.99²⁰</code>.<br>
+     <code>0.99²⁰ ≈ 0.818</code>, so <code>P(≥1 slow hop) = 1 − 0.818 = <b>0.182 ≈ 18%</b></code>.</p>
+  <p>Even though every single service is "99% fast," <b>nearly 1 request in 5 is slow</b> — because it only takes one of the 20 hops to stall. Fan-out <i>multiplies</i> your exposure to rare slowness: the more services a request touches, the fatter its tail. <span class="key">This is why p99 of the whole request is far worse than p99 of any one service — and why you can't debug it without a trace that spans all 20.</span></p>
+</div>
+
+<h2>Move 4 — Find the next bottleneck: sampling drops the trace you needed</h2>
+<p>Return to the thread from Move 1. We keep 1 trace in 100 to afford it. But watch what that does to debugging.</p>
+
+<h3>Wall 1 — head-based sampling is blind to what's interesting</h3>
+<div class="card calc">
+  <p><b>Worked: the coin flip happens too early.</b> <b>Head-based sampling</b> decides at the <i>start</i> of the request — flip a weighted coin at the gateway, keep this trace with probability 1%, and that decision rides along in the propagated context so every hop agrees. Cheap and simple. But the decision is made <b>before anyone knows whether the request will be slow or error</b>. The slow requests are ~1% of traffic; your sample is a <i>random</i> 1%. So the chance a given slow request is also sampled is <code>1% × 1% = 0.01%</code> — you keep roughly <b>1 in 10,000</b> of exactly the traces you'd want to look at. When the on-call engineer goes hunting for a p99 trace, it's almost never there.</p>
+  <p><span class="key">Trade-off: head sampling is cheap because it decides early, but deciding early means deciding blind — you can't keep the slow/error traces because you don't know yet which they are.</span></p>
+</div>
+
+<h3>Wall 2 — tail-based sampling keeps the right ones, at a price</h3>
+<p>The fix is to <b>decide late</b>. <b>Tail-based sampling</b> buffers <i>all</i> the spans of a trace until the request finishes, then applies a rule: <i>keep it if it was slow (&gt; 500 ms) or errored; otherwise keep only 1% of the boring fast ones.</i> Now every slow request is retained and the on-call always has a trace to open. The cost is real, and it's the trade-off: you must <b>hold every trace in memory</b> long enough to see its outcome, and gather all of a trace's spans — which arrive from 20 different machines — in <b>one place</b> to judge it. That's a heavier, stateful collector. <span class="key">Trade-off named: head sampling is cheap but blind; tail sampling is smart but must buffer and centralize every trace before choosing — you pay memory and coordination to stop throwing away the traces that matter.</span></p>
+
+<h3>Wall 3 — the metric side has its own cliff: cardinality</h3>
+<p>One more trap, on the metrics pillar. It's tempting to tag every metric with rich labels — <code>user_id</code>, <code>query_text</code>, <code>product_id</code> — so you can slice finely. But a metric's cost scales with its number of <b>unique label combinations</b> (its <b>cardinality</b>): one time-series is stored per combination. Tag latency by <code>user_id</code> across 50 million users and you've created 50 million time-series for one metric — a memory explosion that can take down your monitoring system. <span class="key">Trade-off: metric granularity vs cardinality cost — high-cardinality identifiers (user, request, id) belong on <i>traces</i> (kept per-request, sampled), never on <i>metrics</i> (kept per-label-combo, forever).</span> This is the clean division of labor between the three pillars: metrics for cheap aggregate trends, traces for expensive per-request detail.</p>
+
+<table>
+  <tr><th>Situation</th><th>Choice</th><th>Trade-off named</th></tr>
+  <tr><td>43 TB/day of spans is unaffordable</td><td><b>Sample</b> — keep a fraction</td><td>observability cost vs coverage</td></tr>
+  <tr><td>Need per-request causal chain, not just "it's slow"</td><td><b>Traces</b> (not metrics alone)</td><td>aggregate cheapness vs per-request detail</td></tr>
+  <tr><td>A hop doesn't forward the trace ID</td><td><b>Propagate context</b> on every call</td><td>instrumentation cost vs blind spots</td></tr>
+  <tr><td>Average looks healthy, users complain</td><td><b>Alarm on p99</b>, not the mean</td><td>the mean hides the tail</td></tr>
+  <tr><td>Slow traces almost never in the sample</td><td><b>Tail-based sampling</b></td><td>cheap-but-blind (head) vs smart-but-buffered (tail)</td></tr>
+  <tr><td>Want to slice a metric by user/id</td><td><b>Put ids on traces, not metric labels</b></td><td>granularity vs cardinality cost</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We took one slow request — <b>950 ms at p99</b> while the mean sat at a healthy 44 ms — and found the hop that ate the time. <b>Estimate</b> showed why you can't keep everything: <code>50k req/s × 20 spans × 500 B = 43 TB/day</code>, so you <b>sample</b>, and named the tension — <b>observability cost vs coverage</b>. <b>Model</b> built the request as a tree of <b>spans</b> bound by one <b>trace ID</b>, reassembled from parent pointers, and stressed the trick that makes it distributed: <b>trace-context propagation</b> across every boundary, whose weakest hop is a blind spot. <b>Tracing the paths</b> showed the mean lies (99×35 + 950 → 44 ms hides a 950 ms tail), read the <b>waterfall</b> to expose an <b>N+1</b> of 100 serial 8 ms feature-store calls (800 ms → one 8 ms batch = a 6× cut), and proved with <code>1 − 0.99²⁰ ≈ 18%</code> why fan-out fattens the tail until it's everyone's problem. The <b>next bottleneck</b> was sampling itself: <b>head-based</b> sampling decides early and blind, keeping the slow trace only <code>1 in 10,000</code> times, so large systems move to <b>tail-based</b> sampling — buffer the whole trace, then keep the slow and errored ones — paying memory and coordination to stop discarding the traces that matter; and on the metrics side, keep high-cardinality ids off labels. The thread: <span class="key">metrics say something is wrong, traces say where, and every observability decision is some version of "you can't afford to see everything, so choose what to keep — and choose it late enough to be the right thing."</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lessons build directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>API design &amp; pagination:</b> the trace showed the re-ranker doing 100 round trips where 1 batch would do — the N+1 problem lives in your API shape. Next we design the request/response surface itself: REST vs RPC vs GraphQL, and offset vs cursor paging (why offset breaks under inserts).</p>
+  <p style="margin:.2rem 0">• <b>Geo / proximity systems:</b> "find drivers near me" — geohash vs quadtree vs S2 cells, and the cell-boundary problem, a few lessons out.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">span</span>
+    <span class="pill">trace</span>
+    <span class="pill">trace ID</span>
+    <span class="pill">root span</span>
+    <span class="pill">parent span</span>
+    <span class="pill">trace-context propagation</span>
+    <span class="pill">traceparent header</span>
+    <span class="pill">waterfall</span>
+    <span class="pill">mean vs percentile</span>
+    <span class="pill">p50 / p99</span>
+    <span class="pill">tail latency</span>
+    <span class="pill">tail amplification</span>
+    <span class="pill">fan-out</span>
+    <span class="pill">N+1 pattern</span>
+    <span class="pill">sampling</span>
+    <span class="pill">head-based sampling</span>
+    <span class="pill">tail-based sampling</span>
+    <span class="pill">three pillars (metrics/logs/traces)</span>
+    <span class="pill">cardinality</span>
+  </p>
+  <p>That's Lesson 17, built directly on Lesson 16's fan-out search (parser → retrieval → re-ranker → feature store, now instrumented), and reusing Lesson 07's p99-not-mean timeout reasoning and the "narrow cheap, perfect expensive" instinct as "record cheap aggregates, keep expensive traces sparingly." <b>Ask me follow-ups</b> — e.g. "how does OpenTelemetry actually propagate context in practice?", "what's the difference between logs, metrics, and traces in more depth?", "how do you compute p99 across thousands of machines without a full sort?", "what is an exemplar and how does it link a metric spike to a trace?", or "how does tail-based sampling reassemble a trace whose spans land on different collectors?" When you're ready, say <b>next</b> and we'll go deeper on <i>API design &amp; pagination — REST vs RPC vs GraphQL and cursor vs offset paging</i>.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "The search box averages 44 ms but 1% of users wait ~950 ms, and every individual service's dashboard looks healthy. Why can't per-service metrics tell you which hop is slow, while a trace can?",
+    options: [
+      {t:"Metrics are aggregates with no per-request identity — 'feature store served 8 ms at p50' can't reveal that 100 particular calls all belonged to one slow search. A trace keeps each request as one connected object (spans linked by a trace ID), so the 800 ms of serial waiting inside the re-ranker becomes visible.",
+       ok:true,
+       fb:"Right. An aggregate collapses millions of calls into one number — its strength (cheap) and its blindness (no causal chain). Only per-request structure stitches the 100 healthy-looking 8 ms calls into the one request they slowed, which is exactly what a trace is for."},
+      {t:"Metrics can't measure latency accurately, so you need traces to get real timing numbers.",
+       ok:false,
+       fb:"Metrics measure latency fine — that's a core thing they do. The gap isn't accuracy; it's identity. A latency metric is an aggregate over many requests and can't attribute the slowness to one request's chain of calls, which is what a trace provides."},
+      {t:"Traces are cheaper than metrics, so you can afford to keep more of them.",
+       ok:false,
+       fb:"It's the opposite — traces are the expensive pillar (43 TB/day unsampled), which is exactly why you sample them. Metrics are cheap because they aggregate. The reason to use a trace here is per-request causal structure, not cost."}
+    ]
+  },
+  {
+    stem: "The re-ranker span is 890 ms; expanded, it shows model-scoring at 90 ms and 100 feature-store spans of 8 ms laid end to end. What does the waterfall's SHAPE tell you, beyond 'the re-ranker is slow'?",
+    options: [
+      {t:"It's an N+1 pattern: 100 serial single-key fetches (100 × 8 ms = 800 ms of pure waiting) instead of one batched call. The shape points straight at the fix — batch the 100 reads into one (~8 ms), cutting the request from ~950 ms to ~158 ms.",
+       ok:true,
+       fb:"Exactly. Many small serial calls is a signature the waterfall makes visible. The fix isn't 'make the feature store faster' — each call was already a healthy 8 ms — it's 'stop making 100 of them in a loop.' That's an insight only the per-request trace could hand you."},
+      {t:"The feature store is overloaded and each call should be optimized to run faster than 8 ms.",
+       ok:false,
+       fb:"Each call is already fine at 8 ms — that's why the feature store's own dashboard looked healthy. The problem isn't per-call speed; it's that there are 100 of them, serially. Speeding each call slightly barely helps; batching them into one collapses 800 ms to 8 ms."},
+      {t:"The model-scoring at 90 ms is the bottleneck and should be moved to a faster machine.",
+       ok:false,
+       fb:"Model-scoring is only 90 ms of the 890 ms re-ranker span — the 800 ms of serial feature-store calls dominates. The waterfall's whole point is to show you where the time actually went; chasing the 90 ms would leave ~800 ms of the problem untouched."}
+    ]
+  },
+  {
+    stem: "Each of the 20 services on the request path is 99% fast. Yet the whole request is slow far more than 1% of the time. Why — and what does this say about fan-out?",
+    options: [
+      {t:"A request is fast only if every hop is fast: 0.99²⁰ ≈ 0.818, so 1 − 0.818 ≈ 18% of requests hit at least one slow hop. Fan-out multiplies exposure to rare slowness, so the whole request's p99 is far worse than any single service's — and you can't debug it without a trace spanning all 20.",
+       ok:true,
+       fb:"Correct. It only takes one of 20 hops to stall the request, so individually-excellent services compose into a fat tail. This tail amplification is why distributed tracing exists: the slowness is a property of the whole path, not any one service."},
+      {t:"Because the 20 services share a database, and the database is the real 1% that's slow.",
+       ok:false,
+       fb:"No shared bottleneck is needed for the effect. Even with 20 fully independent services each 99% fast, 1 − 0.99²⁰ ≈ 18% of requests catch a slow hop somewhere. The math is about the product of many independent chances, not one common cause."},
+      {t:"The percentiles are being computed wrong; p99 of the request should equal p99 of the slowest service.",
+       ok:false,
+       fb:"They're computed right, and that's the point: the request's p99 is worse than any single service's p99, because the request is exposed to all 20 tails at once. 1 − 0.99²⁰ ≈ 18% quantifies exactly that amplification."}
+    ]
+  },
+  {
+    stem: "You sample 1% of traces to afford storage. The slow requests are also ~1% of traffic. Why does head-based sampling fail the on-call engineer, and what fixes it?",
+    options: [
+      {t:"Head sampling flips the keep-coin at the start, before anyone knows the request will be slow — so it keeps a random 1%, and a given slow trace is kept only 1% × 1% ≈ 1 in 10,000 times. Tail-based sampling decides after the request finishes: keep it if slow or errored, so every slow trace is retained — at the cost of buffering and centralizing whole traces.",
+       ok:true,
+       fb:"Right. The flaw is deciding blind: you can't preferentially keep slow traces you haven't seen yet. Tail sampling pays memory and coordination (hold every trace until its outcome is known, gather its spans in one place) to stop discarding exactly the traces worth opening."},
+      {t:"Head sampling fails because 1% is too low a rate; raising it to 10% keeps enough slow traces.",
+       ok:false,
+       fb:"Raising the random rate helps only linearly and expensively — at 10% you still keep only 10% of slow traces and pay 10× the storage. The real fix isn't a bigger random sample; it's deciding late (tail-based) so you keep slow/errored traces on purpose, not by luck."},
+      {t:"Head sampling fails because it doesn't propagate the trace ID, so slow traces break apart.",
+       ok:false,
+       fb:"Head sampling does propagate its keep/drop decision along the context so hops agree — that's how it stays consistent. Its problem isn't broken propagation; it's that the keep decision is made too early, before the request's slowness is known. Tail-based sampling moves the decision to the end."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

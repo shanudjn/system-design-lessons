@@ -163,8 +163,19 @@
     → two-phase (cheap BM25 narrows to ~1k, expensive re-rank on those, the
     L12/L14 "narrow cheap, perfect expensive" funnel) and near-real-time
     indexing (freshness vs cost, L06 lag / L14 TTL again). (Lesson 0016)
-17. Distributed tracing & observability — trace IDs, spans, sampling, the
-    p99-vs-mean gap, and finding the slow hop in a 20-service request.
+17. ✅ **Distributed tracing & observability** — L16's search request (mean
+    44 ms, p99 950 ms, every service's dashboard green): which of 20 hops ate
+    the time? Estimate the firehose (50k req/s × 20 spans × 500 B = 43 TB/day →
+    must sample); model the request as a tree of spans bound by one trace ID,
+    reassembled from parent pointers, made distributed by trace-context
+    propagation (traceparent header) whose weakest hop is a blind spot; the mean
+    lies (99×35+950 → 44 ms hides the 950 ms tail) so alarm on p99; read the
+    waterfall to expose an N+1 of 100 serial 8 ms feature-store calls (800 ms →
+    one 8 ms batch = 6× cut); 1−0.99²⁰ ≈ 18% shows fan-out amplifies the tail;
+    next walls = head-based sampling keeps the slow trace only 1-in-10,000 →
+    tail-based sampling (buffer + centralize, keep slow/errored) and metric
+    cardinality (ids go on traces, never metric labels). Three pillars: metrics
+    say something's wrong, traces say where. (Lesson 0017)
 18. API design & pagination — REST vs RPC vs GraphQL, offset vs cursor paging
     (why offset breaks under inserts), versioning, and the N+1 problem.
 19. Geo / proximity systems — "find drivers near me": geohash vs quadtree vs

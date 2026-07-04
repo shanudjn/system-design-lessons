@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0017-distributed-tracing.html">
+    <div class="num">LESSON 17</div>
+    <div class="title">Distributed Tracing: Finding the Slow Hop in a 20-Service Request</div>
+    <div class="blurb">The search box from Lesson 16 averages a healthy 44 ms, but 1 shopper in 100 waits ~950 ms — and every single service's dashboard looks fine. Which of the 20 hops ate the time? Estimate why you can't keep everything (50k req/s × 20 spans × 500 B = 43 TB/day → sample), model the request as a tree of <b>spans</b> bound by one <b>trace ID</b> and carried across every boundary by context propagation, then read the <b>waterfall</b> to expose an N+1 of 100 serial 8 ms feature-store calls (800 ms → one 8 ms batch = a 6× cut). Prove with 1 − 0.99²⁰ ≈ 18% why fan-out fattens the tail, then hit the wall: head-based sampling keeps the slow trace only 1 in 10,000 times, forcing tail-based sampling. Trade named throughout: observability cost vs coverage.</div>
+  </a>
   <a class="lesson" href="lessons/0016-search-ranking.html">
     <div class="num">LESSON 16</div>
     <div class="title">Search Ranking: Which 10 of 40,000 Matches Come First</div>
