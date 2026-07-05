@@ -176,8 +176,18 @@
     tail-based sampling (buffer + centralize, keep slow/errored) and metric
     cardinality (ids go on traces, never metric labels). Three pillars: metrics
     say something's wrong, traces say where. (Lesson 0017)
-18. API design & pagination — REST vs RPC vs GraphQL, offset vs cursor paging
-    (why offset breaks under inserts), versioning, and the N+1 problem.
+18. ✅ **API design & pagination** — one `GET /feed` endpoint paged to a phone:
+    estimate why you page (5,000×2 KB = 10 MB / ~5 s → a 40 KB page; size 20–50
+    is the round-trips-vs-payload dial); offset counts positions in a shifting
+    list → duplicates under inserts + O(offset) cost (page 50,000 reads ~1,000,020
+    rows = 50,000× page 1) vs a cursor that names a stable place `(created_at, id)`,
+    sits still under writes and seeks in O(limit) at any depth (L12 B-tree seek),
+    needing a composite key so ties don't skip/repeat; REST (resources+verbs,
+    cacheable, over/under-fetch) vs RPC (named actions) vs GraphQL (client picks
+    fields → resolver reintroduces the N+1, 21→2 queries ≈10×, L17's batch fix);
+    next wall = the published contract — additive changes safe, removals/renames
+    break clients → versioning (URL vs header) + deprecation window. Trade:
+    client convenience vs server cost & stability. (Lesson 0018)
 19. Geo / proximity systems — "find drivers near me": geohash vs quadtree vs
     S2 cells, the cell-boundary problem, and hot-cell load.
 20. Object / blob storage — how to store 100 PB of files: chunking, erasure

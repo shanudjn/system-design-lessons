@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0018-api-design-pagination.html">
+    <div class="num">LESSON 18</div>
+    <div class="title">API Design &amp; Pagination: Paging a Feed Without Dupes or Slowdowns</div>
+    <div class="blurb">Lesson 17's N+1 slow hop lived in the shape of an API — so here we design that surface. Take <code>GET /feed</code> and hand a phone one page at a time. The obvious <code>?limit=20&amp;offset=40</code> has two production-only bugs: the same post shows twice under inserts, and page 50,000 reads ~1,000,020 rows to return 20 — <b>50,000×</b> page 1. Fix both with a cursor that names a stable place <code>(created_at, id)</code> and seeks in O(limit) at any depth. Then trace the same request through REST (cacheable, one fixed shape), RPC (named actions), and GraphQL (client picks fields — but the resolver reintroduces the N+1, 21→2 queries, ~10×). End on the wall every public API hits: once shipped you can't change it — additive is safe, removals/renames break clients, versioning is the last resort. Trade named throughout: client convenience vs server cost and stability.</div>
+  </a>
   <a class="lesson" href="lessons/0017-distributed-tracing.html">
     <div class="num">LESSON 17</div>
     <div class="title">Distributed Tracing: Finding the Slow Hop in a 20-Service Request</div>

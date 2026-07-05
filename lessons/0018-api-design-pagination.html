@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 18 — API Design &amp; Pagination: Paging a Feed Without Dupes or Slowdowns</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 18 · Worked Example</div>
+  <h1>API Design &amp; Pagination: Paging a Feed Without Dupes or Slowdowns</h1>
+  <p class="lead">Lesson 17 ended on a hint: the re-ranker made 100 round trips where 1 batch would do, and that <b>N+1</b> lived in the shape of its API. This lesson designs that surface itself. We take one concrete endpoint — <code>GET /feed</code>, the home feed from Lesson 15 — and make it return posts a page at a time to a phone. The obvious design, <code>?limit=20&amp;offset=40</code>, has two bugs that only show up in production: the same post appears twice, and page 50,000 is <b>50,000× slower</b> than page 1. We'll <b>estimate</b> why you page at all, <b>model</b> offset vs cursor pagination and see exactly why one breaks, <b>trace</b> a request through REST / RPC / GraphQL and watch the N+1 reappear, then hit the wall every public API hits: you can never change it again without breaking someone. The trade-off underneath: <b>client convenience vs server cost and stability</b>.</p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0018-api-design-pagination.html"</code></p>
+</header>
+
+<h2>The one endpoint we'll design</h2>
+<p>A mobile app opens and asks the server for the user's home feed — the reverse-chronological stream of posts from people they follow, built back in Lesson 15. The user follows ~200 accounts; their feed holds thousands of posts and grows every second. The phone shows about 10 at a time and loads more as the user scrolls. So the server must hand back the feed in <b>pages</b>, not all at once. The whole tension is on one screen: what does "give me the next page" mean when the feed is <i>changing while you read it</i>?</p>
+
+<div class="diagram"><pre>
+  THE FEED, paged two ways         (newest on top, page size = 3)
+
+  T0: app fetches page 1                T1: 2 new posts arrive, app fetches page 2
+  ┌──────────────┐                      ┌──────────────┐
+  │ P10          │ row 0  ┐             │ P12  (NEW)   │ row 0
+  │ P9           │ row 1  │ page 1      │ P11  (NEW)   │ row 1
+  │ P8           │ row 2  ┘  seen       │ P10          │ row 2
+  ├──────────────┤                      │ P9           │ row 3 ┐  OFFSET 3
+  │ P7           │ row 3  (page 2       │ P8           │ row 4 │  LIMIT 3
+  │ P6           │ row 4   = OFFSET 3)  │ P7           │ row 5 ┘  = P9,P8,P7
+  │ P5           │ row 5               │ P6           │ row 6
+  └──────────────┘                      │ P5           │ row 7
+                                        └──────────────┘
+   OFFSET page 2 = P9, P8, P7  ──►  P9 and P8 were ALREADY on page 1.
+   The 2 inserts pushed every row down by 2, so "row 3" now points at
+   a post the user already saw. Result: duplicates (and after deletes: skips).
+
+   CURSOR fix: page 1 also returns a cursor = "you stopped after P8".
+   page 2 asks  WHERE post < P8  →  P7, P6, P5.  The 2 new posts sit
+   ABOVE the cursor and never move the window. No dupes. No skips.
+</pre></div>
+
+<p class="note"><span class="key">Offset counts <i>positions</i> in a list that is shifting under it; a cursor names a <i>place</i> in the list that stays put.</span> That single difference is the whole lesson in one line — everything below earns it with numbers.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Endpoint</b> — one addressable operation the API offers, e.g. <code>GET /feed</code>. The client's whole view of the server is the set of endpoints and their shapes.</li>
+  <li><b>Pagination</b> — returning a large result a page at a time instead of all at once, with a way to ask for the next page.</li>
+  <li><b>Offset pagination</b> — "skip N rows, then give me the next K" (<code>LIMIT K OFFSET N</code>). Pages are numbered positions.</li>
+  <li><b>Cursor pagination</b> — "give me the K rows <i>after this marker</i>." The marker (the <b>cursor</b>) encodes the sort key of the last row you saw.</li>
+  <li><b>REST / RPC / GraphQL</b> — three styles for shaping the request surface: resources+verbs, named actions, and a client-chosen field query. Defined when we reach them.</li>
+  <li><b>Over-fetch / under-fetch</b> — the API returns more fields than the screen needs (wasted bytes) or too few (forcing extra requests).</li>
+  <li><b>N+1</b> — fetching a list of N things, then making one more request per thing (N more) instead of one batched request. Lesson 17's slow hop.</li>
+  <li><b>Versioning</b> — how you change a published API without breaking clients that already depend on its old shape.</li>
+  <li><b>Backward compatible</b> — a change old clients can survive: they keep working as if nothing changed.</li>
+</ul>
+
+<h2>Move 1 — Estimate: why page at all, and how big a page</h2>
+<p>Before choosing <i>how</i> to page, price <i>not</i> paging, then size a sensible page.</p>
+
+<div class="card calc">
+  <p><b>Worked: return the whole feed vs one page.</b></p>
+  <p>• A hydrated post (text + author + a couple of thumbnails' worth of metadata) is about <b>2 KB</b> on the wire.<br>
+     • A active user's feed backlog is easily <b>5,000 posts</b>.<br>
+     • Return it all: <code>5,000 × 2 KB = 10 MB</code> per feed open. On a phone on cellular at ~2 MB/s that's <b>~5 seconds</b> before the first post paints, and the user reads maybe 30 of the 5,000.<br>
+     • Return one page of <b>20</b>: <code>20 × 2 KB = 40 KB</code> → paints in ~20 ms, and you only build the next page if they keep scrolling.</p>
+  <p><span class="key">Paging turns a 10 MB, 5-second, mostly-wasted transfer into a 40 KB, near-instant one.</span> Page size is the dial: too small (say 3) and a fast scroller makes hundreds of round trips; too large (say 500) and each page is 1 MB and you're back to the wasteful transfer. <b>20–50</b> is the usual range — enough to fill a few screens, small enough to stay cheap.</p>
+</div>
+
+<p class="note why"><b>Name the first trade-off — round trips vs payload size.</b> A smaller page means more requests (each with its own latency and overhead); a larger page means fewer requests but more bytes and work per request. The page size is where you balance them, and it's the same "narrow and cheap vs wide and expensive" dial you've now seen in L14 (CDN objects) and L16 (retrieve vs re-rank).</p>
+
+<h2>Move 2 — Model: offset vs cursor, and why offset breaks</h2>
+<p>Both designs return K rows and a way to get the next K. They differ in what "next" means, and that difference decides both correctness and speed.</p>
+
+<h3>Model A — offset: skip N, take K</h3>
+<p>The request is <code>GET /feed?limit=20&amp;offset=40</code> and the query is literally <code>ORDER BY created_at DESC LIMIT 20 OFFSET 40</code>. Page P is <code>offset = (P−1) × 20</code>. It's dead simple, it lets you jump to any page ("go to page 7"), and it's exactly how a numbered search-results footer works. It has two failure modes, and both come from the same fact: <b>offset is a count of positions in a list that keeps changing.</b></p>
+
+<div class="card calc">
+  <p><b>Bug 1 — duplicates and skips under writes (the diagram at the top).</b> The user fetches page 1 (rows 0–19, the 20 newest). While they read, <b>5 new posts</b> arrive at the top. They scroll; the app fetches page 2 = <code>OFFSET 20</code>. But every existing post has been pushed down by 5, so the row that <i>was</i> at position 20 is now at position 25 — and <code>OFFSET 20</code> now lands on what used to be position 15. <span class="key">The 5 posts at positions 15–19, already shown on page 1, appear <i>again</i> on page 2.</span> Symmetrically, if 5 posts are <i>deleted</i> above the window, <code>OFFSET 20</code> skips 5 unseen posts. The list moved; the offset didn't know.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Bug 2 — deep pages get linearly slower.</b> To serve <code>OFFSET 1,000,000 LIMIT 20</code>, the database can't jump straight to row 1,000,000 — it must walk the index and <b>count past a million rows, discarding every one</b>, before it starts collecting your 20. So:</p>
+  <p>• Page 1 (<code>OFFSET 0</code>): read ~<b>20</b> rows.<br>
+     • Page 50,000 (<code>OFFSET 1,000,000</code>): read ~<b>1,000,020</b> rows, throw away 1,000,000, return 20.</p>
+  <p>The work is <code>O(offset + limit)</code> — it grows with how deep you page. Page 50,000 does <code>1,000,020 / 20 ≈ <b>50,000×</b></code> the row-reads of page 1 for the same 20 results. Deep offset pagination is a scan wearing a <code>LIMIT</code>. <span class="key">Every "load more" gets slower the further the user scrolls — the exact opposite of what you want.</span></p>
+</div>
+
+<h3>Model B — cursor: give me K rows after this marker</h3>
+<p>The request is <code>GET /feed?limit=20&amp;after=&lt;cursor&gt;</code>. The <b>cursor</b> encodes the sort key of the last row the client saw. If we sort by newest-first, the query becomes a <b>range seek</b>, not a skip:</p>
+
+<div class="diagram"><pre>
+  SORT KEY = (created_at DESC, id DESC)      ← id breaks ties on equal timestamps
+
+  page 1:  SELECT ... ORDER BY created_at DESC, id DESC
+           LIMIT 20;
+           last row = (ts=1699.812, id=P8801)   ──►  cursor = base64("1699.812|P8801")
+
+  page 2:  SELECT ...
+           WHERE (created_at, id) < (1699.812, P8801)   ← seek straight here
+           ORDER BY created_at DESC, id DESC
+           LIMIT 20;
+
+  the index is already sorted by (created_at, id), so "&lt; cursor" is a direct
+  seek to that leaf, then read the next 20.  Cost = O(20), ANY page depth.
+</pre></div>
+
+<p>Two things fall out for free. <b>It's stable under writes:</b> new posts have a <i>larger</i> <code>created_at</code>, so they sort <i>above</i> the cursor and never enter the window you're paging down through — no duplicates, no skips (this is the same insight as Lesson 04's ring and Lesson 09's committed offset: name a stable place, don't count shifting positions). <b>It's fast at any depth:</b> because the index is sorted by exactly the cursor's key, <code>WHERE (created_at, id) &lt; cursor</code> is a direct seek to that leaf — page 50,000 reads 20 rows, same as page 1. That's the B-tree seek from Lesson 12 doing the work an offset threw away.</p>
+
+<div class="card calc">
+  <p><b>Worked: why the cursor needs <i>two</i> fields.</b> Suppose 3 posts share the exact millisecond <code>ts=1699.812</code>. If the cursor were just the timestamp, <code>WHERE created_at &lt; 1699.812</code> would <b>skip all three</b> (strictly less) or, with <code>&lt;=</code>, <b>re-serve all three</b> every page — a tie you can't page through. Adding the unique <code>id</code> as a tiebreaker makes the sort key <b>total</b> (no two rows compare equal), so <code>(created_at, id) &lt; (1699.812, P8801)</code> resumes at exactly the right row. <span class="key">A cursor must encode a strictly-ordered key; append a unique id whenever the primary sort can tie.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off — random access vs stability &amp; speed.</b> Offset gives you something cursor can't: jump to an arbitrary page number ("page 7 of 400"). Cursor gives you correctness under a live list and <code>O(limit)</code> cost at any depth, but only lets you go <i>next</i> / <i>previous</i> from where you are — there's no "page 7," because a cursor is a place, not a count. For a numbered report or a static table, offset is fine. For an infinite, changing feed, cursor is the right default. Choose by whether the data moves and whether users jump around.</p>
+
+<h2>Move 3 — Trace the request surface: REST vs RPC vs GraphQL (and N+1 returns)</h2>
+<p>Pagination decides <i>how much</i> comes back per call. The API <i>style</i> decides how the client asks and what shape it gets. Trace the same "load my feed with author names" through three styles.</p>
+
+<h3>Path A — REST: resources and verbs</h3>
+<p><b>REST</b> models the server as <b>resources</b> (nouns, each with a URL) acted on by standard HTTP <b>verbs</b>. <code>GET /feed?limit=20&amp;after=…</code> reads a page; <code>GET /users/42</code> reads a user; <code>POST /posts</code> creates one; <code>DELETE /posts/99</code> removes one. It's predictable and cache-friendly (a <code>GET</code> is safe to cache — Lesson 14), and the verb tells you the effect. The weakness is <b>fit</b>: the feed endpoint returns a fixed shape. If the phone needs author names but the endpoint returns only <code>author_id</code>, the client must make a second call per author — <b>under-fetching</b>. If it returns 30 fields and the screen shows 4, that's <b>over-fetching</b>. One fixed shape can't fit every screen.</p>
+
+<h3>Path B — RPC: named actions</h3>
+<p><b>RPC</b> (remote procedure call) models the server as <b>functions</b> you call by name: <code>getFeed(userId, limit, cursor)</code>, <code>getAuthors(ids)</code>. There's no resource/verb ceremony — you expose exactly the operations you want, which fits actions that aren't neatly a noun (<code>transferMoney(a, b, amt)</code> is an awkward REST resource but a natural RPC). The cost is you lose the uniform, cacheable, guessable surface REST gives you: every server invents its own verbs, and a plain <code>GET</code>-style cache can't tell a read from a write. gRPC is the common modern form.</p>
+
+<h3>Path C — GraphQL: the client picks the fields — and the N+1 comes home</h3>
+<p><b>GraphQL</b> exposes one endpoint and lets the <b>client</b> send a query naming exactly the fields it wants, including nested ones, in a single round trip. It kills over- and under-fetching from the client's side:</p>
+
+<div class="diagram"><pre>
+  POST /graphql
+  { feed(limit: 20, after: "…") {          ← one request, exactly the fields the
+      text                                    screen needs, nested authors inlined
+      author { name avatarUrl }
+  } }
+</pre></div>
+
+<p>The client is delighted: 20 posts <i>with</i> their authors, no extra round trips, no wasted fields. But look at what the <b>server</b> must now do to resolve <code>author</code> for each of the 20 posts. The naïve resolver runs one query for the 20 posts, then — for each post — one query to fetch its author:</p>
+
+<div class="card calc">
+  <p><b>Worked: the N+1, exactly Lesson 17's slow hop, now on the server.</b></p>
+  <p>• Naïve: <code>1</code> query for the page + <code>20</code> author lookups = <b>21 queries</b>.<br>
+     • If each query is a ~<b>2 ms</b> round trip to the database: <code>21 × 2 ms = 42 ms</code>.</p>
+  <p><b>The fix — batch (the same fix as L17):</b> collect all 20 <code>author_id</code>s from the page, then run <b>one</b> query: <code>SELECT * FROM users WHERE id IN (…20 ids…)</code>.</p>
+  <p>• Batched: <code>1</code> page query + <code>1</code> author query = <b>2 queries</b> = <code>2 × 2 ms = 4 ms</code>.</p>
+  <p>That's a <code>42 / 4 ≈ <b>10× cut</b></code>, and it's <i>the identical N+1</i> the trace exposed in Lesson 17 — 100 serial feature-store calls collapsed into one batch. <span class="key">GraphQL doesn't create the N+1; it moves the temptation from the client to the server resolver. The batching pattern (a "data loader" that gathers ids within a tick and fires one <code>IN</code> query) is how every serious GraphQL server survives.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off — client flexibility vs server complexity.</b> GraphQL hands the client exactly what it asks for (great for many diverse screens), but each flexible query becomes a resolution tree the server must execute efficiently, or it silently fans out into N+1 queries and unbounded, hard-to-cache work. REST's rigid shapes are less convenient but easier to cache, rate-limit (L08), and reason about. There's no free lunch: you move the effort, you don't delete it.</p>
+
+<h2>Move 4 — Find the next bottleneck: you shipped it, now you can't change it</h2>
+<p>The endpoint works. Then a million phones install it — and every one hard-codes the exact shape of your response. The moment the API is <b>public</b>, its shape is a promise. Break the promise and you break apps in the field that you can't force-update.</p>
+
+<h3>Wall 1 — additive changes are safe; removals and renames are not</h3>
+<div class="card calc">
+  <p><b>Worked: which changes break a client?</b> An old app reads <code>response.author.name</code> and ignores fields it doesn't recognize.</p>
+  <p>• <b>Add</b> a new field <code>author.verified</code> → old app ignores it. <span style="color:var(--green)">Safe (backward compatible).</span><br>
+     • <b>Rename</b> <code>name</code> → <code>displayName</code> → old app reads <code>author.name</code>, gets <code>null</code>, shows a blank. <span style="color:var(--red)">Breaks.</span><br>
+     • <b>Remove</b> <code>avatarUrl</code>, or <b>change its type</b> (string → object) → old parser errors. <span style="color:var(--red)">Breaks.</span><br>
+     • <b>Change pagination default</b> from 20 to 50 → old app that assumed 20 mis-lays its list. <span style="color:var(--amber)">Subtly breaks.</span></p>
+  <p><span class="key">The rule: add, never remove or rename, in place. Additive change is backward compatible; anything that removes, renames, or re-types a field is not.</span></p>
+</div>
+
+<h3>Wall 2 — when you must break it: versioning</h3>
+<p>Sometimes you genuinely must change the shape. Then you run the old and new shapes <b>side by side</b> and let clients move at their own pace. Two common ways to name the version:</p>
+<table>
+  <tr><th>Where the version lives</th><th>Looks like</th><th>Trade-off</th></tr>
+  <tr><td>In the URL path</td><td><code>GET /v2/feed</code></td><td>Obvious, easy to route and cache separately; but <code>/v1</code> and <code>/v2</code> are now two code paths you maintain until <code>/v1</code> is retired.</td></tr>
+  <tr><td>In a request header</td><td><code>Accept: application/vnd.app.v2+json</code></td><td>Keeps one clean URL per resource; but the version is invisible in logs/caches and easy to forget.</td></tr>
+</table>
+<p>Either way the real cost is the same: <span class="key">every version you publish is a contract you must keep serving until the last client on it upgrades — often years for mobile apps you can't force-update.</span> So you version rarely and reluctantly, prefer additive changes that need no new version at all, and when you do cut <code>/v2</code>, you publish a <b>deprecation window</b> for <code>/v1</code> and measure its traffic before switching it off.</p>
+
+<p class="note why"><b>Name the last trade-off — evolvability vs stability.</b> A rigid, versioned contract gives clients stability (their app keeps working) at the cost of your freedom to change (you carry old shapes for years). A loose, always-changing API gives you freedom at the cost of breaking clients. Good API design buys most of the evolvability for free by making changes <b>additive</b>, so you rarely have to spend a version at all.</p>
+
+<table>
+  <tr><th>Situation</th><th>Choice</th><th>Trade-off named</th></tr>
+  <tr><td>10 MB feed, phone shows 10 posts</td><td><b>Paginate</b>; page size 20–50</td><td>round trips vs payload size</td></tr>
+  <tr><td>Live feed, "load more" shows dupes</td><td><b>Cursor</b>, not offset</td><td>random access vs stability &amp; speed</td></tr>
+  <tr><td>Deep page (offset 1M) is 50,000× slower</td><td><b>Cursor</b> (O(limit) seek)</td><td>skip-and-discard vs index seek</td></tr>
+  <tr><td>Timestamps tie across posts</td><td><b>Composite cursor</b> (ts, id)</td><td>a strictly-ordered key or you skip/repeat rows</td></tr>
+  <tr><td>Every screen needs a different shape</td><td><b>GraphQL</b> field selection</td><td>client flexibility vs server complexity</td></tr>
+  <tr><td>Resolver fires 1 query per row</td><td><b>Batch</b> (data loader, <code>IN</code>)</td><td>the N+1 again — batch it</td></tr>
+  <tr><td>Must change a published shape</td><td><b>Add</b> if you can; <b>version</b> if you can't</td><td>evolvability vs stability</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We designed one endpoint — <code>GET /feed</code> — and made every choice pay for itself. <b>Estimate</b> showed why you page at all: <code>5,000 × 2 KB = 10 MB</code> and ~5 s of mostly-wasted transfer collapses to a <b>40 KB</b> page, with page size (20–50) as the <b>round-trips-vs-payload</b> dial. <b>Model</b> pitted <b>offset</b> against <b>cursor</b>: offset counts positions in a shifting list, so it serves <b>duplicates under inserts</b> and reads <code>O(offset)</code> rows — page 50,000 does <b>50,000×</b> the work of page 1 — while a <b>cursor</b> names a stable place <code>(created_at, id)</code>, sits still under writes, and seeks in <code>O(limit)</code> at any depth (the L12 B-tree seek doing the work offset threw away), needing a <b>composite key</b> so ties don't skip or repeat rows. <b>Tracing</b> REST (resources+verbs, cacheable but one fixed shape → over/under-fetch), RPC (named actions, flexible but non-uniform), and GraphQL (client picks fields → but the resolver reintroduces the <b>N+1</b>, <code>21 → 2</code> queries, <b>10×</b>, the very same batch fix from Lesson 17) named <b>client flexibility vs server complexity</b>. The <b>next bottleneck</b> was the API itself once published: <b>additive changes are safe, removals/renames break clients</b>, and when you truly must break the shape you <b>version</b> (URL vs header) and carry the old contract for years — <b>evolvability vs stability</b>. The thread: <span class="key">an API is a promise about shape and cost; page it so it's cheap, cursor it so it's stable, batch it so it's fast, and grow it additively so you rarely have to break the promise.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lessons build directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>Geo / proximity systems:</b> "find drivers near me" — the cursor's <i>1-D</i> sort key doesn't work when "next" means <i>nearest in 2-D space</i>. Geohash vs quadtree vs S2 cells, the cell-boundary problem, and hot-cell load.</p>
+  <p style="margin:.2rem 0">• <b>Object / blob storage:</b> storing 100 PB of files — chunking, erasure coding vs replication, the metadata service, and the small-file problem, a couple of lessons out.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">endpoint</span>
+    <span class="pill">pagination</span>
+    <span class="pill">page size</span>
+    <span class="pill">offset pagination</span>
+    <span class="pill">cursor pagination</span>
+    <span class="pill">cursor</span>
+    <span class="pill">composite sort key</span>
+    <span class="pill">range seek</span>
+    <span class="pill">REST</span>
+    <span class="pill">RPC / gRPC</span>
+    <span class="pill">GraphQL</span>
+    <span class="pill">over-fetch / under-fetch</span>
+    <span class="pill">N+1</span>
+    <span class="pill">data loader / batching</span>
+    <span class="pill">idempotent GET</span>
+    <span class="pill">versioning</span>
+    <span class="pill">backward compatible</span>
+    <span class="pill">deprecation window</span>
+  </p>
+  <p>That's Lesson 18, built directly on Lesson 17's N+1 slow hop (now designed away in the API shape), reusing Lesson 12's B-tree seek (what a cursor uses and an offset wastes), Lesson 15's home feed as the paged resource, and Lesson 04/09's "name a stable place, don't count shifting positions." <b>Ask me follow-ups</b> — e.g. "how do you page <i>backwards</i> with a cursor?", "what exactly goes inside an opaque cursor token and why base64-encode it?", "how does a GraphQL data loader batch within one tick?", "when is offset pagination actually the right call?", or "how do REST and gRPC differ on streaming and errors?" When you're ready, say <b>next</b> and we'll go deeper on <i>Geo / proximity systems — geohash vs quadtree vs S2 cells and the cell-boundary problem</i>.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "An app fetches page 1 of a live feed (offset 0, limit 20). While the user reads, 5 new posts arrive at the top. The app fetches page 2 (OFFSET 20). What happens, and why?",
+    options: [
+      {t:"The 5 inserts push every existing post down by 5 positions, so OFFSET 20 now lands on what was position 15 — the user sees 5 posts from page 1 again. Offset counts positions in a list that shifted under it; a cursor (WHERE post < last_seen) names a stable place and avoids this.",
+       ok:true,
+       fb:"Right. Offset is a count, not a pointer. When rows are inserted above the window, the same offset addresses different (already-seen) rows. Symmetrically, deletes above the window make offset skip unseen rows. A cursor pins to a sort-key value, so new posts sort above it and never re-enter the window."},
+      {t:"Nothing goes wrong — OFFSET 20 always returns the 20 posts after the first 20, regardless of inserts.",
+       ok:false,
+       fb:"That's the trap. 'The 20 after the first 20' is true only of a frozen list. Inserts above the window shift which physical rows sit at positions 20–39, so page 2 overlaps page 1. Offset has no memory of what the client already saw."},
+      {t:"The database returns an error because the offset no longer matches the row count.",
+       ok:false,
+       fb:"No error — that's what makes it insidious. OFFSET 20 happily returns 20 rows; they're just partly the same rows page 1 already showed. The bug is silent duplication (or silent skipping under deletes), not a failure the server can catch."}
+    ]
+  },
+  {
+    stem: "Compared with page 1, how much work does OFFSET 1,000,000 LIMIT 20 make the database do, and what does cursor pagination do instead?",
+    options: [
+      {t:"The database must walk the index past 1,000,000 rows and discard every one before collecting 20 — ~1,000,020 row-reads, about 50,000× page 1's ~20. A cursor does WHERE (created_at, id) < cursor, a direct index seek to that leaf, reading only ~20 rows at any depth — O(limit), not O(offset).",
+       ok:true,
+       fb:"Exactly. OFFSET can't teleport to row 1,000,000; it counts there. That's O(offset+limit) — every 'load more' gets slower the deeper you scroll. A cursor rides the index's own sort order (the L12 B-tree seek), so page 50,000 costs the same as page 1."},
+      {t:"Both read about 20 rows; the database jumps directly to row 1,000,000 using the offset as an index.",
+       ok:false,
+       fb:"An offset isn't an address the index can jump to — rows aren't stored 'at position N.' The engine must scan and count past the skipped rows. That linear skip is exactly why deep offset pages crawl, and why cursors win at depth."},
+      {t:"Cursor pagination is slower here because the WHERE clause has to compare two columns per row.",
+       ok:false,
+       fb:"The two-column compare is trivial and the index is sorted by exactly (created_at, id), so it's a single seek plus a 20-row read — not a per-row scan. The composite key is about correctness on ties, and it costs essentially nothing; the offset's million discarded rows are the real cost."}
+    ]
+  },
+  {
+    stem: "A GraphQL query asks for 20 feed posts, each with author { name }. The naïve resolver takes ~42 ms. What's happening, and what's the fix?",
+    options: [
+      {t:"It's an N+1: 1 query for the 20 posts + 20 separate author lookups = 21 queries × ~2 ms ≈ 42 ms. Batch it — collect all 20 author_ids and run one 'WHERE id IN (…)' query, giving 2 queries ≈ 4 ms, a ~10× cut. It's the same N+1 (and same batch fix) as Lesson 17's 100 serial feature-store calls.",
+       ok:true,
+       fb:"Right. GraphQL didn't create the N+1; it moved the temptation to the server resolver. A data loader that gathers ids within a tick and fires one IN query is how GraphQL servers avoid fanning every nested field into its own round trip."},
+      {t:"GraphQL is inherently slow because it parses a query string on every request; switch to REST to fix the 42 ms.",
+       ok:false,
+       fb:"Query parsing is negligible next to 21 database round trips. And REST wouldn't save you: if the REST feed endpoint returned only author_ids, the client would make the same 20 follow-up calls (under-fetching). The fix is batching the author fetch, in either style."},
+      {t:"The 42 ms is the network cost of returning nested JSON; flatten the response to remove the authors.",
+       ok:false,
+       fb:"Removing the authors removes the feature, not the cause. The 42 ms is 21 serial database queries, not payload size — 20 posts with authors is only tens of KB. Batching the author lookups into one query keeps the nested shape and cuts the time ~10×."}
+    ]
+  },
+  {
+    stem: "Your feed API is live on a million phones you can't force-update. Which change is safe to ship without a new API version?",
+    options: [
+      {t:"Adding a new field like author.verified to the response. Old apps ignore fields they don't recognize, so they keep working unchanged — an additive change is backward compatible. Renaming, removing, or re-typing a field would break old parsers and require a versioned /v2.",
+       ok:true,
+       fb:"Correct. The rule is add, never remove or rename in place. Additive changes cost nothing; removals/renames/type-changes break clients in the field. When you truly must break the shape, you run /v1 and /v2 side by side and carry the old one until its traffic drains."},
+      {t:"Renaming author.name to author.displayName for clarity — it's the same data, just a better name.",
+       ok:false,
+       fb:"Same data, broken contract. Old apps read author.name, now get null, and render a blank. A rename is a remove-plus-add from the client's view. If you must rename, add displayName alongside name (additive) or cut a new version — don't rename in place."},
+      {t:"Changing the default page size from 20 to 50 to reduce round trips.",
+       ok:false,
+       fb:"That subtly breaks clients that assumed 20 — pagination math, layout, and any offset bookkeeping shift under them. Defaults are part of the contract too. Add a new max/limit clients can opt into, but don't move the default out from under existing apps."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
