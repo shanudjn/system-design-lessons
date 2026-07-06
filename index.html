@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0019-geo-proximity.html">
+    <div class="num">LESSON 19</div>
+    <div class="title">Geo &amp; Proximity: Finding the Drivers Near You Without Scanning a Million</div>
+    <div class="blurb">A rider taps "find a ride" and the server must return the drivers within <b>2 km</b> — out of a million moving cars — in a few milliseconds. Checking every driver is <code>5 × 10¹⁰</code> distance calls/sec; indexing one coordinate returns a 4 km strip that wraps the planet, because two 1-D indexes don't intersect into a 2-D box. Fix it by folding 2-D into 1-D: a <b>geohash</b> interleaves the bits of lat/lng (our point → <code>01001 10110</code> → <code>9q…</code>) so nearby points share a prefix and a plain B-tree answers "who's near here?". Handle the <b>boundary problem</b> (a car 100 m away in a different cell) with a 3×3 neighbour query + exact haversine — a <b>1,100×</b> cut. Then quadtrees (cell size follows density) and S2 (a Hilbert curve on a cube), and the wall every grid hits: a stadium empties and one cell holds 50,000 cars. Trade named throughout: a uniform grid vs load that follows the crowd.</div>
+  </a>
   <a class="lesson" href="lessons/0018-api-design-pagination.html">
     <div class="num">LESSON 18</div>
     <div class="title">API Design &amp; Pagination: Paging a Feed Without Dupes or Slowdowns</div>

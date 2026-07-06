@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 19 — Geo &amp; Proximity: Finding the Drivers Near You Without Scanning a Million</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 19 · Worked Example</div>
+  <h1>Geo &amp; Proximity: Finding the Drivers Near You Without Scanning a Million</h1>
+  <p class="lead">Lesson 18 ended on a hint: a cursor's <i>1-D</i> sort key names "next in a list," but proximity means "nearest in <i>2-D</i> space" — and one sorted column can't answer it. This lesson takes one concrete screen: a rider taps "find a ride," and the server must return the drivers within <b>2 km</b> — out of a million moving cars — in a few milliseconds. We'll <b>estimate</b> why the obvious answers (check every driver / index one coordinate) fall over, <b>model</b> the trick that saves us — turning a 2-D point into a 1-D string so nearby points share a prefix (geohash), then quadtrees and S2 cells — <b>trace</b> the write path (drivers pinging their location) and the read path (a rider's search), and hit the wall every gridded map hits: a stadium empties and one cell holds 50,000 cars. The trade-off underneath: <b>a simple uniform grid vs load that follows where people actually are</b>.</p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0019-geo-proximity.html"</code></p>
+</header>
+
+<h2>The one screen we'll design</h2>
+<p>A rider stands on a corner and opens the app. The server knows the live location of every active driver — a million cars, each moving, each reporting where it is every few seconds. The rider's phone sends one point (its own latitude and longitude) and asks: <b>which drivers are within 2 km of me, nearest first?</b> The answer must come back before the map finishes its little loading spin — call it under ~50 ms. The whole tension is on one screen: <i>a point, a radius, and a haystack of a million moving needles.</i></p>
+
+<div class="diagram"><pre>
+  FINDING DRIVERS NEAR A RIDER   (grid squares = geohash cells, ~5 km each)
+
+          9q8yv           9q8yy           9q8yz
+        ┌───────────────┬───────────────┬───────────────┐
+        │    d          │        d      │               │   d = a driver's
+  9q8yw │        d      │   d       d   │      d        │       current spot
+        │               │           d   │               │
+        ├───────────────┼───────────────┼───────────────┤
+        │       d       │   d    ┌╌╌╌╌╌╌│╌╌┐            │   R = rider,
+  9q8yt │               │   d    ╎  R    │d ╎  d         │       searching a
+        │           d   │      d ╎ ●─2km─│──╎            │       2 km circle
+        ├───────────────┼───────────╌╌╌╌┼╌╌┘────────────┤       around ●
+        │               │       d       │      d        │
+  9q8ys │      d        │               │   d           │
+        └───────────────┴───────────────┴───────────────┘
+
+  The rider ● sits in cell 9q8yy.  Two hard facts sit in this picture:
+   (1) the 2 km circle spills OUT of 9q8yy into its neighbours, and
+   (2) a driver just across the top edge is a different cell, 9q8yv,
+       and shares NO prefix with 9q8yy — the BOUNDARY PROBLEM.
+</pre></div>
+
+<p class="note"><span class="key">Proximity is a 2-D question, and a 2-D question does not collapse into one sorted column.</span> That single fact is why "find nearby" needs its own machinery — everything below earns that machinery with numbers.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Latitude / longitude</b> — the two numbers that name a point on Earth: latitude is north–south (−90°…+90°), longitude east–west (−180°…+180°). A location is the <i>pair</i>.</li>
+  <li><b>Proximity / radius query</b> — "give me everything within distance <i>r</i> of point <i>P</i>." The core operation of this lesson.</li>
+  <li><b>Great-circle distance (haversine)</b> — the true distance between two lat/lng points across the curved Earth. It's exact but costs real arithmetic, so we only want to run it on a short list.</li>
+  <li><b>Spatial index</b> — a data structure that answers "what's near here?" without scanning everything, the 2-D cousin of Lesson 12's B-tree.</li>
+  <li><b>Cell</b> — a small square patch of the map that we treat as one bucket. Every point falls in exactly one cell.</li>
+  <li><b>Geohash</b> — a scheme that turns a lat/lng point into a short string, built so that nearby points share a leading prefix.</li>
+  <li><b>Space-filling curve</b> — a single 1-D line threaded through 2-D space so that "close on the line" usually means "close on the map." Geohash uses a <b>Z-order</b> curve; S2 uses a <b>Hilbert</b> curve.</li>
+  <li><b>Quadtree</b> — a tree that recursively splits a region into 4 quadrants, but <i>only where it's crowded</i>, so cell size follows density.</li>
+  <li><b>S2 cell</b> — Google's scheme: it wraps the sphere onto a cube and threads a Hilbert curve through each face, giving each cell a 64-bit id with better shape and locality than a geohash.</li>
+  <li><b>Hot cell</b> — one cell holding wildly more points than the rest (a stadium, an airport). This lesson's final bottleneck, and the same hotspot from L03/L08/L09 wearing a map.</li>
+</ul>
+
+<h2>Move 1 — Estimate: why the two obvious designs fall over</h2>
+<p>Before reaching for a clever structure, price the two things a beginner would try first, so the cleverness is <i>earned</i>.</p>
+
+<div class="card calc">
+  <p><b>Worked: the load, and design #1 — check every driver.</b></p>
+  <p>• Active drivers: <b>1,000,000</b>. Each pings its location every <b>4 s</b> → <code>1,000,000 / 4 = 250,000</code> location <b>writes</b>/sec.<br>
+     • Rider searches: say <b>50,000</b>/sec at peak.<br>
+     • Naïve read: for one search, compute the distance from the rider to <i>every</i> driver and keep those under 2 km. That's <b>1,000,000</b> haversine calculations <i>per search</i>.<br>
+     • Across all searches: <code>1,000,000 × 50,000 = 5 × 10¹⁰</code> distance calculations <b>per second</b>.</p>
+  <p><span class="key">Fifty billion trig calls a second is not a tuning problem; it's the wrong shape.</span> A single search touching all million cars is <code>O(N)</code> when we need something closer to <code>O(handful)</code>.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Design #2 — index one coordinate (and why 2-D won't fold into 1-D).</b> We know B-trees (Lesson 12) make range queries fast, so index <code>latitude</code>. A 2 km search means latitude within about <code>2 / 111 ≈ 0.018°</code> (one degree of latitude ≈ <b>111 km</b>). The index instantly returns everyone in the band <code>lat ∈ [me − 0.018°, me + 0.018°]</code>.</p>
+  <p>But that band is a <b>strip 4 km tall that wraps the entire planet</b> — ~40,000 km around. Every driver at your latitude, in any city on Earth, is a candidate. You then have to filter that huge set by longitude one row at a time. Indexing longitude instead has the same disease in the other direction. <span class="key">Two separate 1-D indexes cannot be intersected cheaply into one 2-D box — the database can use only one of them, and the other coordinate becomes a linear filter.</span></p>
+</div>
+
+<p class="note why"><b>Name the first trade-off — dimensionality.</b> A B-tree is a line; a map is a plane. The whole job of a spatial index is to <b>reduce 2 dimensions to 1</b> in a way that keeps <i>near-in-2-D</i> mostly <i>near-in-1-D</i>, so that a single ordinary index (the tool we already have) can answer a proximity query. That reduction is a space-filling curve, and geohash is the simplest one.</p>
+
+<h2>Move 2 — Model: turn a point into a prefix (geohash), then quadtree &amp; S2</h2>
+<p>The idea is to chop the world into a grid of <b>cells</b> and give each cell a name, chosen so that <b>adjacent cells have similar names</b>. Then "near me" becomes "same or neighbouring cell name" — a string prefix query on the index we already know how to build.</p>
+
+<h3>Model A — geohash: interleave the bits</h3>
+<p>Geohash builds the cell name by repeatedly halving the world. Ask of the longitude: is it in the left half or the right half? That's one bit. Ask the same of latitude: top or bottom half? Another bit. Keep alternating, each answer halving the remaining box, and <b>interleave</b> the two streams of bits. Group the bits 5 at a time and map each group to one character (base-32). More characters = more halvings = a smaller, more precise cell.</p>
+
+<div class="diagram"><pre>
+  2-D POINT  ->  1-D STRING        (why nearby points share a prefix)
+
+  point:  lng = -122.4   lat = 37.8
+
+  longitude, halving [-180,180]:      latitude, halving [-90,90]:
+    -122.4 < 0     -> 0                 37.8 > 0     -> 1
+    -122.4 < -90   -> 0                 37.8 < 45    -> 0
+    -122.4 > -135  -> 1                 37.8 > 22.5  -> 1
+    -122.4 < -112.5-> 0                 37.8 > 33.75 -> 1
+    -122.4 > -123.7-> 1                 37.8 < 39.37 -> 0
+     lng bits: 0 0 1 0 1                 lat bits: 1 0 1 1 0
+
+  interleave  lng,lat,lng,lat,... :
+       0 1 0 0 1 1 0 1 1 0
+       └──5 bits──┘└─5 bits─┘
+         01001        10110
+        = 9 (idx 9)  = 22 (idx 22 = 'q')      ->  geohash "9q..."
+
+  Two points in the same 5-char cell agree on the first 25 bits,
+  so they share the first 5 characters. A plain B-tree string
+  prefix range (L12) now answers a 2-D "who is near here?"
+</pre></div>
+
+<div class="card calc">
+  <p><b>Worked: reading that base-32 step.</b> The base-32 alphabet is <code>0123456789bcdefghjkmnpqrstuvwxyz</code> (the letters <code>a i l o</code> are dropped so nothing looks like a digit). The first five interleaved bits are <code>01001</code> = <code>8+1 = 9</code> → the character at index 9 is <code>'9'</code>. The next five, <code>10110</code> = <code>16+4+2 = 22</code> → index 22 is <code>'q'</code>. So the point encodes to a geohash beginning <span class="key"><code>9q…</code></span>, and <i>any</i> other point in that same box shares that prefix. Precision by length, in the real world:</p>
+  <table>
+    <tr><th>Geohash length</th><th>Cell size (≈)</th><th>Good for</th></tr>
+    <tr><td><code>4</code> chars</td><td>39 km × 20 km</td><td>a metro region</td></tr>
+    <tr><td><code>5</code> chars</td><td><b>4.9 km × 4.9 km</b></td><td>a 2 km search ✔</td></tr>
+    <tr><td><code>6</code> chars</td><td>1.2 km × 0.6 km</td><td>a neighbourhood</td></tr>
+    <tr><td><code>7</code> chars</td><td>153 m × 153 m</td><td>a city block</td></tr>
+  </table>
+  <p>For a 2 km radius we pick <b>5 characters</b> (~4.9 km cells): big enough that the search circle fits within a small patch of cells, small enough that each cell holds few drivers.</p>
+</div>
+
+<p>Now the read is trivial to state: the rider's point encodes to, say, <code>9q8yy</code>, and we ask the index <code>WHERE geohash LIKE '9q8yy%'</code> — a prefix range, exactly the B-tree seek from Lesson 12. That returns the drivers in one ~5 km cell instead of a million. But it has a bug, and it's the one in the opening diagram.</p>
+
+<h3>The cell-boundary problem — and the 3×3 fix</h3>
+<div class="card calc">
+  <p>The rider sits near the <b>top edge</b> of cell <code>9q8yy</code>. A driver 100 m away, just across that edge, is in cell <code>9q8yv</code> — a <i>different</i> prefix. Querying only <code>9q8yy%</code> misses a car that is almost close enough to touch. Worse, the 2 km circle physically spills into as many as 4 neighbouring cells at a corner. <span class="key">"Same cell" is not the same as "within radius": cells have hard edges, distance does not.</span></p>
+  <p><b>The fix:</b> compute the rider's cell <i>and its 8 neighbours</i> (the 3×3 box of cell names), query all <b>9</b> prefixes, gather the candidates, then run the exact haversine distance on that short list and keep only the ones truly within 2 km. With 5-char (~5 km) cells, a 3×3 box covers ~15 km × 15 km — comfortably larger than the 2 km circle, so no nearby driver can hide.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Worked: how much this saved.</b> Put 1,000,000 drivers across a big metro of ~500 km × 500 km. At ~24 km² per 5-char cell that's <code>250,000 / 24 ≈ 10,400</code> cells, so <code>1,000,000 / 10,400 ≈ 96</code> drivers per cell on average. The 9-cell query gathers <code>9 × 96 ≈ 865</code> candidates; we run exact haversine on those ~900 and return the survivors.</p>
+  <p><code>1,000,000 candidates → ~900</code> is a <span class="key"><code>1,000,000 / 900 ≈ 1,100× cut</code></span> in the per-search work — and that's what turns "scan the planet" into "a few milliseconds." The exact-distance step still runs, but on 900 rows, not a million.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — cell size is recall vs work.</b> Bigger cells → the 3×3 box covers more ground, so you're sure to catch every nearby driver (high recall), but each cell holds more candidates to distance-filter (more work). Smaller cells → fewer candidates per cell, but the 2 km circle now spans many cells, so you must query a larger neighbourhood (a 5×5 or 7×7 box). You tune cell size to the search radius: roughly, pick cells about the size of the radius so a 3×3 box always contains the circle.</p>
+
+<h3>Model B — quadtree: let cell size follow the crowd</h3>
+<p>Geohash lays down a <b>uniform</b> grid: every 5-char cell is the same size, whether it covers a packed downtown or empty ocean. A <b>quadtree</b> instead starts with one big square and splits a square into 4 smaller squares <i>only when it holds too many points</i>. A dense city centre keeps subdividing into tiny cells; the countryside stays one big cell. The result: every leaf cell holds roughly the same <i>number</i> of points, not the same <i>area</i>.</p>
+
+<p class="note why"><b>Name the trade-off — statelessness vs adaptivity.</b> A geohash is <b>stateless</b>: you compute a point's cell from its coordinates alone, with no shared structure to consult, which makes it trivial to shard and to store in a plain database index. A quadtree <b>adapts</b> to density so no single leaf gets overloaded — but it's a <i>mutable tree</i> that must be built, balanced, and kept in memory, and it's harder to split across machines. You trade the simplicity of a fixed grid for load that follows where people actually are.</p>
+
+<h3>Model C — S2: a better curve on a cube</h3>
+<p>Geohash has two rough edges. Its cells <b>distort</b> the further you get from the equator (a degree of longitude shrinks toward the poles), and its <b>Z-order</b> curve occasionally jumps — two cells adjacent on the map can be far apart in the string ordering, which is the boundary problem in another guise. <b>S2</b> fixes both: it projects the sphere onto the 6 faces of a cube (keeping cells close to equal-area) and threads a <b>Hilbert curve</b> through each face. A Hilbert curve <i>never jumps</i> — consecutive cells along it are always physically adjacent — so a nearby region maps to a small number of contiguous id-ranges, and each cell is a compact 64-bit integer.</p>
+
+<p class="note why"><b>Name the trade-off — simplicity vs quality of locality.</b> Geohash is a few lines of bit-twiddling and stores as a plain string; S2 needs a real library, but its cells are more uniform and its Hilbert ordering keeps "near on the map" and "near in the index" tighter, so region queries touch fewer, cleaner ranges. Reach for geohash when simple is enough; reach for S2/quadtree when uniformity and locality start to bite.</p>
+
+<h2>Move 3 — Trace the two paths</h2>
+<p>Two flows meet at the spatial index: drivers writing their positions, and riders reading nearby drivers.</p>
+
+<div class="diagram"><pre>
+  WRITE PATH  (a driver moves)                READ PATH  (a rider searches)
+
+  driver GPS every 4 s                         rider point P, radius 2 km
+        │  (lat, lng)                                │
+        ▼                                            ▼
+  encode -> geohash5  e.g. "9q8yy"             encode P -> "9q8yy"
+        │                                            │
+        ▼                                            ▼
+  update index:                                compute 3x3 neighbour cells:
+    driver_id -> "9q8yy"                         9q8yv 9q8yy 9q8yz
+    (or: cell "9q8yy" -> {set of drivers})       9q8yt 9q8y? 9q8y?  ...
+        │                                            │
+        ▼                                            ▼
+  250,000 writes/sec, each a small             fetch drivers in those 9 cells
+  key update (cheap, O(1))                      -> ~900 candidates
+                                                     │
+                                                     ▼
+                                              exact haversine <= 2 km,
+                                              sort by distance, take top N
+</pre></div>
+
+<p><b>Write path.</b> Each ping recomputes the driver's geohash and updates one small entry — either "driver → cell" (and a per-cell index) or the cell's set of drivers. It's an <code>O(1)</code> key update, so 250,000/sec is comfortable; positions are hot and short-lived, so this usually lives in memory (a Redis-style store), not on spinning disk. <b>Read path.</b> Encode the rider, expand to the 3×3 (or 5×5) neighbourhood, gather ~900 candidates, run exact distance, sort, return the nearest N. Every expensive step (the haversine, the sort) runs on the short candidate list, never the million.</p>
+
+<p class="note why"><b>Name the trade-off — precompute the cell vs compute distance at read.</b> We do the cheap, coarse filter (which cell?) at <i>write</i> time and on the <i>index</i>, and pay for the exact, expensive filter (haversine, ranking) at <i>read</i> time on a tiny set. It's the same "narrow cheap, then refine expensive" funnel as L12's covering index, L14's CDN, and L16's two-phase ranking — the grid narrows a million to ~900, exact distance perfects those 900.</p>
+
+<h2>Move 4 — Find the first bottleneck: the hot cell</h2>
+<p>A concert ends. Thirty thousand people open the app in the same two minutes, standing in the same few blocks — <b>one cell</b>. Meanwhile a rural cell holds 3 drivers. The uniform grid gave every cell the same <i>area</i>, but people are not spread by area, so it gave them wildly different <i>load</i>.</p>
+
+<div class="card calc">
+  <p><b>Worked: the stadium cell.</b> Suppose that one 5-char cell now holds <b>50,000</b> drivers and riders instead of the ~96 average. Every search there is served from that single cell's entry — a read hotspot ~500× the normal cell — and the "short" candidate list is now 50,000 long, so the exact-distance step is back to being expensive for everyone in that cell. <span class="key">A cell is a shard, and a hot cell is a hot shard</span> — the very same wall as L03's hot partition key, L08's hot rate-limit key, and L09's hot queue partition, now drawn on a map.</p>
+</div>
+
+<p>Three fixes, each a familiar trade:</p>
+<ul>
+  <li><b>Adaptive precision.</b> Use finer cells where it's dense — a 7-char (~150 m) cell downtown, a 4-char (~30 km) cell in the countryside — so each cell holds a bounded number of points. This is exactly what a <b>quadtree</b> does automatically, and why S2 lets a region mix cell levels. Trade: uniform-and-simple vs balanced-and-stateful (Model B's trade, now forced on us).</li>
+  <li><b>Cap and sample.</b> A rider doesn't need all 50,000 nearby cars, just the closest handful. Keep or return only the nearest few hundred and stop. Trade: exactness vs work — the L06/L08 "approximate to stay scalable" move.</li>
+  <li><b>Replicate the hot cell for reads.</b> If the pain is read throughput on one cell's entry, copy that entry across replicas so reads spread out (L02/L06). Trade: read scale vs the staleness/consistency of the extra copies.</li>
+</ul>
+
+<p class="note why"><b>Name the last trade-off — uniform grid vs load-following structure.</b> The uniform geohash grid is simple, stateless, and shards trivially, but it distributes <i>space</i> evenly while the world distributes <i>people</i> unevenly, so it manufactures hot cells wherever crowds gather. Making cell size follow density (quadtree / mixed-level S2) removes the hotspot but buys a mutable, harder-to-distribute structure. There is no grid that is both perfectly uniform to operate and perfectly balanced under a crowd — you choose which one the crowd is allowed to break.</p>
+
+<table>
+  <tr><th>Situation</th><th>Choice</th><th>Trade-off named</th></tr>
+  <tr><td>1M drivers, "who's within 2 km?"</td><td><b>Spatial index</b>, not a scan</td><td>2-D proximity ≠ 1-D range</td></tr>
+  <tr><td>Need one ordinary B-tree to do it</td><td><b>Geohash</b> (interleave → prefix)</td><td>dimensionality: fold 2-D to 1-D</td></tr>
+  <tr><td>Driver 100 m away, different cell</td><td><b>Query 3×3 neighbours</b> + exact filter</td><td>cell edges vs true distance (recall)</td></tr>
+  <tr><td>Pick the cell size</td><td>≈ the search radius</td><td>recall vs candidate work</td></tr>
+  <tr><td>Downtown packs one cell</td><td><b>Quadtree</b> / mixed-level S2</td><td>uniform &amp; stateless vs adaptive &amp; stateful</td></tr>
+  <tr><td>Geohash cells distort / curve jumps</td><td><b>S2</b> (cube + Hilbert curve)</td><td>simplicity vs locality &amp; uniformity</td></tr>
+  <tr><td>Stadium empties → 50k in one cell</td><td>Adaptive precision / cap / replicate</td><td>uniform grid vs load-following</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We designed one screen — "find drivers within 2 km" — and made every choice pay for itself. <b>Estimate</b> killed the two obvious designs: checking every driver is <code>1,000,000 × 50,000 = 5 × 10¹⁰</code> distance calls/sec, and indexing one coordinate returns a 4 km strip that wraps the planet, because <span class="key">two 1-D indexes don't intersect into a 2-D box</span>. <b>Model</b> fixed it by folding 2-D into 1-D: <b>geohash</b> interleaves the bits of lat and lng (our point → <code>01001 10110</code> → <code>9q…</code>) so nearby points share a prefix and a plain B-tree prefix range answers "who's near here?" — with the <b>boundary problem</b> (a car 100 m away in a different cell) fixed by querying the <b>3×3</b> neighbourhood and running <b>exact haversine</b> on the ~900 candidates, a <b>1,100×</b> cut. <b>Quadtree</b> makes cell size follow density (adaptive but stateful); <b>S2</b> puts a Hilbert curve on a cube for better locality and shape. <b>Tracing</b> the write path (250k cheap <code>O(1)</code> cell updates/sec) and read path (encode → 3×3 → candidates → exact distance → top N) showed the coarse-then-exact funnel again. The <b>next bottleneck</b> was the <b>hot cell</b>: a stadium jams 50,000 into one cell — a hot shard, the L03/L08/L09 wall on a map — fixed by adaptive precision, capping, or replication. The thread: <span class="key">a proximity system is a curve that threads 2-D space into 1-D so an ordinary index can find "near"; you keep near-in-space near-in-index, query a neighbourhood not a single cell, refine with exact distance, and bend the grid where crowds gather.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lessons build directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>Object / blob storage:</b> storing 100 PB of driver dashcam video and photos — chunking a huge file, erasure coding vs replication for durability, the metadata service, and the small-file problem.</p>
+  <p style="margin:.2rem 0">• <b>Analytics &amp; counting at scale:</b> "how many unique riders searched each cell today?" — approximate structures (HyperLogLog, Count-Min sketch, Bloom filters) that trade exactness for memory, the same "approximate to stay scalable" move the hot cell forced here.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">latitude / longitude</span>
+    <span class="pill">proximity / radius query</span>
+    <span class="pill">great-circle / haversine distance</span>
+    <span class="pill">spatial index</span>
+    <span class="pill">cell</span>
+    <span class="pill">geohash</span>
+    <span class="pill">bit interleaving</span>
+    <span class="pill">space-filling curve</span>
+    <span class="pill">Z-order curve</span>
+    <span class="pill">Hilbert curve</span>
+    <span class="pill">prefix range query</span>
+    <span class="pill">boundary problem</span>
+    <span class="pill">3×3 neighbour query</span>
+    <span class="pill">quadtree</span>
+    <span class="pill">S2 cell</span>
+    <span class="pill">hot cell / hot shard</span>
+    <span class="pill">adaptive precision</span>
+  </p>
+  <p>That's Lesson 19, built directly on Lesson 18's cursor (a 1-D sort key that can't answer 2-D "nearest"), reusing Lesson 12's B-tree seek (what a geohash prefix rides on), Lesson 16/14/12's "narrow cheap, then refine expensive" funnel (grid → exact distance), and Lesson 03/08/09's hot-shard wall (now a hot cell on a map). <b>Ask me follow-ups</b> — e.g. "how exactly do you compute a geohash's 8 neighbours?", "why is a Hilbert curve better than Z-order for range queries?", "how does Redis GEOSEARCH do this under the hood?", "when would you pick a quadtree over geohash?", or "how do you handle a driver moving across a cell boundary between pings?" When you're ready, say <b>next</b> and we'll go deeper on <i>Object / blob storage — storing 100 PB with chunking, erasure coding, and a metadata service</i>.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "You have 1M drivers and want \"who's within 2 km?\". Why doesn't a B-tree on the latitude column solve it, and what does geohash do instead?",
+    options: [
+      {t:"A lat index returns everyone in the band lat ± 0.018° — a 4 km-tall strip that wraps the whole planet — which you'd then have to filter by longitude row by row; two separate 1-D indexes don't intersect into a 2-D box. Geohash interleaves the bits of lat and lng into one string so nearby points share a prefix, letting a single ordinary B-tree prefix query answer the 2-D question.",
+       ok:true,
+       fb:"Right. The database can use only one 1-D index; the other coordinate degrades into a linear scan of a globe-spanning strip. Geohash's bit-interleaving folds 2-D into 1-D while keeping near-in-space near-in-string, so one B-tree seek does the work."},
+      {t:"A B-tree can't store latitude because it's a floating-point number; you must round to integers first, which loses the precision proximity needs.",
+       ok:false,
+       fb:"B-trees index floats fine — Lesson 12's orders table sorted real-valued keys. The problem isn't the data type; it's that one sorted column is one dimension, and proximity is two. Geohash's job is the dimension reduction, not precision."},
+      {t:"Nothing's wrong with the lat index — it returns exactly the drivers within 2 km directly, so geohash is just an optimization for storage size.",
+       ok:false,
+       fb:"It does not. lat ± 0.018° is a strip circling the Earth; it contains every driver at your latitude worldwide, not the ones near you. You'd still need to filter longitude one by one. That's the whole reason a 2-D structure exists."}
+    ]
+  },
+  {
+    stem: "A rider's point encodes to cell 9q8yy. A driver 100 m away sits just across the cell's edge in 9q8yv. Querying WHERE geohash LIKE '9q8yy%' misses that driver. What's the name of this and the standard fix?",
+    options: [
+      {t:"It's the boundary problem: cells have hard edges but distance doesn't, so a very close point can fall in a neighbouring cell with a different prefix. Fix: compute the rider's cell plus its 8 neighbours (the 3×3 box), query all 9 prefixes, then run exact haversine distance on the gathered candidates and keep those truly within 2 km.",
+       ok:true,
+       fb:"Exactly. 'Same cell' ≠ 'within radius'. The 3×3 (or 5×5 for smaller cells) neighbourhood guarantees the search circle is covered, and the exact-distance pass on the ~900 candidates removes cells' false positives."},
+      {t:"It's a hash collision; two nearby points hashed to different buckets. Fix it by switching to a longer geohash (7 chars) so collisions stop happening.",
+       ok:false,
+       fb:"It isn't a collision — geohash is deterministic, not a scatter hash. And a longer geohash makes it worse: smaller cells mean the boundary is crossed more often and the search circle spans even more cells. The fix is querying neighbours, not shrinking cells."},
+      {t:"It's a rounding error in the haversine formula; use higher-precision floating point and the missed driver reappears.",
+       ok:false,
+       fb:"The driver is missed before any distance is computed — the prefix query never returns it, because it's in a different cell. No amount of float precision helps; you must widen the candidate net to the 8 neighbouring cells first."}
+    ]
+  },
+  {
+    stem: "You need cells that stay balanced when a crowd gathers, and an ordering where cells adjacent on the map are adjacent in the index. Which statement is right?",
+    options: [
+      {t:"A quadtree keeps leaf cells balanced by subdividing only where it's dense (adaptive but a mutable, in-memory tree), while S2's Hilbert curve keeps map-adjacent cells contiguous in the id ordering — unlike geohash's Z-order curve, which occasionally jumps so two neighbouring cells land far apart in the string order.",
+       ok:true,
+       fb:"Right. Quadtree trades geohash's stateless uniform grid for density-following balance; S2's Hilbert curve trades geohash's simple bit-twiddling for tighter locality and more uniform cell shape. Different fixes for the two rough edges of a plain geohash."},
+      {t:"Geohash already does both perfectly: its cells are equal-area everywhere on Earth and its Z-order curve never puts adjacent cells far apart, so quadtrees and S2 are obsolete.",
+       ok:false,
+       fb:"Neither is true. Geohash cells distort toward the poles (a degree of longitude shrinks), and its Z-order curve does jump, which is the boundary problem's cousin. That's precisely why quadtrees (balance) and S2 (uniform cells + Hilbert locality) exist."},
+      {t:"A quadtree gives better index locality than S2 because trees are always sorted, and S2 is only about storage size.",
+       ok:false,
+       fb:"Locality here is about a space-filling curve's ordering, which is S2's Hilbert strength, not a tree property. A quadtree's contribution is adaptive, balanced cell sizes; S2's is a better curve and more uniform cells. They solve different halves of the problem."}
+    ]
+  },
+  {
+    stem: "A concert ends and 50,000 people open the app in one geohash cell while a rural cell holds 3. Searches in the packed cell crawl. What is this, and which fix keeps a uniform grid from causing it?",
+    options: [
+      {t:"It's a hot cell — a hot shard on a map, the same hotspot as a hot partition key (L03/L09) or hot rate-limit key (L08). A uniform grid splits space evenly but people cluster, so it manufactures hot cells. Fix by making cell size follow density (finer cells downtown via a quadtree or mixed-level S2), and/or capping the returned set and replicating the hot cell for reads.",
+       ok:true,
+       fb:"Exactly. The uniform grid gave every cell equal area, not equal load; a crowd concentrates load on one cell. Adaptive precision bounds points-per-cell, capping bounds work-per-search, replication bounds read throughput — each a trade you've met before."},
+      {t:"It's a cache stampede; add a TTL and single-flight lock so the 50,000 requests collapse into one.",
+       ok:false,
+       fb:"That's Lesson 02's problem (many requests for one expired key). Here the issue is that one cell legitimately contains 50,000 distinct drivers, so the candidate list and the cell's write load are genuinely huge. The fix is a finer grid where it's dense, not request coalescing."},
+      {t:"It's unavoidable physics — 50,000 people in one place must always be slow, so nothing in the design can help.",
+       ok:false,
+       fb:"Not unavoidable. Adaptive precision splits that packed area into many small cells so no single cell holds 50,000; capping returns just the nearest few hundred a rider actually needs; replication spreads the reads. The uniform grid caused it, and a load-following structure removes it."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

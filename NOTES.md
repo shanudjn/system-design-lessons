@@ -188,8 +188,19 @@
     next wall = the published contract — additive changes safe, removals/renames
     break clients → versioning (URL vs header) + deprecation window. Trade:
     client convenience vs server cost & stability. (Lesson 0018)
-19. Geo / proximity systems — "find drivers near me": geohash vs quadtree vs
-    S2 cells, the cell-boundary problem, and hot-cell load.
+19. ✅ **Geo / proximity systems** — "find drivers within 2 km" out of 1M moving
+    cars: checking every driver is 5×10¹⁰ dist-calls/sec and a 1-D lat index
+    returns a 4 km strip wrapping the planet (two 1-D indexes don't intersect into
+    a 2-D box) → fold 2-D to 1-D with a space-filling curve; geohash interleaves
+    lat/lng bits (point → 01001 10110 → "9q…") so nearby points share a prefix and
+    a plain B-tree (L12) answers "who's near?"; the cell-boundary problem (a car
+    100 m away in a different cell shares no prefix) → query the 3×3 neighbourhood
+    + exact haversine on ~900 candidates (1,100× cut); cell size = recall vs work
+    (≈ radius); quadtree adapts cell size to density (stateful vs geohash's
+    stateless uniform grid); S2 = cube + Hilbert curve (better locality/uniformity
+    than geohash's Z-order); next wall = the hot cell (stadium empties → 50k in one
+    cell = a hot shard, L03/L08/L09 on a map) → adaptive precision / cap / replicate.
+    (Lesson 0019)
 20. Object / blob storage — how to store 100 PB of files: chunking, erasure
     coding vs replication, metadata service, and the small-file problem.
 21. Analytics & counting at scale — approximate structures (HyperLogLog for
