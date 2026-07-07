@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 20 — Object Storage: Storing 100 PB Durably Without Paying for 300</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 20 · Worked Example</div>
+  <h1>Object Storage: Storing 100 PB Durably Without Paying for 300</h1>
+  <p class="lead">Lesson 19 ended with a hint: the fleet's cars stream dashcam video and photos, and someone has to keep it. This lesson takes one concrete number — <b>100 petabytes</b> of files that must survive disk failures and be fetched by key — and designs the store for it. We'll <b>estimate</b> why a plain filesystem and the obvious "keep three copies" both buckle (300 PB of raw disk for 100 PB of data), <b>model</b> the object store that fixes it — a flat <i>key → blob</i> namespace, a separate <i>metadata service</i>, <i>chunking</i>, and <i>erasure coding</i> — <b>trace</b> the write path (PUT) and read path (GET) fragment by fragment, and hit the wall every blob store hits: a flood of <i>tiny</i> files that the per-object cost eats alive. The trade-off underneath: <b>durability per raw byte — cheap storage that is slow to repair, vs simple copies that cost 2× more disk.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0020-object-storage.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>A million cars each upload clips and photos all day. The total already sits at <b>100 PB</b> and grows. We need a service with two operations: <code>PUT(key, bytes)</code> stores a blob under a name, and <code>GET(key)</code> returns those exact bytes back. Two hard promises ride on it: <b>durability</b> — a blob you stored must still be there after disks die, because disks die constantly at this scale — and it must all fit on disk we can actually afford. The whole tension is on that pair of promises: <i>keep 100 PB alive across failing hardware, without buying a mountain of extra disk to do it.</i></p>
+
+<div class="diagram"><pre>
+  ONE OBJECT'S JOURNEY INTO THE STORE   (RS(10,4) erasure code)
+
+   PUT "car42/clip.mp4"  (a 64 MB chunk of a larger object)
+            │
+            ▼
+   split into 10 DATA fragments  +  compute 4 PARITY fragments
+   ┌──┬──┬──┬──┬──┬──┬──┬──┬──┬──┐   ┌──┬──┬──┬──┐
+   │d1│d2│d3│d4│d5│d6│d7│d8│d9│d10│  │p1│p2│p3│p4│   each = 6.4 MB
+   └──┴──┴──┴──┴──┴──┴──┴──┴──┴──┘   └──┴──┴──┴──┘   14 fragments total
+            │  scatter, one per failure domain
+            ▼
+   rack1 rack2 rack3 ... rack14   (14 different disks/racks)
+     d1    d2    d3        p4      lose ANY 4 -> still rebuild the 64 MB
+
+   METADATA SERVICE (separate, tiny, strongly consistent)
+     "car42/clip.mp4" -> [ chunk0 -> {rack1..rack14 fragment ids},
+                           chunk1 -> {...}, ... ]
+
+   Two boxes, on purpose: a HUGE dumb DATA plane (100 PB, durable)
+   and a SMALL smart METADATA plane (~1 TB, consistent, in RAM).
+</pre></div>
+
+<p class="note"><span class="key">The cost of keeping data alive is measured per <i>raw byte on disk</i>, and the cost of finding it is measured per <i>object</i>. Those are two different bills, and the whole design comes from paying each one separately.</span></p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Object / blob</b> — one opaque bag of bytes stored under a key. The store never looks inside it (unlike a database row with columns).</li>
+  <li><b>Object store</b> — a service with a <i>flat</i> namespace: any key maps to a blob, with no real folders or paths in between. <code>GET</code>/<code>PUT</code>/<code>DELETE</code> a whole object, not a byte range in a tree.</li>
+  <li><b>Durability</b> — the probability your bytes survive over a year, quoted in "nines" (e.g. eleven 9s = 99.999999999%). Different from <i>availability</i> (can you reach it right now).</li>
+  <li><b>Failure domain</b> — a set of hardware that tends to die together (one disk, one machine, one rack, one power feed). Copies must land in <i>different</i> domains or they aren't really copies.</li>
+  <li><b>Replication</b> — keep <i>N</i> whole copies of the blob on <i>N</i> failure domains. Simple; survives <i>N−1</i> losses; costs <i>N×</i> the raw disk.</li>
+  <li><b>Erasure coding (Reed–Solomon)</b> — split a blob into <i>k</i> data fragments and compute <i>m</i> parity fragments; any <i>k</i> of the <i>k+m</i> can rebuild the whole. Written <b>RS(k, m)</b>.</li>
+  <li><b>Chunk</b> — a fixed-size slice of a large object (say 64 MB) stored and coded independently, so one huge upload becomes many manageable, parallel pieces.</li>
+  <li><b>Metadata service</b> — the small, consistent index mapping a key to <i>where</i> its chunks and fragments physically live.</li>
+  <li><b>Small-file problem</b> — this lesson's final wall: costs charged <i>per object</i> (a metadata row, an erasure stripe) dwarf the bytes when the objects are tiny.</li>
+</ul>
+
+<h2>Move 1 — Estimate: why a filesystem and "just keep 3 copies" both fall over</h2>
+<p>Price the two things a beginner reaches for first — a normal filesystem, and triple replication — so every clever part below is <i>earned</i>.</p>
+
+<div class="card calc">
+  <p><b>Worked: the shape of the load.</b> 100 PB of data. Say the average object is a <b>100 MB</b> clip.</p>
+  <p>• Object count: <code>100 PB / 100 MB = 10¹⁷ B / 10⁸ B = 10⁹</code> → <b>1 billion objects</b>.<br>
+     • That's already the first problem for a filesystem: a directory tree with a billion entries. Path lookups walk the tree, inode tables have limits, one directory listing is monstrous, and permission checks add seeks — a POSIX filesystem was built for a laptop's millions of files, not a billion across thousands of machines.</p>
+  <p><span class="key">At a billion objects you don't want folders and paths; you want a flat map from key to bytes.</span> That flat map is exactly what an object store is — you give up rename, partial writes, and directory semantics, and in return the namespace scales to any size because every lookup is just "hash the key, go to that shard" (Lessons 03–04).</p>
+</div>
+
+<div class="card calc">
+  <p><b>Worked: the naïve durability plan — keep 3 copies.</b> The simplest way to survive dead disks is to store every blob three times on three racks.</p>
+  <p>• Raw disk needed: <code>100 PB × 3 = 300 PB</code>.<br>
+     • The 200 PB of extra disk is pure overhead — <b>2 bytes of insurance for every 1 byte of data</b>.<br>
+     • Fault tolerance you bought: you can lose <b>2</b> of the 3 copies and still have the data.</p>
+  <p><span class="key">Triple replication is 3× the disk to survive 2 failures.</span> At 100 PB that's a lot of steel. Is there a way to survive <i>more</i> failures for <i>less</i> disk? Yes — and it's the heart of every large blob store.</p>
+</div>
+
+<p class="note why"><b>Name the first trade-off — durability per raw byte.</b> Replication spends whole extra copies to buy survival. Its virtue is <i>simplicity and fast repair</i> (a lost copy is rebuilt by copying one surviving copy, no math). Its cost is that survival scales linearly with disk: to tolerate <i>f</i> failures you pay <i>(f+1)×</i>. Erasure coding buys the same survival for far less disk — at the price of CPU and slower repair. That is the choice the whole store turns on.</p>
+
+<h2>Move 2 — Model: flat namespace, metadata split, chunking, erasure coding</h2>
+<p>Four ideas, each earning its place against a number.</p>
+
+<h3>Model A — split the metadata plane from the data plane</h3>
+<p>The <b>data plane</b> holds the actual bytes: 100 PB, dumb, append-only, spread over thousands of disks. The <b>metadata service</b> holds only the <i>map</i>: key → which chunks, and each chunk → which fragments on which racks. How big is that map?</p>
+<div class="card calc">
+  <p><b>Worked: metadata is 100,000× smaller than the data.</b> 1 billion objects × ~1 KB of metadata each (key, size, chunk list, fragment locations, checksums) = <code>10⁹ × 10³ = 10¹² B = 1 TB</code>.</p>
+  <p>Compare: <b>1 TB</b> of metadata vs <b>100 PB</b> of data — a ratio of <code>10⁵ = 100,000×</code>. The metadata fits in RAM across a small sharded cluster; the data never could.</p>
+</div>
+<p class="note why"><b>Name the trade-off — consistency where it's small, durability where it's big.</b> The metadata is tiny, hot, and must be <i>correct</i> (a wrong pointer loses an object), so it lives in a strongly-consistent, replicated store (quorums, L06/L11). The data is enormous, cold, and must be <i>durable</i> but only <i>eventually</i> consistent, so it lives in a cheap append-only plane. Splitting them lets you pay the expensive "always correct" price on 1 TB instead of on 100 PB.</p>
+
+<h3>Model B — chunk the big objects</h3>
+<p>A single upload can be gigabytes. Storing it as one indivisible blob is bad: you can't upload it in parallel, a failed upload restarts from zero, and no single disk may have room. So split every object into fixed <b>chunks</b> — say <b>64 MB</b> — and store each chunk independently. A 1 GB clip becomes <code>1024 / 64 = 16</code> chunks that upload in parallel, resume from the last good chunk, and scatter across many disks.</p>
+<p class="note why"><b>Name the trade-off — chunk size is parallelism &amp; repair granularity vs metadata overhead.</b> Smaller chunks mean more parallelism and finer repair (rebuild a 64 MB chunk, not a 5 GB file), but <i>more chunks means more metadata rows and more fragments to track</i>. Bigger chunks cut the bookkeeping but coarsen everything. 64 MB is the usual middle — big enough that per-chunk overhead is noise, small enough to parallelize and repair fast.</p>
+
+<h3>Model C — erasure coding: survive more, store less</h3>
+<p>Here is the move that beats 3× replication. Take one 64 MB chunk and, instead of copying it whole, split it into <b>k = 10</b> data fragments of 6.4 MB each, then compute <b>m = 4</b> parity fragments (also 6.4 MB) with Reed–Solomon math. That's <b>14 fragments</b>, and the magic property is: <span class="key">any 10 of the 14 can rebuild the original 64 MB</span>. Store the 14 fragments on 14 different racks.</p>
+
+<div class="card calc">
+  <p><b>Worked: RS(10,4) vs replication, on the same 100 PB.</b></p>
+  <table>
+    <tr><th>Scheme</th><th>Raw disk for 100 PB</th><th>Failures survived</th><th>Overhead</th></tr>
+    <tr><td>3× replication</td><td><code>100 × 3 = </code><b>300 PB</b></td><td>2</td><td>+200%</td></tr>
+    <tr><td>5× replication</td><td><code>100 × 5 = </code><b>500 PB</b></td><td>4</td><td>+400%</td></tr>
+    <tr><td><b>RS(10,4)</b></td><td><code>100 × 14/10 = </code><b>140 PB</b></td><td><b>4</b></td><td><b>+40%</b></td></tr>
+  </table>
+  <p>Read the last row against the middle one: to survive <b>4</b> simultaneous losses with replication you'd need <b>5 copies = 500 PB</b>. RS(10,4) survives the same 4 losses on <b>140 PB</b> — <code>500 / 140 ≈ 3.5×</code> less disk, and still <b>1.6×</b> less than plain 3× replication which only survives 2.</p>
+  <p><b>The disk saved vs 3×:</b> <code>300 − 140 = 160 PB = 160,000 TB</code>. At a round <code>$20 / TB / month</code> all-in, that's <code>160,000 × $20 = $3.2M / month ≈ $38M / year</code> not spent — for <i>more</i> durability, not less.</p>
+</div>
+
+<p>Why does 14/10 give eleven-nines durability? Losing an object needs <b>5 of its 14 fragments</b> gone <i>before repair finishes</i>. Fragments sit on 14 independent racks, and a lost fragment is rebuilt in minutes (read any 10 survivors, recompute the missing one). The window where a 5th failure could land during a repair is tiny, so the yearly odds are astronomically small — providers quote ~<b>99.999999999%</b> (eleven 9s). The lever is <b>MTTR vs MTBF</b>: fast repair (small mean-time-to-repair) shrinks the danger window, exactly the "close the gap" instinct from L06's lost update and L13's retry race.</p>
+
+<p class="note why"><b>Name the trade-off — erasure coding trades disk for CPU and repair traffic.</b> EC wins big on storage (+40% vs +200%) <i>and</i> on fault tolerance, but it isn't free. Every write computes parity (CPU). Worse, repairing <b>one</b> lost 6.4 MB fragment means reading <b>k = 10</b> other fragments — <code>10 × 6.4 = 64 MB</code> pulled across the network to rebuild 6.4 MB: a <span class="key">10× repair amplification</span>. Replication's repair is a plain <b>1×</b> copy. So EC is the right default for the cold, huge bulk; replication still wins for small, hot, latency-critical data where fast repair and single-fetch reads matter more than disk.</p>
+
+<h2>Move 3 — Trace the two paths</h2>
+<p>Two flows meet at the store: a car writing a clip, and a viewer reading one back.</p>
+
+<div class="diagram"><pre>
+  WRITE PATH  PUT(key, bytes)                READ PATH  GET(key)
+
+  client streams bytes                        client asks for key
+        │                                            │
+        ▼                                            ▼
+  split into 64 MB chunks                     metadata service:
+        │                                       key -> chunk list ->
+        ▼                                       fragment locations
+  each chunk -> RS(10,4):                            │
+   10 data + 4 parity = 14 frags                     ▼
+        │                                     for each chunk, fetch
+        ▼                                     any 10 of the 14 frags
+  scatter 14 frags -> 14 racks                  (prefer the 10 data
+   (14 distinct failure domains)                 frags: no decode)
+        │                                            │
+        ▼                                            ▼
+  when all frags durably written,             reassemble chunk;
+  COMMIT metadata: key -> {frag ids}          if a data frag is
+        │  (commit is the moment                missing, read a parity
+        ▼   the object "exists")                and DECODE (CPU)
+  ack the client                                     │
+                                                     ▼
+                                              stream chunks back in order
+</pre></div>
+
+<p><b>Write path.</b> Chunk, erasure-code, scatter the 14 fragments to 14 failure domains, and only when they're all durable do you <b>commit the metadata</b>. That commit is the single moment the object becomes real: before it, a crash leaves orphan fragments (garbage the background sweeper reclaims); after it, the object is durable. Writing the pointer <i>last</i> is the same "make the effect durable, then record it" discipline as L13's idempotent charge — the metadata commit is the atomic point-of-no-return. <b>Read path.</b> One metadata lookup gives the fragment map; fetch the <b>10 data fragments</b> and concatenate (no math needed on the happy path); only if a data fragment is missing do you pull a parity and pay the decode. Every object read fans out to ~10 disks.</p>
+
+<p class="note why"><b>Name the trade-off — EC reads trade single-fetch simplicity for fan-out.</b> A replicated read grabs <i>one</i> copy from one disk — lowest latency, easy tail. An EC read touches <b>10</b> fragments on 10 disks, so its latency is the <i>slowest</i> of the ten (the tail-amplification math from L17: one slow disk drags the whole read). You buy cheap, durable storage and pay in read fan-out and tail latency — which is exactly why hot, latency-sensitive objects often stay replicated while the cold bulk is erasure-coded.</p>
+
+<h2>Move 4 — Find the first bottleneck: the small-file problem</h2>
+<p>Everything above assumed 100 MB objects. Now the fleet starts uploading <b>4 KB thumbnails</b> by the trillion, and every per-object cost that was noise becomes the whole bill.</p>
+
+<div class="card calc">
+  <p><b>Worked: what tiny objects do to the two bills.</b> Keep 100 PB of data, but as 4 KB objects.</p>
+  <p>• Object count: <code>100 PB / 4 KB = 10¹⁷ / (4×10³) = 2.5 × 10¹³</code> → <b>25 trillion objects</b>.<br>
+     • Metadata: <code>2.5×10¹³ × 1 KB = 2.5 × 10¹⁶ B = 25 PB</code>. The <i>index</i> is now <b>a quarter the size of the data itself</b> — and 25 trillion rows is its own distributed-systems nightmare, no longer a cozy 1 TB in RAM.<br>
+     • Erasure coding a 4 KB object into RS(10,4) means fragments of <code>4096 / 10 ≈ 400 B</code>. Fourteen 400-byte fragments scattered over 14 racks: every read is seek-bound, and each object drags 14 fragment pointers of metadata. The bookkeeping dwarfs the bytes.</p>
+  <p><span class="key">The metadata row and the erasure stripe are fixed costs charged per object, not per byte.</span> At 100 MB they're invisible; at 4 KB they <i>are</i> the system.</p>
+</div>
+
+<p>The fix is to stop treating a tiny object as its own storage unit. <b>Pack</b> many small objects, appended together, into one large (say 1 GB) container blob — and erasure-code the <i>container</i>, not each thumbnail. The metadata for a small object shrinks to <b>object → (container id, offset, length)</b>: a handful of bytes you can keep in a compact in-memory index, one disk seek per read.</p>
+<ul>
+  <li><b>Packing kills the storage &amp; IO overhead.</b> One 1 GB container is one erasure stripe with 6.4 MB-scale fragments (not 400 B), and one sequential region on disk instead of a billion scattered tiny files. Reads become a single seek to an offset.</li>
+  <li><b>The index shrinks to fit in RAM.</b> Instead of a fat 1 KB DB row per object, keep a lean <code>key → (container, offset, len)</code> map — a few bytes each — so even trillions stay tractable and a read is one lookup + one seek.</li>
+  <li><b>Deletes become tombstones + compaction.</b> You can't punch a hole in a packed container cheaply, so a delete just marks a <b>tombstone</b> (the same trick as L15's feed deletes); a background <b>compaction</b> job later rewrites live objects into fresh containers and frees the old ones. Trade: cheap deletes now vs periodic rewrite traffic later — the classic log-structured bargain.</li>
+</ul>
+
+<p class="note why"><b>Name the last trade-off — per-object cost vs per-byte cost.</b> A blob store's design assumes bytes dominate, so it spends structure (a metadata row, an erasure stripe, a scatter of fragments) per object and amortizes it over many bytes. Tiny objects break that assumption — the per-object structure costs more than the bytes it protects. Packing restores the assumption by making the storage unit big again (the container), at the price of an extra indirection and a compaction job. You either keep objects large, or you make them large by packing.</p>
+
+<table>
+  <tr><th>Situation</th><th>Choice</th><th>Trade-off named</th></tr>
+  <tr><td>1B objects, 100 PB</td><td><b>Object store</b> (flat key→blob), not a filesystem</td><td>scale vs directory/POSIX semantics</td></tr>
+  <tr><td>Find bytes vs keep bytes alive</td><td><b>Split</b> metadata plane from data plane</td><td>consistency (small) vs durability (big)</td></tr>
+  <tr><td>Multi-GB uploads</td><td><b>Chunk</b> into 64 MB pieces</td><td>parallelism/repair vs metadata overhead</td></tr>
+  <tr><td>Survive disk death cheaply</td><td><b>RS(10,4)</b> erasure code (140 PB)</td><td>disk saved vs CPU + 10× repair traffic</td></tr>
+  <tr><td>Hot, latency-critical blob</td><td><b>Replication</b> instead of EC</td><td>single-fetch/fast-repair vs 2× disk</td></tr>
+  <tr><td>Trillions of 4 KB objects</td><td><b>Pack</b> into containers + in-RAM index</td><td>per-object cost vs per-byte cost</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We designed one store — <code>PUT/GET</code> over 100 PB that survives failing disks — and made every choice pay for itself. <b>Estimate</b> killed the two obvious designs: a filesystem drowns in a <code>100 PB / 100 MB = 1 billion</code>-entry tree, and 3× replication burns <code>300 PB</code> of raw disk to survive just 2 failures. <b>Model</b> fixed both: a <b>flat key→blob namespace</b> that shards like L03/L04; a <b>metadata plane</b> (1 TB, consistent) split from the <b>data plane</b> (100 PB, durable) — a <code>100,000×</code> size gap that justifies paying the expensive "always correct" price only on the small half; <b>chunking</b> big objects into 64 MB pieces; and <b>erasure coding</b> — RS(10,4) survives <b>4</b> losses on <b>140 PB</b>, where matching that with replication needs 5 copies = <b>500 PB</b> (<code>≈3.5×</code> more), saving <code>160 PB ≈ $38M/year</code> for <i>more</i> durability. <b>Tracing</b> the write (chunk → code → scatter 14 frags → commit metadata last) and the read (metadata → fetch any 10 → decode only if needed) showed the durable-commit discipline of L13 and the read fan-out tail of L17. The <b>next bottleneck</b> was the <b>small-file problem</b>: 4 KB objects turn the 1 TB index into <b>25 PB</b> and the erasure stripe into 400-byte splinters, because those costs are per-object, not per-byte — fixed by <b>packing</b> into containers with a compact in-RAM index and tombstone+compaction deletes. The thread: <span class="key">a blob store pays two separate bills — durability per raw byte (erasure code the cold bulk, replicate the hot bytes) and lookup per object (a tiny consistent index, packed when objects go small) — and every design choice is deciding which bill to keep down.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson builds directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>Analytics &amp; counting at scale:</b> "how many <i>unique</i> cars uploaded today, across 25 trillion objects?" An exact set of a billion IDs won't fit in memory — so trade exactness for tiny, fixed memory with <b>HyperLogLog</b> (unique counts), <b>Count–Min sketch</b> (frequencies), and <b>Bloom filters</b> (membership). The same "approximate to stay scalable" move the hot cell forced in L19 and the sharded counter forced in L06.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">object / blob</span>
+    <span class="pill">object store</span>
+    <span class="pill">flat namespace</span>
+    <span class="pill">durability (nines)</span>
+    <span class="pill">availability</span>
+    <span class="pill">failure domain</span>
+    <span class="pill">replication</span>
+    <span class="pill">erasure coding</span>
+    <span class="pill">Reed–Solomon RS(k,m)</span>
+    <span class="pill">parity fragment</span>
+    <span class="pill">chunk</span>
+    <span class="pill">metadata service</span>
+    <span class="pill">data plane vs metadata plane</span>
+    <span class="pill">repair amplification</span>
+    <span class="pill">MTTR vs MTBF</span>
+    <span class="pill">small-file problem</span>
+    <span class="pill">packing / containers</span>
+    <span class="pill">tombstone + compaction</span>
+  </p>
+  <p>That's Lesson 20, built directly on Lesson 19's dashcam data (what we now have to store), reusing Lesson 03/04's key-sharding (the flat namespace), Lesson 06/11's quorum consistency (the metadata plane), Lesson 13's durable-commit discipline (write the pointer last), Lesson 15's tombstones (deletes in a packed store), and Lesson 17's fan-out tail (an EC read touches 10 disks). <b>Ask me follow-ups</b> — e.g. "how does Reed–Solomon actually compute the parity fragments?", "how do you pick k and m for a durability target?", "why do providers still replicate <i>and</i> erasure-code (hot vs cold tiers)?", "how does compaction avoid rewriting the whole container?", or "what exactly does the metadata service store per object?" When you're ready, say <b>next</b> and we'll go deeper on <i>Analytics &amp; counting at scale — HyperLogLog, Count–Min sketch, and Bloom filters</i>.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "You must keep 100 PB durable and want to survive 4 simultaneous failures. Compare RS(10,4) erasure coding with replication. Which is right?",
+    options: [
+      {t:"RS(10,4) survives any 4 of its 14 fragments being lost while using only 140 PB of raw disk (14/10 overhead). Matching 4-failure tolerance with whole copies needs 5 replicas = 500 PB — about 3.5× more disk for the same durability. Erasure coding buys more survival per raw byte; its costs are parity CPU on write and ~10× read amplification when repairing a lost fragment.",
+       ok:true,
+       fb:"Right. EC's whole point is durability per raw byte: +40% overhead survives 4 losses, where replication would need +400%. You pay for it in CPU and in repair traffic (rebuild one fragment by reading k=10 others), not in disk."},
+      {t:"Replication is always cheaper because copying bytes is simpler than Reed–Solomon math, so 5× replication (500 PB) is the economical way to survive 4 failures.",
+       ok:false,
+       fb:"Simpler to compute, yes — but 500 PB vs 140 PB is 3.5× more disk for the identical fault tolerance. At 100 PB that's tens of millions of dollars a year. Replication wins on repair speed and read simplicity, not on storage cost."},
+      {t:"They're equivalent: RS(10,4) and 3× replication both use the same amount of disk and survive the same number of failures, so the choice is purely stylistic.",
+       ok:false,
+       fb:"Not equivalent. 3× replication is 300 PB and survives 2 losses; RS(10,4) is 140 PB and survives 4. EC uses less than half the disk and tolerates twice the failures — the difference is the reason large blob stores erasure-code their bulk."}
+    ]
+  },
+  {
+    stem: "Why does a serious object store split a small 'metadata service' from the huge 'data plane' instead of storing location info alongside the bytes?",
+    options: [
+      {t:"The two have opposite needs. Metadata (key → chunk/fragment locations) is tiny — ~1 KB × 1B objects ≈ 1 TB, about 100,000× smaller than the 100 PB of data — and must be strongly consistent because a wrong pointer loses an object. The data is enormous, cold, and only needs to be durable. Splitting lets you pay the expensive 'always correct' price on 1 TB, not on 100 PB.",
+       ok:true,
+       fb:"Exactly. The 100,000× size gap is the whole justification: run quorum-consistent, in-RAM machinery on the 1 TB index, and cheap append-only durability on the 100 PB bulk. Different bills, paid separately."},
+      {t:"Because metadata changes constantly while data never does, so putting them together would require rewriting all 100 PB every time a key is renamed.",
+       ok:false,
+       fb:"Object stores have a flat namespace with no cheap rename, and data blobs are immutable/append-only regardless. The real reason is the mismatch in size and consistency needs — a tiny index that must be correct vs a vast store that must be durable — not rename churn."},
+      {t:"It's only for security: keeping metadata separate hides the file locations from attackers who breach the data plane.",
+       ok:false,
+       fb:"Security isn't the driver. The split exists because the metadata is 100,000× smaller and needs strong consistency, while the data is huge and needs cheap durability — you want to run costly consistent machinery on 1 TB, not 100 PB."}
+    ]
+  },
+  {
+    stem: "On the write path, when exactly does a PUT object 'exist', and why is the ordering chosen that way?",
+    options: [
+      {t:"Only after all 14 fragments are durably written does the store commit the metadata pointer — writing the pointer LAST. Before the commit, a crash just leaves orphan fragments that a background sweeper reclaims as garbage; after it, the object is fully durable. The metadata commit is the atomic point-of-no-return, the same 'make the effect durable, then record it' discipline as an idempotent charge.",
+       ok:true,
+       fb:"Right. Commit-the-pointer-last means a mid-write crash can never leave a half-real object readable — you either see all fragments (committed) or none (orphans, swept later). The pointer write is the single moment of existence."},
+      {t:"The object exists the moment the first fragment lands on disk; the remaining 13 are written lazily in the background for extra durability.",
+       ok:false,
+       fb:"That would make an object readable before it can actually be reconstructed — you need any 10 of 14 fragments to rebuild it. Existence must wait until enough fragments are durable and the metadata is committed, not the first fragment."},
+      {t:"It exists as soon as the client finishes uploading the bytes, before any erasure coding — coding is a purely internal optimization that happens later.",
+       ok:false,
+       fb:"If the store acked before the fragments were durably scattered, a crash right after could lose the object entirely. The store commits metadata only after the fragments are durable, so the ack the client trusts reflects real durability."}
+    ]
+  },
+  {
+    stem: "The fleet starts uploading trillions of 4 KB thumbnails and the store's costs explode. What's the name of this, and the standard fix?",
+    options: [
+      {t:"The small-file problem: costs charged per object — a ~1 KB metadata row, a 14-fragment erasure stripe — dwarf the bytes when objects are tiny. 100 PB of 4 KB objects is 25 trillion of them, turning the 1 TB index into ~25 PB and each erasure fragment into a 400-byte splinter. Fix: pack many small objects into large container blobs (erasure-code the container), keep a compact in-RAM key→(container, offset, len) index, and handle deletes with tombstones + compaction.",
+       ok:true,
+       fb:"Exactly. Per-object costs are fixed; they only disappear when amortized over many bytes. Packing makes the storage unit big again (the container) so one stripe and one seek serve thousands of tiny objects, at the price of an indirection and a compaction job."},
+      {t:"It's a cache stampede — trillions of thumbnail reads for the same expired keys — fixed with a TTL and single-flight lock.",
+       ok:false,
+       fb:"That's Lesson 02's problem. Here nothing has expired; the issue is that each of 25 trillion distinct objects carries its own metadata row and erasure stripe, so the fixed per-object overhead becomes the whole bill. The fix is packing, not request coalescing."},
+      {t:"It's unavoidable — trillions of files simply require trillions of metadata rows, so nothing can be done but buy more index servers.",
+       ok:false,
+       fb:"Not unavoidable. Packing collapses many tiny objects into one big container with one erasure stripe and one sequential region, and shrinks the index to a few bytes per object in RAM. You change the storage unit's size instead of scaling the per-object cost linearly."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

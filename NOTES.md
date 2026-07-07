@@ -201,10 +201,42 @@
     than geohash's Z-order); next wall = the hot cell (stadium empties → 50k in one
     cell = a hot shard, L03/L08/L09 on a map) → adaptive precision / cap / replicate.
     (Lesson 0019)
-20. Object / blob storage — how to store 100 PB of files: chunking, erasure
-    coding vs replication, metadata service, and the small-file problem.
+20. ✅ **Object / blob storage** — one 100 PB pile of dashcam clips (avg 100 MB
+    → 1 billion objects): a filesystem drowns in a billion-entry tree and 3×
+    replication burns 300 PB to survive only 2 failures → an object store's flat
+    `key→blob` namespace + a metadata plane (1 TB, consistent) split from the
+    data plane (100 PB, durable — a 100,000× size gap justifies the split);
+    chunk big objects (64 MB) for parallelism/repair vs metadata overhead;
+    **erasure coding** RS(10,4) survives 4 losses on 140 PB (+40%) where matching
+    it with copies needs 5× = 500 PB (~3.5× more) → saves 160 PB ≈ $38M/yr for
+    MORE durability, paid in parity CPU + 10× repair amplification (rebuild 1
+    fragment by reading k=10); replication still wins for hot/latency-critical
+    (single-fetch, 1× repair) vs EC's read fan-out tail (L17). Trace the write
+    (chunk→code→scatter 14 frags→commit metadata LAST, the L13 durable-commit)
+    and read (fetch any 10, decode only if a data frag is missing); next wall =
+    the **small-file problem** (4 KB objects → 25 trillion of them → 1 TB index
+    balloons to 25 PB, 400 B fragment splinters, because costs are per-OBJECT not
+    per-byte) → pack into container blobs + compact in-RAM index + tombstone/
+    compaction deletes (L15). Trade named: durability per raw byte. (Lesson 0020)
 21. Analytics & counting at scale — approximate structures (HyperLogLog for
     unique counts, Count-Min sketch, Bloom filters): trade exactness for memory.
+
+### Advanced topics (next batch — queued so the course never runs dry)
+22. Distributed locks & leases — a lease with a fencing token (recap L10) vs a
+    naive lock; clock skew, the "held lock but paused GC" hazard, and why locks
+    are a last resort. Trade: safety vs liveness/throughput.
+23. Multi-region / active-active — replicating writes across continents: CRDTs
+    and last-write-wins for mergeable state (recap L11/L06), conflict resolution,
+    and the write-latency vs availability tax. Trade: local writes vs global order.
+24. Schema changes & migrations at scale — the expand/contract (dual-write,
+    backfill, cutover) dance to change a column on a live 100M-row table with zero
+    downtime. Trade: migration safety vs deploy velocity.
+25. Payments & ledgers — double-entry immutability, exactly-once money movement
+    (recap L13), reconciliation, and eventual consistency you can audit. Trade:
+    correctness/auditability vs throughput.
+26. Real-time delivery (WebSocket/push at scale) — fan-out to millions of live
+    connections: connection state, presence, the thundering reconnect (recap
+    L02/L07), and sticky routing. Trade: statefulness vs elastic scale.
 
 ## Lesson format conventions
 - Four reusable "moves" framing introduced in Lesson 01: estimate → model →

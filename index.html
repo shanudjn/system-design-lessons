@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0020-object-storage.html">
+    <div class="num">LESSON 20</div>
+    <div class="title">Object Storage: Storing 100 PB Durably Without Paying for 300</div>
+    <div class="blurb">The fleet's dashcam clips and photos already fill <b>100 PB</b>, and it must survive dying disks and be fetched by key. A filesystem drowns in a billion-entry tree; the obvious "keep 3 copies" burns <b>300 PB</b> of raw disk to survive just 2 failures. Fix it with an object store: a flat <code>key→blob</code> namespace, a tiny consistent <b>metadata plane</b> split from the huge durable <b>data plane</b> (1 TB vs 100 PB — a 100,000× gap), <b>chunking</b>, and <b>erasure coding</b> — RS(10,4) survives <b>4</b> losses on just <b>140 PB</b>, where matching that with copies needs 500 PB (~3.5× more), saving <b>~$38M/year</b> for <i>more</i> durability. Trace the write (chunk → code → scatter 14 fragments → commit metadata last) and the read (fetch any 10 → decode only if needed), then hit the wall every blob store hits: trillions of tiny 4 KB files that blow the 1 TB index up to 25 PB, because those costs are per-object, not per-byte — fixed by packing into containers. Trade named throughout: durability per raw byte vs simple copies.</div>
+  </a>
   <a class="lesson" href="lessons/0019-geo-proximity.html">
     <div class="num">LESSON 19</div>
     <div class="title">Geo &amp; Proximity: Finding the Drivers Near You Without Scanning a Million</div>
