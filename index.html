@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0021-approximate-counting.html">
+    <div class="num">LESSON 21</div>
+    <div class="title">Analytics at Scale: Counting a Billion Uniques in 12 KB</div>
+    <div class="blurb">Lesson 20 left a question: across 25 trillion objects, <b>how many <i>unique</i> cars uploaded today?</b> The exact answer is a set of every ID you've seen — <b>8 GB</b> at a billion cars, per metric, per hour. Answer three dashboard questions in kilobytes instead with three sketches. <b>HyperLogLog</b> counts distinct cars from the leading zeros of hashes across 16,384 registers in a flat <b>12 KB</b> at ~0.8% error (<b>650,000×</b> smaller). A <b>Bloom filter</b> answers "have we stored this key?" with <b>no false negatives</b> — 9.6 bits/key, ~1.2 GB for a billion keys — so "definitely new" lets ingest skip the index lookup. A <b>Count–Min sketch</b> estimates how often each car uploaded in <b>76 KB</b>, only ever rounding up. All three <b>merge</b> across shards (max / add / OR). Then the wall every sketch hits: it tells you <i>how many</i>, never <i>which</i> — fixed by pairing Count–Min with a small heap for the heavy hitters. Trade named throughout: a small, chosen error for constant memory.</div>
+  </a>
   <a class="lesson" href="lessons/0020-object-storage.html">
     <div class="num">LESSON 20</div>
     <div class="title">Object Storage: Storing 100 PB Durably Without Paying for 300</div>

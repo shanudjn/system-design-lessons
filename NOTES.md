@@ -218,8 +218,21 @@
     balloons to 25 PB, 400 B fragment splinters, because costs are per-OBJECT not
     per-byte) → pack into container blobs + compact in-RAM index + tombstone/
     compaction deletes (L15). Trade named: durability per raw byte. (Lesson 0020)
-21. Analytics & counting at scale — approximate structures (HyperLogLog for
-    unique counts, Count-Min sketch, Bloom filters): trade exactness for memory.
+21. ✅ **Analytics & counting at scale** — three dashboard questions over a
+    billion-car / 25-trillion-object stream: exact answers scale with distinct
+    items (distinct set 8 GB, per-car counters 16 GB, seen-keys set 400 TB) →
+    swap for sketches on one hash-and-summarize engine. HyperLogLog counts
+    cardinality from leading-zeros across m=2¹⁴ registers × 6 bits ≈ 12 KB at
+    1.04/√m ≈ 0.81% error (~650,000× smaller); Bloom filter = membership with NO
+    false negatives (m/n = −ln ε/(ln2)² ≈ 9.6 bits/key, k≈7, ~1.2 GB/1B keys) so
+    "definitely not" skips the index lookup (L12/L20 guard); Count–Min = frequency
+    in d×w ≈ 76 KB, min-of-d only ever OVER-estimates (bounded ε·N → great for
+    heavy hitters, noisy in the tail). All three MERGE across shards (HLL max /
+    CMS add / Bloom OR) → local compute, central union. Next walls = a sketch
+    tells you HOW MANY, never WHICH (fix: CMS + min-heap for top-K), append-only
+    (counting Bloom for deletes = 4× bits), and per-time-window sketches. Trade:
+    a small chosen error for constant memory, accuracy placed where it matters.
+    (Lesson 0021)
 
 ### Advanced topics (next batch — queued so the course never runs dry)
 22. Distributed locks & leases — a lease with a fencing token (recap L10) vs a

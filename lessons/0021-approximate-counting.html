@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 21 — Analytics at Scale: Counting a Billion Uniques in 12 KB</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 21 · Worked Example</div>
+  <h1>Analytics at Scale: Counting a Billion Uniques in 12 KB</h1>
+  <p class="lead">Lesson 20 ended with a question: across those 25 trillion stored objects, <b>how many <i>unique</i> cars uploaded today?</b> The honest exact answer needs a set of every distinct car ID you've seen — and at a billion cars that set won't fit in memory, per metric, per hour. This lesson takes three real dashboard questions — <i>how many distinct?</i>, <i>how often is this one?</i>, <i>have I seen this one?</i> — and answers all three in kilobytes instead of gigabytes with three <b>probabilistic sketches</b>: <b>HyperLogLog</b>, <b>Count–Min sketch</b>, and <b>Bloom filter</b>. We'll <b>estimate</b> why the exact answers blow up, <b>model</b> the three sketches against one hash-and-summarize engine, <b>trace</b> a single upload event through all three, and hit the wall every sketch hits: it tells you <i>how many</i>, never <i>which</i>. The trade underneath: <b>bounded error for fixed, tiny memory — you buy accuracy where it matters and give it up in the tail.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0021-approximate-counting.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>A billion cars stream uploads all day. The analytics service must keep three live numbers on a dashboard, updated as events pour in:</p>
+<ul>
+  <li><b>Distinct uploaders today</b> — "how many <i>different</i> cars uploaded?" (a <i>cardinality</i> question)</li>
+  <li><b>Heavy uploaders</b> — "roughly how many times did car <code>42</code> upload, and who are the top few?" (a <i>frequency</i> question)</li>
+  <li><b>Seen-before check</b> — "have we <i>ever</i> stored this object key?" so ingest can skip a costly index lookup on genuinely new keys (a <i>membership</i> question)</li>
+</ul>
+<p>The exact version of each needs a data structure that grows with the number of distinct things — and at a billion cars and 25 trillion objects, that structure is gigabytes we don't have, multiplied by every time window and region. The whole tension: <i>answer these three questions in a fixed, tiny amount of memory, accepting a small, known error.</i></p>
+
+<div class="diagram"><pre>
+  ONE UPLOAD EVENT, THREE QUESTIONS   event = (car=42, key="abc123")
+
+        (car=42, key="abc123")
+                │
+        ┌───────┼────────────────────┬────────────────────┐
+        ▼       ▼                     ▼                    ▼
+   hash(car42)  hash(car42)      hash(key "abc123")
+        │       │                     │
+        ▼       ▼                     ▼
+  ┌───────────┐ ┌───────────────┐ ┌───────────────────┐
+  │HyperLogLog│ │ Count–Min      │ │ Bloom filter       │
+  │ 12 KB     │ │ sketch  ~76 KB │ │ ~1.2 GB / 1B keys  │
+  │           │ │               │ │                    │
+  │ "how many │ │ "how OFTEN is │ │ "have I SEEN this  │
+  │  DISTINCT?"│ │  this one?"   │ │  one?"             │
+  └───────────┘ └───────────────┘ └───────────────────┘
+        │              │                    │
+        ▼              ▼                    ▼
+   ~200M ± 0.8%   car42 ≈ 5,140      "definitely NOT" -> store,
+   uniques        (never under)       skip the index lookup
+                                     "MAYBE" -> go check for real
+
+  Same engine each time: hash the item, fold it into a fixed-size
+  summary, read an ANSWER WITH A KNOWN ERROR back out. Never store
+  the items themselves.
+</pre></div>
+
+<p class="note"><span class="key">Exact answers cost memory proportional to the number of distinct items. Approximate answers cost a fixed budget you pick up front — and the error is a knob, not an accident.</span></p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Cardinality</b> — the count of <i>distinct</i> values in a stream (how many unique cars), not the total number of events.</li>
+  <li><b>Sketch / probabilistic data structure</b> — a small, fixed-size summary of a huge stream that answers one kind of question with a <i>bounded, known error</i> instead of exactly.</li>
+  <li><b>Hash function</b> — a function that turns any input into a fixed-length, uniform-looking number. Same input → same output; different inputs → spread out evenly. Every sketch here runs on one.</li>
+  <li><b>HyperLogLog (HLL)</b> — a sketch that estimates <i>cardinality</i> (distinct count) in ~12 KB with ~1% error.</li>
+  <li><b>Count–Min sketch (CMS)</b> — a sketch that estimates <i>how often</i> each item appeared; it can overestimate but never underestimate.</li>
+  <li><b>Bloom filter</b> — a sketch that answers <i>membership</i> ("is this item in the set?") with "definitely no" or "probably yes" — no false negatives, occasional false positives.</li>
+  <li><b>False positive / false negative</b> — the sketch says "yes" when the truth is no (false positive), or "no" when the truth is yes (false negative). Which one a sketch <i>can't</i> do is the whole point.</li>
+  <li><b>Mergeable</b> — two sketches built on different shards can be combined into one covering both, with no re-scan. This is why sketches win in distributed systems.</li>
+</ul>
+
+<h2>Move 1 — Estimate: why the exact answers don't fit</h2>
+<p>Price the obvious exact structure for each question, so every sketch below is <i>earned</i>.</p>
+
+<div class="card calc">
+  <p><b>Worked: exact distinct count = a set of every ID seen.</b> To count unique cars exactly you must remember which ones you've already counted — a hash set of IDs. A car ID is a 64-bit number = <b>8 bytes</b>.</p>
+  <p>• Worst case, all <b>1 billion</b> cars upload: <code>10⁹ × 8 B = 8 × 10⁹ B = 8 GB</code> — and that's the <i>ideal</i>, ignoring the pointers and load-factor slack a real hash set carries (realistically 5–6× more, tens of GB).<br>
+     • And that's <b>one</b> metric, for <b>one</b> day. Want "distinct per region" and "distinct per hour"? Multiply by every bucket. The exact set explodes.</p>
+  <p><span class="key">The killer is that memory grows with the number of <i>distinct</i> items.</span> We want a structure whose size does <i>not</i> grow with cardinality at all.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Worked: exact frequencies + exact membership.</b></p>
+  <p>• <b>How often did each car upload?</b> Exact = a counter per car: <code>10⁹ × (8 B key + 8 B count) = 16 GB</code>, again per window.<br>
+     • <b>Have we seen this object key?</b> Exact = a set of all keys ever stored: <b>25 trillion</b> keys × ~16 B = <code>4 × 10¹⁴ B = 400 TB</code>. That is not a RAM structure by any stretch.</p>
+  <p>All three exact answers scale with the number of <i>distinct things</i>, which is exactly the number we can't bound. That is the wall.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — exactness vs memory.</b> An exact answer must be able to distinguish every item from every other, so it stores something per distinct item and its memory grows without bound. A sketch throws that away: it keeps a fixed-size summary and answers with a small, <i>known</i> error. You trade a few percent of precision for memory that stops growing — the same "give up exact to stay scalable" move as the sharded/approximate counter in L06 and the hot cell in L19.</p>
+
+<h2>Move 2 — Model: one engine, three sketches</h2>
+<p>All three share one recipe: <b>hash the item to a uniform random number, fold that into a fixed-size array, read an answer with a bounded error back out.</b> What differs is the array's shape and the question it answers.</p>
+
+<h3>Model A — HyperLogLog: distinct count from the luckiest hash</h3>
+<p>The core trick is a coin-flip intuition. Flip a fair coin and count the leading heads before the first tail. Getting <b>3 heads in a row</b> at the start has probability <code>1/2³ = 1/8</code> — so if the longest opening run you've <i>ever</i> seen is 3, you probably flipped about <b>2³ = 8</b> times. A run of 10 heads? You probably ran about <code>2¹⁰ ≈ 1000</code> trials. <span class="key">A rare pattern is evidence of many attempts.</span></p>
+<p>HLL does exactly this with hashes. Hash each car ID to a random-looking bit string and count its <b>leading zeros</b>. Seeing a hash with <i>k</i> leading zeros is a <code>1-in-2ᵏ</code> event, so it hints you've seen roughly <b>2ᵏ distinct</b> items (duplicates hash to the same bits, so they don't push the estimate up — that's why it counts <i>distinct</i>). One such estimator is wildly noisy, so HLL keeps <b>m</b> of them: use the first few bits of the hash to pick one of <code>m = 2ᵖ</code> <b>registers</b>, and each register stores the largest leading-zero count routed to it. Combine all m registers (a harmonic mean with a correction constant) to average out the luck.</p>
+
+<div class="card calc">
+  <p><b>Worked: HLL's memory and error, with real numbers.</b> Use <code>p = 14</code> bits to pick the register, so <code>m = 2¹⁴ = 16,384</code> registers. A 64-bit hash minus the 14 routing bits leaves 50 bits, so a leading-zero count fits in <b>6 bits</b> (<code>2⁶ = 64 &gt; 50</code>).</p>
+  <p>• Memory: <code>16,384 registers × 6 bits = 98,304 bits = 12,288 B ≈ 12 KB</code> — <b>flat, forever</b>, whether you count 10 cars or a billion.<br>
+     • Error: the standard error is <code>1.04 / √m = 1.04 / √16,384 = 1.04 / 128 ≈ 0.81%</code>. On a true count of 200M distinct cars, the estimate lands within <code>±0.81% ≈ ±1.6M</code> about two times in three.</p>
+  <p><b>Exact vs HLL:</b> <code>8 GB / 12 KB ≈ 650,000×</code> less memory — for a ~0.8% error most dashboards never notice.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — a percent of accuracy for constant memory.</b> HLL's 12 KB does not grow with cardinality, because it stores <i>evidence of how many</i> (the luckiest hashes), not the items. You pay ~0.8% error and lose the ability to list <i>who</i> the uniques were. More registers (bigger p) shrink the error as <code>1/√m</code> but cost linear memory — the accuracy knob is yours to set up front.</p>
+
+<h3>Model B — Bloom filter: "definitely no" for almost free</h3>
+<p>The membership question — "have we ever stored this key?" — guards an expensive lookup. Keep a bit array of <b>m</b> bits, all zero, and <b>k</b> independent hash functions. To <b>add</b> a key, set the <i>k</i> bits it hashes to. To <b>test</b> a key, look at those same <i>k</i> bits: if <b>any</b> is 0 the key was <i>definitely never added</i> (adding it would have set that bit); if <b>all k</b> are 1 the key was <i>probably</i> added — probably, because other keys might have set those same bits by coincidence.</p>
+
+<div class="diagram"><pre>
+  BLOOM FILTER   m bits, k=3 hash functions
+
+  add("abc")  -> set bits  h1=2, h2=7, h3=11
+  index: 0 1 2 3 4 5 6 7 8 9 10 11 12 ...
+  bits:  0 0 1 0 0 0 0 1 0 0  0  1  0
+                ▲       ▲       ▲
+  test("xyz") -> bits 4, 7, 9  ->  bit 4 = 0  =>  DEFINITELY NOT ADDED
+  test("abc") -> bits 2, 7, 11 ->  all 1      =>  PROBABLY ADDED
+       (could be a false positive: some other keys lit 2,7,11)
+
+  No false NEGATIVES ever: a real member set its bits, they stay 1.
+</pre></div>
+
+<div class="card calc">
+  <p><b>Worked: sizing a Bloom filter for a 1% false-positive rate.</b> For <i>n</i> keys and target false-positive rate <i>ε</i>, the optimal bits-per-key is <code>m/n = −ln(ε) / (ln 2)²</code> and the optimal hash count is <code>k = (m/n) × ln 2</code>.</p>
+  <p>• For <code>ε = 1% = 0.01</code>: <code>m/n = −ln(0.01) / (ln 2)² = 4.605 / 0.4805 ≈ 9.6 bits per key</code>, and <code>k = 9.6 × 0.693 ≈ 6.6 → 7 hashes</code>.<br>
+     • For <b>1 billion</b> keys: <code>10⁹ × 9.6 bits = 9.6 × 10⁹ bits ≈ 1.2 GB</code>.</p>
+  <p><b>Exact vs Bloom:</b> an exact set of a billion 8-byte keys with hash-set overhead is ~50 GB; the Bloom filter is <b>~1.2 GB</b> — about <code>40×</code> smaller — and answers "definitely new" with certainty. On ingest that means: Bloom says "definitely not stored" → store it and <b>skip the costly index lookup</b>; Bloom says "maybe" → do the real lookup to confirm. A false positive costs one wasted lookup; a false negative — which can't happen — would have let a duplicate slip through, so correctness is safe.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — one-sided error you point at the cheap side.</b> A Bloom filter never gives a false negative, only false positives, so you deploy it wherever "no" must be trustworthy and "yes" is merely worth double-checking (an LSM/SSTable "is this key maybe on disk?" guard, a "have we crawled this URL?" check). Smaller <i>m</i> saves memory but raises ε (more wasted lookups); you tune the false-positive rate against the cost of the lookup it protects.</p>
+
+<h3>Model C — Count–Min sketch: frequencies that only ever round up</h3>
+<p>The frequency question — "how many times did car <code>42</code> upload?" — uses a grid of counters: <b>d</b> rows × <b>w</b> columns, with <b>d</b> independent hash functions (one per row). To <b>add</b> an event for car 42, increment one cell in <i>each</i> row: <code>row i, column hᵢ(42) mod w</code>. To <b>query</b> car 42's count, read those same d cells and take the <b>minimum</b>. Because different cars can collide into the same cell, collisions only ever <i>add</i> to a count — so every cell is an overestimate, and the smallest of the d cells is the tightest overestimate. <span class="key">Count–Min never underestimates; it only rounds up.</span></p>
+
+<div class="card calc">
+  <p><b>Worked: sizing Count–Min.</b> Width <code>w = ⌈e / ε⌉</code> controls how much it can overestimate (ε as a fraction of the total stream size N); depth <code>d = ⌈ln(1/δ)⌉</code> controls the probability <code>1−δ</code> that it stays within that bound.</p>
+  <p>• For <code>ε = 0.1% = 0.001</code> and <code>δ = 0.001</code> (99.9% confidence): <code>w = ⌈2.718 / 0.001⌉ = 2,719</code> and <code>d = ⌈ln(1000)⌉ = 7</code>.<br>
+     • Cells: <code>2,719 × 7 ≈ 19,000 counters</code>. At 4 bytes each: <code>≈ 76 KB</code> — <b>flat</b>, whether you track a thousand cars or a billion.</p>
+  <p><b>Exact vs CMS:</b> <code>16 GB / 76 KB ≈ 200,000×</code> less memory. The guarantee: estimate ≥ true always, and estimate ≤ true + <code>ε·N</code> with 99.9% probability, where N is the total number of events.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — accurate for the heavy, noisy in the tail.</b> Count–Min's overestimate is bounded by <code>ε·N</code>, a slice of the <i>whole</i> stream — so it nails the <b>heavy hitters</b> (cars whose real count is a meaningful fraction of N) but can be badly wrong for a rare car whose true count is smaller than that noise floor. That's the right tool for "who are the top uploaders / who's abusing us" (L08, L09) and the wrong tool for "exactly how many times did this one quiet car upload."</p>
+
+<h3>Why all three win in a distributed system: they merge</h3>
+<p>The property that makes sketches indispensable at scale is <b>mergeability</b>. Each shard or server keeps its own local sketch; at read time you fold them into one covering the whole fleet, with no re-scan and no coordination:</p>
+<ul>
+  <li><b>HLL</b>: merge register-by-register, taking the <b>max</b> of each register (the luckiest hash across shards is still the luckiest).</li>
+  <li><b>Count–Min</b>: merge cell-by-cell, <b>adding</b> the counters (counts across shards sum).</li>
+  <li><b>Bloom</b>: merge with a <b>bitwise OR</b> (a bit set on any shard means "seen somewhere").</li>
+</ul>
+<p>This is the same map-then-reduce shape as every distributed aggregation: compute locally where the data lives, combine tiny summaries centrally. Exact sets don't merge cheaply — you'd have to union billions of IDs and de-duplicate across shards.</p>
+
+<h2>Move 3 — Trace the path: one event through all three</h2>
+<p>Follow a single upload — <code>(car = 42, key = "abc123")</code> — down the analytics pipeline.</p>
+
+<div class="diagram"><pre>
+  EVENT (car=42, key="abc123")  arrives at an analytics shard
+
+  1. HYPERLOGLOG (distinct uploaders)
+     h = hash(42)                       -> 0x000C9A...  (14-bit prefix -> register 823)
+     leading zeros in the rest = 3      -> register[823] = max(old, 3+1)
+     read out anytime: harmonic-mean the 16,384 registers -> ~200M ± 0.8%
+
+  2. COUNT–MIN (how often is car 42?)
+     for each of d=7 rows: cell[i][ hi(42) mod 2719 ] += 1
+     query car 42: min over the 7 cells -> 5,140   (>= true, maybe rounded up)
+
+  3. BLOOM (have we stored key "abc123"?)
+     bits = [ h1(key), ... h7(key) ]    all 1?
+        NO  -> definitely new  -> store object, SKIP the metadata index lookup
+        YES -> maybe seen      -> do the real index lookup to confirm
+
+  4. MERGE (read time, across all shards)
+     HLL: max per register   CMS: add per cell   Bloom: OR per bit
+     -> one fleet-wide answer, no re-scan
+</pre></div>
+
+<p>Notice what never happened: at no point did we store car 42's ID or the key <code>"abc123"</code>. Each structure absorbed the event into a fixed array and moved on. The HLL got ~12 KB heavier by <i>nothing</i> (it only updates a register's max); the CMS incremented 7 counters; the Bloom set (or checked) 7 bits. Ten billion more events change the <i>values</i> in those arrays, never their <i>size</i>.</p>
+
+<p class="note why"><b>Name the trade-off — write-cheap and read-cheap, but append-only.</b> Every update touches a constant handful of cells (O(k) or O(d)), and every read is a constant scan of the fixed array — so throughput is enormous and memory is flat. The price: these are <i>accumulate-only</i> summaries. You generally can't <b>remove</b> an item (un-setting a Bloom bit could break another key's membership; you can't un-see a leading-zero in HLL), which is the next wall.</p>
+
+<h2>Move 4 — Find the first bottleneck: a sketch tells you <i>how many</i>, never <i>which</i></h2>
+<p>The dashboard says "car 42 uploaded ~5,140 times" and "~200M distinct cars today." Then the abuse team asks the question that breaks all of it: <b>"great — now give me the <i>list</i> of the top 100 uploaders."</b> No sketch can answer that. A Count–Min cell holds a number, not the cars that landed in it; an HLL register holds a leading-zero count, not the IDs. <span class="key">Sketches summarize; they never let you enumerate the items back out.</span></p>
+
+<div class="card calc">
+  <p><b>Worked: the heavy-hitters fix — CMS + a small heap.</b> To actually name the top-K, pair the Count–Min sketch with a <b>min-heap of K candidate keys</b>. On each event: increment the CMS, query the item's estimated count, and if it beats the smallest count in the heap, insert it (evicting the min). The CMS supplies the cheap approximate count for <i>any</i> key; the heap remembers <i>which</i> keys those big counts belong to.</p>
+  <p>Memory: the sketch's fixed <code>~76 KB</code> plus <code>K</code> entries (100 keys × a few dozen bytes ≈ a few KB). Still kilobytes, and now you get <i>both</i> "how often" and "which ones" — for the heavy hitters only. The long tail stays anonymous, which is fine, because nobody asks for the list of cars that uploaded twice.</p>
+</div>
+
+<p>Two more walls follow from "append-only":</p>
+<ul>
+  <li><b>You can't un-count.</b> A plain Bloom filter has no delete (clearing bits corrupts other keys). If you must remove members, use a <b>counting Bloom filter</b> — replace each bit with a small counter (e.g. 4 bits) so add increments and delete decrements — at <code>4×</code> the memory. HLL and CMS have no clean delete at all; you rebuild.</li>
+  <li><b>"Today" needs a sketch per window.</b> One sketch answers "all-time." A rolling "last hour" or "today" needs a sketch <i>per time bucket</i>, expired as it ages — memory × number of live windows. Each is still tiny, and mergeability lets you sum adjacent windows on demand (add up 24 hourly HLLs to get "today").</li>
+</ul>
+
+<p class="note why"><b>Name the last trade-off — the error budget is fixed at build time.</b> You choose m, w, d, k <i>before</i> the stream arrives, which sets both the memory and the precision. You cannot later squeeze a sharper answer out of a sketch you already shrank — the discarded detail is gone. That's the deal: constant memory and constant-time updates, in exchange for accuracy you must size correctly up front and cannot recover afterward.</p>
+
+<table>
+  <tr><th>Question</th><th>Sketch</th><th>Memory (vs exact)</th><th>Trade-off named</th></tr>
+  <tr><td>How many <b>distinct</b>?</td><td><b>HyperLogLog</b></td><td>~12 KB vs 8 GB (~650,000×)</td><td>~0.8% error vs constant memory</td></tr>
+  <tr><td>How <b>often</b> is this one?</td><td><b>Count–Min</b></td><td>~76 KB vs 16 GB (~200,000×)</td><td>accurate for heavy, noisy in the tail</td></tr>
+  <tr><td>Have I <b>seen</b> this one?</td><td><b>Bloom filter</b></td><td>~1.2 GB vs ~50 GB (~40×)</td><td>no false negatives, some false positives</td></tr>
+  <tr><td>Combine across shards</td><td><b>Merge</b> (max / add / OR)</td><td>no re-scan</td><td>local compute vs central union</td></tr>
+  <tr><td>Name the <b>top-K</b></td><td>CMS <b>+ min-heap</b></td><td>+ a few KB</td><td>enumerate the heavy only</td></tr>
+  <tr><td>Support <b>deletes</b></td><td><b>Counting</b> Bloom</td><td>4× the bits</td><td>removability vs memory</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We answered three dashboard questions over a billion-car stream and made every choice pay for itself. <b>Estimate</b> killed the exact structures: distinct-count needs a set that grows to <code>8 GB</code> at a billion IDs, per-car frequency <code>16 GB</code>, and seen-before over 25 trillion keys <code>400 TB</code> — all scaling with the number of <i>distinct</i> things, the one number we can't bound. <b>Model</b> replaced each with a fixed-size sketch on one hash-and-summarize engine: <b>HyperLogLog</b> counts uniques from the luckiest hash's leading zeros in <code>16,384 × 6 bits ≈ 12 KB</code> at <code>1.04/√16,384 ≈ 0.81%</code> error (<code>650,000×</code> smaller); <b>Bloom</b> answers membership with <code>9.6 bits/key</code> and 7 hashes (<code>~1.2 GB</code> for a billion keys) and never a false negative; <b>Count–Min</b> estimates frequency in a <code>2,719 × 7 ≈ 76 KB</code> grid, only ever rounding up — and all three <b>merge</b> across shards (max / add / OR) so you compute locally and combine centrally. <b>Tracing</b> one event showed each structure absorbing it into a constant array without ever storing the item, O(1)-ish writes and reads at flat memory. The <b>next bottleneck</b> was the defining limit: a sketch tells you <i>how many</i>, never <i>which</i> — fixed by pairing Count–Min with a small <b>min-heap</b> to name the heavy hitters, a <b>counting Bloom</b> (4× bits) to allow deletes, and one sketch <b>per time window</b> for "today." The thread: <span class="key">when memory must be bounded but the data isn't, stop storing items and start storing evidence — trade a small, chosen error for constant memory, and put the accuracy where the question actually needs it.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson builds directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>Distributed locks &amp; leases:</b> two workers both think they hold the lock on the billing job — how do you make sure only one acts? A <b>lease</b> with a <b>fencing token</b> (recap L10's epoch) vs a naive lock, the "held the lock but paused for GC" hazard, clock skew, and why a distributed lock is a last resort. The trade flips from accuracy-vs-memory to <b>safety vs liveness</b>.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">cardinality</span>
+    <span class="pill">sketch / probabilistic structure</span>
+    <span class="pill">hash function</span>
+    <span class="pill">HyperLogLog</span>
+    <span class="pill">register</span>
+    <span class="pill">leading-zeros estimate</span>
+    <span class="pill">standard error 1.04/√m</span>
+    <span class="pill">Bloom filter</span>
+    <span class="pill">false positive vs false negative</span>
+    <span class="pill">bits per key</span>
+    <span class="pill">Count–Min sketch</span>
+    <span class="pill">overestimate / min-of-d</span>
+    <span class="pill">heavy hitters</span>
+    <span class="pill">mergeability</span>
+    <span class="pill">counting Bloom filter</span>
+    <span class="pill">error budget</span>
+  </p>
+  <p>That's Lesson 21, built directly on Lesson 20's teaser (count the uniques across 25 trillion objects), reusing Lesson 06's approximate/sharded counter (give up exact to scale a write), Lesson 08/09's heavy-key detection (who's abusing the limit), Lesson 12/20's on-disk lookup that a Bloom filter guards, and Lesson 19's hot-cell "approximate to stay scalable" instinct. <b>Ask me follow-ups</b> — e.g. "why a <i>harmonic</i> mean in HyperLogLog and what's the small-range correction?", "how do you pick k and m for a Bloom filter from a target false-positive rate?", "what's the difference between Count–Min and Count-<i>Median</i>-sketch?", "how does conservative-update tighten a Count–Min sketch?", or "when is an exact `HashSet` actually the right call?" When you're ready, say <b>next</b> and we'll go deeper on <i>Distributed locks &amp; leases — fencing tokens, clock skew, and why the lock is a last resort</i>.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "You need the count of distinct cars that uploaded today, out of a billion possible. Why reach for HyperLogLog instead of an exact set of IDs?",
+    options: [
+      {t:"An exact set stores something per distinct ID, so its memory grows with cardinality — worst case ~8 GB for a billion 8-byte IDs, per metric per window. HyperLogLog estimates the distinct count from the leading zeros of hashes across 16,384 registers in a flat ~12 KB (about 650,000× less) with ~0.8% standard error, and its size never grows with the count.",
+       ok:true,
+       fb:"Right. The exact structure's fatal flaw is that memory scales with the number of distinct items — the one number you can't bound. HLL keeps evidence (the luckiest hashes), not items, so 12 KB stays 12 KB whether you count ten cars or a billion."},
+      {t:"HyperLogLog is exact but compressed — it stores the same billion IDs using a better encoding, so you get a precise distinct count in 12 KB with no error at all.",
+       ok:false,
+       fb:"No — 12 KB can't hold a billion distinct IDs under any encoding; the information isn't there. HLL is genuinely approximate: it estimates cardinality from hash statistics with ~0.8% error. That's the trade that buys the constant memory."},
+      {t:"Because HyperLogLog also lets you list which cars were counted, which an exact set can't do efficiently.",
+       ok:false,
+       fb:"Backwards. A sketch can never enumerate its items back out — that's this lesson's main wall. HLL gives you a count, not a list; the exact set is the thing that could (expensively) enumerate. You pick HLL for the memory, and give up the list."}
+    ]
+  },
+  {
+    stem: "On ingest you use a Bloom filter to check 'have we stored this object key before?'. What guarantee makes it safe, and what's the cost?",
+    options: [
+      {t:"A Bloom filter has no false negatives: if it says 'definitely not stored', that's certain, so you can store the object and skip the expensive index lookup. It can give false positives ('maybe stored' for a genuinely new key), which just costs one wasted confirming lookup — never a wrong result. You point the trustworthy 'no' at the cheap side.",
+       ok:true,
+       fb:"Exactly. A real member always set its k bits and they stay 1, so 'no' is always true; only 'yes' needs confirming. That's why Bloom filters guard expensive lookups (SSTables, caches) — the one-sided error lands on the cheap side."},
+      {t:"A Bloom filter has no false positives: 'probably yes' is always correct, so you can skip storing any key it reports as seen. Its only error is occasionally missing a real member.",
+       ok:false,
+       fb:"That's the opposite of how a Bloom filter works — and dangerous. It CAN give false positives ('yes' when the truth is no), and it never gives false negatives. If you trusted 'yes' blindly you'd wrongly skip storing a new object. Trust the 'no', double-check the 'yes'."},
+      {t:"A Bloom filter is exact for membership; the bit array is just a compact hash set, so both 'yes' and 'no' are always right.",
+       ok:false,
+       fb:"Not exact. Multiple keys share bits, so k bits all being 1 can happen by coincidence — a false positive. The design accepts that in exchange for ~9.6 bits per key (vs ~50 bytes in a real set), and guarantees only that 'no' is always true."}
+    ]
+  },
+  {
+    stem: "A Count–Min sketch reports car 42 uploaded ~5,140 times. What do you actually know from that number?",
+    options: [
+      {t:"The true count is at most 5,140 — Count–Min only ever overestimates, because collisions from other cars can only ADD to a cell, and you read the minimum of the d cells. It's tight for heavy hitters (whose real count is a big fraction of the stream) but can be noisy for rare cars, since the overestimate is bounded by ε·N of the whole stream.",
+       ok:true,
+       fb:"Right. Every cell is an overestimate (collisions add), so the min-of-d is the tightest overestimate and never an underestimate. That makes it trustworthy as an upper bound and great for finding whales — but the ε·N noise floor means a rare car's count can be badly inflated."},
+      {t:"The true count is exactly 5,140 — the sketch is precise, which is why it only needs 76 KB.",
+       ok:false,
+       fb:"It's not exact. 76 KB can't hold precise per-car counts for a billion cars. Count–Min gives an overestimate with a bounded error (≤ true + ε·N with high probability), not the exact value. Its virtue is being a reliable upper bound, not being precise."},
+      {t:"The true count is at least 5,140 — Count–Min can only underestimate, because some events hash to full cells and get dropped.",
+       ok:false,
+       fb:"Backwards. Nothing gets dropped — every event increments a cell in each row, and collisions only push counts UP. So the estimate is an over-estimate (true ≤ 5,140), which is exactly why taking the minimum across rows gives the tightest bound."}
+    ]
+  },
+  {
+    stem: "The abuse team asks for the actual LIST of the top 100 uploaders. Your HLL and Count–Min sketches can't produce it. Why, and what's the fix?",
+    options: [
+      {t:"A sketch stores a summary, not the items — a CMS cell holds a number, an HLL register holds a leading-zero count, neither remembers which cars landed there. So you can't enumerate. The fix is to pair the Count–Min sketch with a small min-heap of K candidate keys: CMS gives the cheap approximate count for any key, the heap remembers WHICH keys the big counts belong to — both, for the heavy hitters only.",
+       ok:true,
+       fb:"Exactly. 'How many' and 'how often' never come with 'which' for free — that's the defining limit of every sketch. The heavy-hitters pattern (CMS + a K-entry heap) recovers the identities of just the top few, which is all anyone asks for; the long tail stays anonymous."},
+      {t:"They can't produce it because the sketches are too small; bump HyperLogLog to 1 MB of registers and it will start returning the list of top uploaders.",
+       ok:false,
+       fb:"More registers only sharpen HLL's distinct-count estimate — it still stores no identities, so it can never return a list at any size. Enumeration isn't a resolution problem; it's absent by design. You need a separate structure (a heap of candidate keys) to hold identities."},
+      {t:"They can't produce it because Count–Min underestimates rare cars; switch to an exact per-car counter map, which is the only option.",
+       ok:false,
+       fb:"An exact map would work but costs ~16 GB per window — the very thing we avoided — and the real reason isn't underestimation (CMS overestimates). The cheap fix keeps the 76 KB sketch and adds a tiny min-heap to track just the top-K identities, not a billion exact counters."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
