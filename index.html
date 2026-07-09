@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0022-distributed-locks.html">
+    <div class="num">LESSON 22</div>
+    <div class="title">Distributed Locks &amp; Leases: Two Workers, One Billing Job, and the Fencing Token</div>
+    <div class="blurb">Lesson 21 left a hazard: two workers both believe they hold the lock on the nightly billing job, and both charge the customer <b>$50</b>. Trace it end to end. A <b>lock</b> is a claim to be the only writer, but a process can freeze — a stop-the-world GC pause, a paused VM — for <i>longer than its lease lives</i>: at t=6s worker A freezes, at t=15s its 15s lease expires, at t=16s worker B acquires and charges, and at t=28s A wakes still believing it holds the lock and charges again. Size the lease TTL (heartbeat 5s → TTL 15s → ≤15s failover) and watch a too-short TTL <b>flap</b> a live-but-slow holder. The lease alone can't save you — it <i>caused</i> the overlap. The real fix is a <b>fencing token</b>: a monotonic number (41, 42) the ledger uses to <b>reject any write from a superseded grant</b> — A's token-41 write is fenced out at the resource, no clock needed. Then the wall: one shared lock serializes to <b>200 ops/s</b> (13.9 h for 10M charges), is a SPOF, and leans on clocks — which is why a distributed lock is a <i>last resort</i>, behind idempotency and single-writer routing. Trade named throughout: safety vs liveness.</div>
+  </a>
   <a class="lesson" href="lessons/0021-approximate-counting.html">
     <div class="num">LESSON 21</div>
     <div class="title">Analytics at Scale: Counting a Billion Uniques in 12 KB</div>

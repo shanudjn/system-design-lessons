@@ -235,9 +235,23 @@
     (Lesson 0021)
 
 ### Advanced topics (next batch — queued so the course never runs dry)
-22. Distributed locks & leases — a lease with a fencing token (recap L10) vs a
-    naive lock; clock skew, the "held lock but paused GC" hazard, and why locks
-    are a last resort. Trade: safety vs liveness/throughput.
+22. ✅ **Distributed locks & leases** — five workers, one nightly billing job that
+    must charge each customer exactly once: a lock = atomic set-if-absent (SET NX PX),
+    made a **lease** (TTL + heartbeat renew) so a dead holder can't block forever —
+    but the lease OPENS the two-holder window. Size the TTL (heartbeat 5s → TTL=3h=15s
+    → ≤15s failover; too-short TTL false-evicts a live-but-slow holder = flap, L10);
+    no finite TTL survives an unbounded stop-the-world GC pause, so TTL is a LIVENESS
+    knob, never safety. The "held lock but paused GC" hazard traced (A freezes 22s,
+    lease expires, B acquires token 42 & charges, A wakes at t=28 & charges again =
+    double-charge) → **fencing token** (monotonic counter, L10's epoch applied to DATA):
+    the RESOURCE keeps highest_token_seen and rejects any write with a lower one, so
+    A's token-41 write is fenced out — no clock needed. Release must be compare-and-delete
+    (L06 CAS) or you delete someone else's lock. Next walls = the lock is a serial gate
+    (1 shared lock @ 5ms = 200 ops/s = 13.9h for 10M), a SPOF wanting consensus (L10),
+    and clock-skew-fragile → AVOID the lock: idempotency (L13, duplicates harmless) or
+    single-writer routing (L03/L04/L10). Efficiency lock (double-run wasteful → lease ok)
+    vs correctness lock (double-run corrupts → need fencing). Trade: safety vs liveness.
+    (Lesson 0022)
 23. Multi-region / active-active — replicating writes across continents: CRDTs
     and last-write-wins for mergeable state (recap L11/L06), conflict resolution,
     and the write-latency vs availability tax. Trade: local writes vs global order.

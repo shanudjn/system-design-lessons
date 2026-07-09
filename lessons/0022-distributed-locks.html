@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 22 — Distributed Locks &amp; Leases: Two Workers, One Billing Job, and the Fencing Token</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 22 · Worked Example</div>
+  <h1>Distributed Locks &amp; Leases: Two Workers, One Billing Job, and the Fencing Token</h1>
+  <p class="lead">Lesson 21 ended with a hazard: two workers both believe they hold the lock on the nightly billing job, and both charge the customer. This lesson takes that exact scenario and traces it end to end. A <b>lock</b> is one worker's claim to be the only one touching a resource. But a process can freeze — a garbage-collection pause, a slow disk, a paused VM — for <i>longer than anyone expects</i>, and while it's frozen its lock quietly expires and someone else grabs it. When the frozen process wakes, it still <i>thinks</i> it holds the lock, and writes anyway. We'll <b>estimate</b> how to size a lock's expiry so it survives normal hiccups but frees a dead holder fast, <b>model</b> the lock as a <b>lease</b> plus a <b>fencing token</b>, <b>trace</b> the happy path, the crash, and the deadly GC-pause double-write, and hit the wall: the lock itself is a bottleneck and a single point of failure — which is why a distributed lock is a <i>last resort</i>. The trade underneath everything: <b>safety vs liveness — never two writers, vs never stuck waiting on a dead one.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0022-distributed-locks.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>A fleet of five identical worker machines runs background jobs. One of those jobs is <b>nightly billing</b>: for each customer, charge their card once for last month's usage. It absolutely must run <b>exactly once per customer</b> — a second charge is real money taken twice and a very angry email.</p>
+<p>We already know from Lesson 10 how to elect <i>one</i> leader to kick the job off. But leaders can hand off, workers can be duplicated by an over-eager scheduler, and a retry after a timeout (Lesson 07) can spin up a second attempt while the first is merely <i>slow</i>, not dead. So we want a hard guarantee at the resource itself: <b>at most one worker is allowed to charge a given customer at a given moment.</b> That guarantee is what a <b>lock</b> is supposed to buy. The whole lesson is about the ways a distributed lock quietly fails to buy it — and how to get the guarantee anyway.</p>
+
+<div class="diagram"><pre>
+  THE HAZARD WE'RE HERE TO KILL      (lock TTL = 15s)
+
+  t=0s   Worker A: acquire lock "billing:cust-99"  -> granted, token 41
+  t=0s   A starts charging customer 99 ...
+  t=6s   A hits a STOP-THE-WORLD garbage-collection pause (frozen)
+  t=15s  lock lease EXPIRES (A never renewed it — it's frozen)
+  t=16s  Worker B: acquire lock "billing:cust-99"  -> granted, token 42
+  t=16s  B charges customer 99  ($50)                       [1st charge]
+  t=28s  A un-freezes, still BELIEVES it holds the lock,
+         charges customer 99  ($50)                         [2nd charge!]
+
+         => TWO writers held "the lock" at once. Money charged twice.
+
+  The lock did its job at t=0. The bug is that A's belief outlived
+  its lease, and nothing at the RESOURCE checked whether A's grant
+  was still the current one.
+</pre></div>
+
+<p class="note"><span class="key">A lock is a claim with an expiry date. The danger is never the lock working — it's a process acting on a lock it no longer holds, because it froze past the expiry and never noticed.</span></p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Mutual exclusion</b> — the property that at most one worker is in the "critical section" (touching the shared resource) at any instant. The one thing a lock is supposed to guarantee.</li>
+  <li><b>Lock</b> — a shared flag that one worker sets to say "mine"; others must wait until it's cleared. In one process this is easy; <i>across machines</i> it needs a shared store everyone agrees on.</li>
+  <li><b>Lease</b> — a lock that <i>expires on its own</i> after a set time (its <b>TTL</b>), so a holder that dies without releasing can't hold it forever. The holder must keep <b>renewing</b> (heartbeating) to keep it.</li>
+  <li><b>TTL (time-to-live)</b> — how long a lease is valid before it auto-expires. The single most important number to size.</li>
+  <li><b>Fencing token</b> — a number the lock service hands out with every grant, strictly larger each time (41, 42, 43…). The protected resource remembers the highest it has seen and <b>rejects any write carrying a smaller token</b>. Same idea as Lesson 10's <b>epoch</b>, now applied to data.</li>
+  <li><b>Stop-the-world pause</b> — a stretch where a process runs no code at all (a full garbage-collection cycle, a paused/migrating VM, a swapped-out page). It cannot renew its lease or check the clock while frozen — this is the whole problem.</li>
+  <li><b>Safety vs liveness</b> — <i>safety</i> = "nothing bad ever happens" (never two writers). <i>Liveness</i> = "something good eventually happens" (a dead holder's lock is freed so work continues). A lock's design is a dial between them.</li>
+  <li><b>Clock skew</b> — two machines' wall clocks disagree (drift, a leap second, a VM time-jump). Any safety argument that compares timestamps <i>across</i> machines is only as trustworthy as their clocks.</li>
+</ul>
+
+<h2>Move 1 — Estimate: how long should the lease live?</h2>
+<p>The TTL is the whole ballgame. Too long and a dead holder blocks everyone; too short and a <i>live</i> holder that hiccups gets evicted and the lock <b>flaps</b> (Lesson 10's leadership flap, one layer down). Let's size it with real numbers instead of a lazy default.</p>
+
+<div class="card calc">
+  <p><b>Worked: failover time from TTL and heartbeat.</b> The holder renews the lease every <b>heartbeat interval</b> <code>h</code>; the lease is valid for <code>TTL</code>. Pick <code>TTL = 3h</code> so a holder survives <b>two</b> missed renewals (a dropped packet, a GC blip) before losing the lock.</p>
+  <p>• Choose <code>h = 5s</code>, so <code>TTL = 3 × 5 = 15s</code>.<br>
+     • If the holder <b>dies</b>, its lease keeps the lock for at most the remaining TTL, so failover to another worker is <b>≤ 15s</b>. That is the price of a crash: up to 15s of nobody making progress.<br>
+     • Shrink it: <code>h = 1s, TTL = 3s</code> → failover ≤ 3s (Lesson 10's exact numbers: 1s heartbeat, 3-missed timeout). Faster recovery, but now any live pause longer than 3s falsely evicts a working holder.</p>
+  <p><span class="key">TTL is failover speed. Smaller TTL = faster recovery from a real death, but a lower tolerance for a live holder's pauses.</span></p>
+</div>
+
+<div class="card calc">
+  <p><b>Worked: the flap threshold.</b> A live holder is falsely evicted whenever a pause between renewals exceeds the TTL. Suppose normal request hiccups and minor GC pauses are up to <b>~2s</b>, but a <i>full</i> GC on a large heap can stall <b>~10–20s</b> a few times a day.</p>
+  <p>• With <code>TTL = 3s</code>: every full-GC pause (&gt;3s) evicts the holder mid-job → another worker grabs the lock, starts the same job, then the original wakes and collides. Constant flap and duplicate work.<br>
+     • With <code>TTL = 15s</code>: the ~2s hiccups are absorbed (renewal resumes in time); only a rare &gt;15s pause causes trouble. Fewer false evictions — but slower failover on a real crash, and <b>the &gt;15s pause is still possible</b>. No finite TTL removes it.</p>
+  <p>Rule of thumb: <code>TTL ≥ (worst pause you expect to tolerate) + (clock-skew margin)</code>. You cannot set it to "the worst pause that can ever happen," because that's unbounded — so a TTL alone can never be a safety guarantee, only a liveness knob.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — safety vs liveness, dialed by the TTL.</b> A long TTL protects a live-but-slow holder (fewer false evictions) but makes a truly dead holder block progress for longer. A short TTL recovers from death fast but evicts hiccuping-live holders, causing flap and duplicate work. Crucially, <i>neither end makes the double-write impossible</i> — a pause longer than the TTL always can happen. The TTL tunes liveness; safety has to come from somewhere else. That "somewhere else" is the fencing token.</p>
+
+<h2>Move 2 — Model: a lock is a lease, and safety is a fencing token</h2>
+<p>Build the lock in three layers, each fixing a hole in the one before.</p>
+
+<h3>Model A — the naive lock: set-if-absent in a shared store</h3>
+<p>Mutual exclusion across machines needs one place everyone agrees on — a lock service (Redis, etcd, ZooKeeper, or a database row). <b>Acquire</b> is a single atomic operation: "set this key to <i>my</i> id, but <b>only if it doesn't already exist</b>." In Redis that's <code>SET billing:cust-99 A NX PX 15000</code> — <code>NX</code> = only if absent (so two workers can't both win), <code>PX 15000</code> = auto-expire in 15,000 ms. <b>Release</b> deletes the key.</p>
+<p>The atomic set-if-absent is doing the real work: even if A and B fire it at the same microsecond, the store serializes them and exactly one gets "OK." That much is fine. The hole is what happens <i>after</i> A wins and then stalls — covered next.</p>
+
+<h3>Model B — make it a lease: auto-expiry so a dead holder can't block forever</h3>
+<p>Without expiry, if A wins the lock and then its machine dies, the key stays set forever and no one ever bills customer 99 again — a permanent liveness failure. The <b>PX 15000</b> above already made it a <b>lease</b>: the lock frees itself after the TTL even if the holder never releases it. A living holder keeps it by <b>renewing</b> every <code>h</code> seconds (re-setting the expiry), which is the heartbeat from Lesson 10 applied to a lock.</p>
+<p>This buys liveness (a dead holder is cleaned up in ≤ TTL) but, as Move 1 showed, it <i>creates</i> the safety hole: a live-but-frozen holder's lease expires, someone else acquires, and now two workers believe they hold it. The lease fixed "held forever by the dead" and opened "held at once by two." We need one more layer.</p>
+
+<div class="card calc">
+  <p><b>One subtlety worth naming: release must check ownership.</b> If A's lease expires and B acquires, and then A wakes and blindly runs <code>DELETE billing:cust-99</code>, A just deleted <b>B's</b> lock — and now a third worker C can acquire while B is still working. So release isn't a plain delete; it's "delete <i>only if the value is still mine</i>" (a compare-and-delete, done atomically with a small script). This is Lesson 06's compare-and-set race, reappearing at the lock layer.</p>
+</div>
+
+<h3>Model C — the fencing token: let the resource reject a stale writer</h3>
+<p>Here is the key move, and the one people skip. Every time the lock service grants the lock, it also returns a <b>fencing token</b>: a counter that only ever goes up — 41, then 42, then 43. Whoever holds the lock stamps <i>every write to the protected resource</i> with their token. The resource (the billing ledger, the storage system) remembers the <b>highest token it has ever accepted</b> and <b>rejects any write with a lower one</b>.</p>
+
+<div class="diagram"><pre>
+  FENCING TOKEN   monotonic number handed out with each grant
+
+  lock service ---- grant token 41 ---> Worker A
+  lock service ---- grant token 42 ---> Worker B   (after A's lease expired)
+
+  Billing ledger keeps: highest_token_seen
+
+     B writes charge, token 42  ->  42 >= highest(41) -> ACCEPT, set highest=42
+     A wakes, writes charge, token 41  ->  41 <  highest(42) -> REJECT
+
+  A's stale write is FENCED OUT at the resource, even though A still
+  *thinks* it holds the lock. Safety no longer depends on A noticing
+  it froze, or on any clock being correct.
+</pre></div>
+
+<p>Why this is the real fix: the double-write bug happened because <i>A never learned its grant was stale</i>. You cannot force a frozen process to notice anything. So instead of trusting the writer to check, you make the <b>resource</b> the judge. The resource doesn't care about wall clocks, TTLs, or who thinks they hold the lock — it just enforces "tokens only go up." A grant that has been superseded carries a smaller number and is rejected, deterministically. This is exactly Lesson 10's <b>epoch/fencing</b> idea, now protecting <i>data writes</i> instead of leadership actions.</p>
+
+<p class="note why"><b>Name the trade-off — trust the writer vs trust the resource.</b> A TTL-only lock trusts each holder to stop acting the moment its lease ends — impossible to guarantee, because a frozen process acts on stale beliefs the instant it wakes. A fencing token moves the check to the resource, which is always awake and needs no clock. The cost: the resource must support conditional writes keyed on a monotonic token (a compare-and-set on <code>highest_token</code>). If it can't — a dumb blob store, a third-party API with no such guard — then <i>you cannot make the lock truly safe</i>, and that limitation is itself a design signal.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Three journeys through the same lock: the happy path, the clean crash, and the dangerous freeze that fencing saves.</p>
+
+<h3>Path 1 — happy path (renew, work, release)</h3>
+<div class="diagram"><pre>
+  t=0.0s  A: SET billing:cust-99 A NX PX 15000  -> OK, token 41
+  t=0.0s  A begins charging customer 99, stamping writes with 41
+  t=5.0s  A: renew (re-set PX 15000)             -> OK (still A's)
+  t=8.0s  A: write charge to ledger, token 41    -> 41>=highest -> ACCEPT
+  t=8.2s  A: release = "DELETE if value==A"      -> OK, key gone
+          Next worker can acquire; it gets token 42.
+</pre></div>
+<p>Nothing exotic: acquire, heartbeat to hold it, do the work stamped with the token, release with an ownership check. Total lock hold ~8s, comfortably inside the 15s TTL, renewed once along the way.</p>
+
+<h3>Path 2 — clean crash (the lease earns its keep)</h3>
+<div class="diagram"><pre>
+  t=0s   A: acquire -> OK, token 41; starts work
+  t=3s   A's machine hard-crashes (power loss). No release.
+  t=3s   ... key still set, but its PX expiry is ticking ...
+  t=15s  lease EXPIRES automatically (nobody renewed)
+  t=16s  B: acquire -> OK, token 42; re-runs the job safely
+         Failover took <= TTL = 15s. No human paged.
+</pre></div>
+<p>This is why the lease exists. A dead holder cannot release, so without auto-expiry the lock would be stuck forever. The TTL bounds the damage of a crash to a ≤15s stall, then the fleet self-heals. (For the job to be safely re-run, it must be idempotent — Lesson 13 — since A may have completed part of it before dying.)</p>
+
+<h3>Path 3 — the freeze (fencing turns a double-charge into a rejected write)</h3>
+<div class="diagram"><pre>
+  t=0s   A: acquire -> OK, token 41; starts charging customer 99
+  t=6s   A enters a 22s stop-the-world GC pause (frozen solid)
+  t=15s  A's lease EXPIRES (A can't renew — it's frozen)
+  t=16s  B: acquire -> OK, token 42; charges $50, ledger highest=42
+  t=28s  A un-freezes. It has NO idea time passed. It believes it
+         still holds the lock and issues its charge, token 41.
+  t=28s  ledger: 41 < highest(42)  ->  REJECT A's write.
+         Customer 99 charged exactly once. Crisis averted.
+</pre></div>
+<p>Walk the counterfactual: <b>without</b> the token, A's <code>t=28s</code> write lands and customer 99 is charged twice. The lease alone did not save us — it actively <i>caused</i> the overlap by expiring under A. What saved us is that the ledger refused a write whose grant had been superseded. <span class="key">The lease bounds how long a dead holder blocks; the fencing token bounds what a stale holder can do. You need both.</span></p>
+
+<p class="note why"><b>Name the trade-off — you can't prevent the overlap, only neutralize its effect.</b> No lock design can stop A from waking up mid-job with stale beliefs; freezes are physics, not bugs. The fencing token doesn't prevent the two-holder window — it makes the window <i>harmless</i> by ensuring the loser's writes are refused. Prevention is impossible; neutralization is achievable. That reframing is the whole art of designing for partial failure (Lesson 07).</p>
+
+<h2>Move 4 — Find the first bottleneck: the lock is a serial gate, a SPOF, and clock-dependent</h2>
+<p>Suppose fencing works perfectly. The lock is still the most expensive tool in the box, for three reasons — which is why the honest advice is <b>avoid the lock if you possibly can</b>.</p>
+
+<div class="card calc">
+  <p><b>Worked: the serialization ceiling.</b> A lock forces work through one holder at a time. If the critical section (acquire → do → release) takes <code>t = 5 ms</code>, then a <i>single</i> lock key can pass at most <code>1 / 0.005 s = 200 operations/second</code> — no matter how many workers or CPUs you throw at it. To push 10M billing charges through one shared lock: <code>10,000,000 / 200 = 50,000 s ≈ 13.9 hours</code>. The lock turned a parallel fleet back into a single-file line.</p>
+  <p>The fix is to <b>not share one lock</b>: lock <i>per customer</i> (<code>billing:cust-99</code>, not <code>billing:all</code>), so a million customers run on a million independent locks in parallel. Better still, <b>shard the work by key</b> (Lesson 03) so each worker owns a disjoint slice and needs <i>no</i> cross-worker lock at all. The coarser the lock, the lower the ceiling.</p>
+</div>
+
+<p>Two more walls beyond throughput:</p>
+<ul>
+  <li><b>The lock service is a single point of failure.</b> Everyone must agree on who holds the lock, so the lock lives in one authoritative place. If that place is a single Redis node and it dies, either locking stops (liveness lost) or you fail over to a replica that <i>hasn't yet heard about the latest grant</i> and hands the "same" lock to a second holder (safety lost — replication lag, Lesson 06). A correctness-grade lock therefore wants a consensus-backed store (etcd/ZooKeeper on Raft/Paxos, Lesson 10), which costs a round of agreement per grant — slower than a single node, and now the lock's availability is capped by the consensus quorum's.</li>
+  <li><b>Clock skew makes TTL reasoning fragile.</b> The lease "expires in 15 s" is measured on <i>someone's</i> clock. If the lock service and the workers disagree about how fast time passes — NTP drift, a VM live-migration that jumps the clock forward, a leap second — a holder can think its lease is still valid seconds after the service considers it expired. This is exactly why safety must not rest on synchronized clocks: the fencing token needs <b>no clock at all</b>, only "bigger than last time." Trust the monotonic counter, not the wall clock.</li>
+</ul>
+
+<div class="card calc">
+  <p><b>The escape hatch — often you don't need a lock at all.</b> Ask <i>what the lock is protecting against</i>:</p>
+  <p>• <b>Duplicate <u>effect</u> is the real fear</b> (double charge)? Make the operation <b>idempotent</b> (Lesson 13): give each charge a client-chosen idempotency key and let the ledger dedupe. Then a duplicate run is <i>harmless</i> and the lock becomes an optimization, not a correctness requirement. This is the fencing idea generalized — the resource, not the caller, enforces once-only.<br>
+     • <b>Contention on shared state</b>? Route each key to a single owner (consistent hashing, Lesson 04; leader per shard, Lesson 10) so there's exactly one writer <i>by construction</i> — no lock to acquire, because concurrency was designed out.<br>
+     • <b>Just avoiding wasted duplicate work</b> (efficiency, not correctness)? A lease-only lock with no fencing is fine — an occasional double-run wastes CPU but corrupts nothing.</p>
+  <p><span class="key">Locks come in two flavors: for <b>efficiency</b> (a double-run is merely wasteful → a plain lease is enough) and for <b>correctness</b> (a double-run corrupts data → you need fencing, or better, idempotency so the lock isn't load-bearing).</span> Know which one you have before you reach for a lock.</p>
+</div>
+
+<p class="note why"><b>Name the last trade-off — pessimistic locking vs optimistic idempotency.</b> A lock is <i>pessimistic</i>: it serializes access up front so conflicts can't happen — safe, but it caps throughput, adds a SPOF, and leans on clocks. Idempotency (and single-writer routing) is <i>optimistic</i>: let work proceed in parallel and make duplicates harmless at the resource — faster and no shared gate, but it demands the resource support a dedup/compare-and-set guard. Reach for the lock only when you can't make the resource idempotent and can't route to a single owner. It is the last resort, not the first.</p>
+
+<table>
+  <tr><th>Concern</th><th>Mechanism</th><th>What it guarantees</th><th>Trade-off named</th></tr>
+  <tr><td>Two workers at once</td><td><b>Set-if-absent</b> (NX)</td><td>one winner per acquire</td><td>needs one agreed-on store</td></tr>
+  <tr><td>Dead holder blocks forever</td><td><b>Lease</b> (TTL + renew)</td><td>auto-free in ≤ TTL</td><td>opens the two-holder window</td></tr>
+  <tr><td>Frozen holder writes stale</td><td><b>Fencing token</b></td><td>resource rejects old grants</td><td>resource must support the guard</td></tr>
+  <tr><td>Failover speed</td><td><b>TTL sizing</b></td><td>≤ TTL stall on crash</td><td>fast recovery vs false evictions (flap)</td></tr>
+  <tr><td>Lock throughput</td><td><b>Fine-grained / sharded</b> locks</td><td>parallelism restored</td><td>coarse = safe-but-serial</td></tr>
+  <tr><td>Avoid the lock entirely</td><td><b>Idempotency</b> / single-writer</td><td>duplicates harmless</td><td>optimistic vs pessimistic</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We took one billing job that must charge each customer exactly once and traced every way a distributed lock lets two workers charge them twice. <b>Estimate</b> sized the lease: heartbeat <code>h = 5s</code>, <code>TTL = 3h = 15s</code> gives a ≤15s failover on a crash, while a shorter <code>3s</code> TTL recovers faster but false-evicts any live holder that pauses &gt;3s — the flap; and no finite TTL can survive an unbounded stop-the-world pause, so the TTL is a <i>liveness</i> knob, never a safety guarantee. <b>Model</b> built the lock in three layers: an atomic <b>set-if-absent</b> (one winner), a <b>lease</b> that auto-expires so a dead holder can't block forever (but which opens a two-holder window), and the load-bearing fix — a <b>fencing token</b>, a monotonic number the <i>resource</i> uses to reject any write from a superseded grant, needing no clock and no cooperation from the frozen writer (Lesson 10's epoch, applied to data). <b>Tracing</b> the freeze showed a 22s GC pause expire A's lease, B acquire with token 42 and charge, and A wake at t=28s to have its token-41 write <i>fenced out at the ledger</i> — a double-charge turned into a rejected write. The <b>first bottleneck</b> was the lock itself: one shared lock serializes to <code>1/5ms = 200 ops/s</code> (13.9 h for 10M charges) → use fine-grained/sharded locks; it's a SPOF that wants consensus (slower) to stay safe under replica failover; and its TTL math is only as good as the clocks — which is why fencing avoids clocks entirely. The real lesson: <span class="key">a distributed lock is a last resort. Prefer making the operation idempotent or routing each key to a single writer, so duplicates are harmless and no shared gate caps your throughput — and when you must lock, never trust the TTL for safety, trust the fencing token.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson builds directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>Multi-region / active-active:</b> we've kept safety by forcing one writer at a time. Now put writers on <i>different continents</i> and let both accept writes locally for speed. When a shopper's cart is edited in Virginia and Frankfurt at once, there's no single lock to serialize them — so you need <b>conflict resolution</b>: last-write-wins (and what it silently drops), CRDTs that merge cleanly (recap L06/L11), and the write-latency-vs-availability tax. The trade shifts from <b>safety vs liveness</b> to <b>local writes vs global order</b>.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">mutual exclusion</span>
+    <span class="pill">lock</span>
+    <span class="pill">lease</span>
+    <span class="pill">TTL</span>
+    <span class="pill">heartbeat / renew</span>
+    <span class="pill">fencing token</span>
+    <span class="pill">monotonic counter</span>
+    <span class="pill">stop-the-world pause</span>
+    <span class="pill">safety vs liveness</span>
+    <span class="pill">lock flap</span>
+    <span class="pill">clock skew</span>
+    <span class="pill">set-if-absent (NX)</span>
+    <span class="pill">compare-and-delete</span>
+    <span class="pill">serialization ceiling</span>
+    <span class="pill">single point of failure</span>
+    <span class="pill">efficiency vs correctness lock</span>
+    <span class="pill">idempotency (escape hatch)</span>
+  </p>
+  <p>That's Lesson 22, built directly on Lesson 21's teaser (two workers both think they hold the lock), reusing Lesson 10's epoch/fencing and heartbeat-timeout sizing, Lesson 06's compare-and-set race and replication lag, Lesson 07's partial-failure mindset, Lesson 13's idempotency as the escape hatch, and Lesson 03/04's sharding/routing to design the lock away. <b>Ask me follow-ups</b> — e.g. "why is Redlock controversial and what does Kleppmann's fencing critique actually say?", "how does ZooKeeper's ephemeral znode + sequence number give you a lock <i>and</i> a fencing token for free?", "what's the difference between an <i>efficiency</i> lock and a <i>correctness</i> lock in practice?", "how do I fence a resource that has no compare-and-set (a plain S3 write, a third-party API)?", or "when is a database row lock / SELECT FOR UPDATE the right answer instead of a distributed lock?" When you're ready, say <b>next</b> and we'll go deeper on <i>Multi-region / active-active — CRDTs, last-write-wins, and the local-writes-vs-global-order tax</i>.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Worker A holds a 15s lease, then freezes in a 22s GC pause. The lease expires, worker B acquires and charges the customer, then A wakes and tries to charge too. A still believes it holds the lock. What actually prevents the double charge?",
+    options: [
+      {t:"A fencing token: the lock service handed B a higher token (42) than A (41), and the ledger records the highest token it has accepted and rejects any write with a lower one. A's write (token 41) is refused at the resource — no clock check, and no cooperation needed from the frozen A. The lease alone can't help; it's what caused the overlap by expiring under A.",
+       ok:true,
+       fb:"Right. You can't force a frozen process to notice it lost the lock, so safety moves to the always-awake resource: tokens only go up, and a superseded grant's writes are rejected. The lease bounds how long a dead holder blocks; the token bounds what a stale holder can do."},
+      {t:"A longer TTL: if the lease were 30s instead of 15s, it would have covered the 22s pause, so A would never have lost the lock and B would never have acquired.",
+       ok:false,
+       fb:"That only works if you can bound the worst pause — and you can't. A 40s pause beats a 30s TTL; a paused VM can freeze for minutes. Sizing the TTL up reduces false evictions but can never make the double-write impossible. Safety must not depend on a finite TTL — that's why fencing exists."},
+      {t:"The lease's auto-expiry: once A's 15s lease expires, A automatically stops running its code, so it can't issue the second charge.",
+       ok:false,
+       fb:"Expiry happens in the lock service, not inside A. A frozen A doesn't know time passed and resumes exactly where it left off, issuing its write. Auto-expiry frees the lock for others (liveness) but does nothing to stop the original holder's stale write — that's precisely the hole fencing closes."}
+    ]
+  },
+  {
+    stem: "You're choosing the lease TTL. Heartbeat is every 5s. Full garbage-collection pauses of up to ~12s happen a few times a day on your large heaps. What's the reasoning?",
+    options: [
+      {t:"A too-short TTL (say 3s) false-evicts a live holder every time a >3s GC pause happens — the lock flaps, a second worker starts the same job, and they collide. A longer TTL (e.g. 15s) absorbs the ~12s pauses but slows failover on a real crash to ≤15s. TTL is a liveness/flap dial, not a safety guarantee — pauses longer than any TTL are still possible, so safety comes from fencing.",
+       ok:true,
+       fb:"Exactly. TTL ≥ (worst pause you want to tolerate) + clock-skew margin keeps live holders from flapping, but you pay slower crash recovery, and no TTL is large enough to be safe against an unbounded pause. Size TTL for liveness; get safety from the fencing token."},
+      {t:"Set the TTL as small as possible (1s) so a dead holder is recovered almost instantly — the faster the failover, the better the design, with no downside.",
+       ok:false,
+       fb:"Fast failover has a real downside: any live holder that pauses longer than 1s (a routine >1s GC) is falsely evicted, and the lock flaps between workers doing duplicate work. You have to balance crash-recovery speed against tolerance for live-holder pauses — smaller isn't strictly better."},
+      {t:"Set the TTL to the largest pause that could ever occur, so a live holder is never falsely evicted and the lock is guaranteed safe.",
+       ok:false,
+       fb:"There is no such largest pause — a stop-the-world GC, a swapped-out process, or a paused VM can freeze for an unbounded time. Sizing TTL to 'the worst ever' is impossible, so a TTL can never be a safety guarantee. It's a liveness knob; safety belongs to the fencing token."}
+    ]
+  },
+  {
+    stem: "Your reviewer says 'a distributed lock is a last resort — avoid it if you can.' For the exactly-once billing charge, what's the better tool and why?",
+    options: [
+      {t:"Make the charge idempotent (Lesson 13): give each charge a client-chosen idempotency key and let the ledger dedupe on it. Then a duplicate run is harmless, so you don't need a lock to be load-bearing for correctness — the resource enforces once-only itself. It's the fencing idea generalized: trust the resource, not the caller, and you avoid the lock's serialization ceiling and SPOF.",
+       ok:true,
+       fb:"Right. A lock is pessimistic and expensive: one shared lock serializes throughput (200 ops/s at 5ms), is a single point of failure, and leans on clocks. Idempotency (or routing each key to a single writer) makes duplicates harmless optimistically, so work runs in parallel and no shared gate caps you."},
+      {t:"Use a bigger, faster lock service (a beefier Redis) so the lock never becomes a throughput bottleneck; the lock is fine, it just needs more hardware.",
+       ok:false,
+       fb:"Hardware doesn't fix serialization: one shared lock passes at most 1/critical-section-time operations per second no matter how fast the box (200/s at 5ms). And a single fast node is still a SPOF whose failover can hand the same lock to two holders. The fix is fewer/finer locks or none — not a bigger one."},
+      {t:"Nothing is better — a distributed lock is the only correct way to guarantee exactly-once, so 'last resort' just means 'be careful.'",
+       ok:false,
+       fb:"A lock isn't the only way, and often not the best. Idempotency makes duplicates harmless without a shared gate; single-writer routing (consistent hashing / leader-per-shard) designs the concurrency out entirely. These beat a lock on throughput and remove the SPOF — which is exactly why the lock is a last resort, not the default."}
+    ]
+  },
+  {
+    stem: "A teammate proposes trusting the lease's expiry timestamp: each worker checks 'is now < my lease-expiry?' before writing, comparing its own clock to the expiry the lock service set. Why is fencing still needed?",
+    options: [
+      {t:"Because that check compares timestamps across machines, and clocks skew — NTP drift, a leap second, or a VM time-jump can make a worker think its lease is still valid seconds after the service considers it expired. A fencing token needs no clock at all, only 'bigger than last time,' so the resource can reject a stale grant regardless of whose clock is wrong.",
+       ok:true,
+       fb:"Exactly. Any safety argument that leans on synchronized clocks is only as good as the clocks, and clocks are not trustworthy across machines. The monotonic fencing token sidesteps time entirely — the resource enforces order by token number, not by wall clock."},
+      {t:"Because checking the clock is too slow — reading the current time adds latency to every write, so fencing is a performance optimization over the timestamp check.",
+       ok:false,
+       fb:"Reading a clock is essentially free; performance isn't the issue. The problem is correctness: the two machines' clocks can disagree, so a live-looking timestamp check can pass for a holder whose lease the service already expired. Fencing is about safety without trusting clocks, not about speed."},
+      {t:"It isn't — checking now < lease-expiry is exactly equivalent to a fencing token, so either one alone is sufficient.",
+       ok:false,
+       fb:"They're not equivalent. The timestamp check runs on the (possibly skewed, possibly frozen-then-resumed) worker and trusts its clock; the fencing token is checked at the resource and needs no clock. A frozen worker that wakes with a stale but 'not-yet-expired-by-its-clock' view would pass the timestamp check and still double-write. Only the token stops it."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
