@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 23 — Multi-Region Active-Active: Two Continents, One Cart, and the Write That Can't Be Merged</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 23 · Worked Example</div>
+  <h1>Multi-Region Active-Active: Two Continents, One Cart, and the Write That Can't Be Merged</h1>
+  <p class="lead">Every lesson so far kept safety by forcing <b>one writer at a time</b> — one leader (Lesson 10), one lock holder (Lesson 22), one shard owner (Lesson 03). Now we break that rule on purpose. To serve shoppers on two continents fast, we put a full copy of the service in <b>Virginia</b> and another in <b>Frankfurt</b>, and let <i>both</i> accept writes locally — <b>active-active</b>. The instant we do, the single writer is gone: a shopper's cart can be edited in Virginia and Frankfurt in the same 90 milliseconds, with no lock to serialize them. So the question stops being "who holds the lock?" and becomes "when two edits happen at once, how do the copies agree afterward?" We'll <b>estimate</b> the cross-region latency that forces this design and the availability it buys, <b>model</b> active-active with async replication and the two ways to resolve a conflict — <b>last-write-wins</b> vs a <b>CRDT</b> — <b>trace</b> concurrent cart edits through both, and hit the wall: some state (a bank balance) has a <i>global invariant</i> that no merge rule can save. The trade underneath everything shifts from Lesson 22's safety-vs-liveness to a new one: <b>local writes vs global order.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0023-multi-region-active-active.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>A global e-commerce site. Shoppers everywhere want their cart to feel instant — every tap that adds or removes an item should return in a few milliseconds, not after a round trip across an ocean. So we run the service in <b>two regions</b>: <code>us-east</code> (Virginia) and <code>eu-central</code> (Frankfurt). Each region has its own database. We route every shopper to their <i>nearest</i> region, and that region serves their reads <i>and their writes</i> locally. Then the two regions copy each other's changes in the background so both hold the whole world's data.</p>
+<p>That's <b>active-active</b>: every region is live and accepts writes. It's fast (writes are local) and resilient (if one region dies, the other still serves everyone). The catch is the whole lesson: the same cart can be written in both regions before either has heard about the other. There is no single writer, so there is no natural answer to "what's the correct final value?" We have to <i>build</i> that answer.</p>
+
+<div class="diagram"><pre>
+  THE HAZARD WE'RE HERE TO KILL   (replication lag ~90 ms one way)
+
+  Shopper's cart starts as { }  in BOTH regions.
+
+  t=0ms   VIRGINIA : add("headphones")   local cart = { headphones }
+  t=0ms   FRANKFURT: add("case")         local cart = { case }
+             (same shopper, two devices — or a retry that landed in
+              the other region; either way, concurrent + independent)
+
+  t=0..90 the two writes are still crossing the Atlantic...
+
+  t=90ms  Virginia hears FR's "add case";  Frankfurt hears VA's "add headphones"
+
+  Now BOTH regions must end up at the SAME cart. What is it?
+     union  -> { headphones, case }   (both kept — what the shopper wants)
+     LWW    -> { case } OR { headphones }   (one silently DROPPED!)
+
+  The regions did nothing wrong. The design has to DEFINE the merge,
+  because for a 90 ms window the two copies legitimately disagreed.
+</pre></div>
+
+<p class="note"><span class="key">Active-active removes the single writer to gain speed and availability. In exchange, you inherit conflicts — and you, not the database, must decide how a conflict resolves. A wrong choice silently loses data.</span></p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Region</b> — a full, self-sufficient copy of the service (compute + database) in one geographic place. A shopper is routed to the nearest one.</li>
+  <li><b>Active-active</b> vs <b>active-passive</b> — active-active: <i>every</i> region accepts writes. Active-passive: one region takes all writes, the others are read-only standbys that only take over if the primary dies. Active-active is faster and more available, and the <i>only</i> one with a conflict problem.</li>
+  <li><b>Replication</b> — copying one region's writes to the others. <b>Synchronous</b>: the write waits for the other region to acknowledge before returning (one cross-ocean round trip per write). <b>Asynchronous</b>: the write returns locally and ships to the other region in the background.</li>
+  <li><b>Replication lag</b> — how far behind a region's copy is. With async replication across an ocean, ~90 ms in the good case, seconds-to-forever during a network partition.</li>
+  <li><b>Conflict</b> — two regions concurrently write the same key to different values, neither having seen the other. Only possible because there's no single writer.</li>
+  <li><b>Last-write-wins (LWW)</b> — the simplest resolution: attach a timestamp to each write; on conflict, keep the one with the larger timestamp, discard the other. Simple, and it <i>silently drops</i> the loser.</li>
+  <li><b>CRDT (Conflict-free Replicated Data Type)</b> — a data structure whose <b>merge</b> is <b>commutative</b> (order doesn't matter), <b>associative</b> (grouping doesn't matter), and <b>idempotent</b> (applying the same update twice = once). Those three properties guarantee every replica <b>converges</b> to the same value no matter what order updates arrive in, or how many times — no coordination needed.</li>
+  <li><b>Convergence</b> — all replicas eventually reach the same value. A CRDT guarantees this. It does <i>not</i> guarantee the value obeys your business rules.</li>
+  <li><b>Version vector / logical clock</b> — a per-region counter (like Lesson 06/10's version, one per actor) carried with each value, used to tell <i>concurrent</i> writes apart from one that genuinely happened <i>after</i> another — without trusting wall clocks.</li>
+  <li><b>Invariant</b> — a rule the data must <i>always</i> satisfy, globally (e.g. "a balance is never negative"). The concept no merge rule can enforce across regions.</li>
+</ul>
+
+<h2>Move 1 — Estimate: what forces two regions, and what it buys</h2>
+<p>Two numbers justify the whole design: the latency you're escaping, and the availability you're buying. Both are big.</p>
+
+<div class="card calc">
+  <p><b>Worked: the cross-region latency tax.</b> Virginia to Frankfurt is about <b>6,400 km</b> great-circle. Light in fiber travels at <code>c ÷ 1.47 ≈ 204,000 km/s</code> (Lesson 02/14's speed-of-light floor). So the <i>fastest physically possible</i> one-way trip is:</p>
+  <p>• <code>6,400 km ÷ 204,000 km/s ≈ 31 ms</code> one way → <b>~64 ms round trip</b>, and that's a straight line through the Earth's crust. Real fiber routes bend and pass through routers, adding ~40%, so a <b>measured</b> RTT is ~<b>90 ms</b>.</p>
+  <p>Now compare a write that commits <b>locally</b> (~1 ms) against one that must wait for the other region to acknowledge (<b>synchronous</b> replication, +1 RTT):</p>
+  <p>• local write ≈ <code>1 ms</code> &nbsp;vs&nbsp; synchronous cross-region write ≈ <code>1 + 90 = 91 ms</code> → a <b>~90× tax</b> on every write, paid by every shopper on every tap. No faster database removes it; it's the width of the ocean. <span class="key">This is exactly why we let each region write locally — the alternative is a 90 ms wait on every cart change.</span></p>
+</div>
+
+<div class="card calc">
+  <p><b>Worked: the availability we buy.</b> Suppose one region is up <b>99.9%</b> of the time — that's <code>0.001 × 365 × 24 = 8.76 hours</code> of downtime a year. Put two regions in active-active, each able to serve <i>any</i> shopper, with independent failures. The service is down only if <b>both</b> are down at once:</p>
+  <p>• <code>0.001 × 0.001 = 10⁻⁶</code> → <b>99.9999%</b> up ("six nines") → <code>10⁻⁶ × 31,536,000 s ≈ 32 seconds</code> of downtime a year. From 8.76 hours to 32 seconds by adding a second live region (Lesson 07's redundancy, now at continent scale).</p>
+  <p class="note why"><b>Name the trade-off — latency &amp; availability vs a conflict problem you now own.</b> Active-active hands you local-speed writes <i>and</i> six-nines availability. The bill comes due the moment two regions write the same key: there's no single writer to declare the winner, so <i>you</i> must define the merge — and the availability upside is only real for data you can actually merge safely. Everything below is about paying that bill.</p>
+</div>
+
+<h2>Move 2 — Model: two regions, async replication, and how a conflict resolves</h2>
+<p>We route each shopper to their nearest region, which serves reads and writes locally, then streams its writes to the other region asynchronously (Lesson 09's log/queue, now spanning an ocean). Local writes stay ~1 ms and the site stays up even if the link between regions is cut — that choice is <b>AP</b> from Lesson 11: during a partition we keep <b>a</b>vailability and accept temporary divergence. The design work is all in the merge. There are two families.</p>
+
+<h3>Model A — Last-Write-Wins: pick one, drop the other</h3>
+<p>Stamp every write with a timestamp. When a region receives a conflicting write for the same key, keep whichever timestamp is larger and throw the other away. It's one comparison, no extra storage, and it always converges (both regions apply "keep the max" and land in the same place).</p>
+<p>The problem is the word <b>drop</b>. LWW treats the whole value as one opaque blob, so in our cart example it keeps <code>{case}</code> <i>or</i> <code>{headphones}</code> — never both. A shopper's item silently vanishes. Worse, "last" is measured by a <b>wall clock</b>, and two regions' clocks disagree (Lesson 22's clock skew): a region whose clock runs 50 ms slow can stamp a genuinely <i>newer</i> write with an <i>older</i> time, so the correct write loses. <span class="key">LWW is safe only when losing one of two concurrent writes is acceptable, and even then only as safe as your clocks.</span></p>
+
+<h3>Model B — CRDT: design the value so concurrent writes merge instead of collide</h3>
+<p>The insight that changes everything: <i>a conflict only exists because we modeled the cart as one blob.</i> Model it instead as a <b>set with per-item operations</b>, and the two writes stop conflicting at all. <code>add("headphones")</code> and <code>add("case")</code> touch different elements; their merge is just the <b>union</b> <code>{headphones, case}</code>. Order doesn't matter (commutative), grouping doesn't matter (associative), and replaying the same add twice changes nothing (idempotent — Lesson 05/09/13's idempotency, now load-bearing for correctness). Those are exactly the CRDT properties, and they guarantee both regions converge with <b>zero coordination</b> — no lock, no leader, no cross-ocean wait.</p>
+
+<div class="diagram"><pre>
+  TWO WAYS TO MERGE THE SAME TWO WRITES
+
+  VA: add(headphones)          FR: add(case)
+
+  LWW register (whole cart is one value, keep latest timestamp):
+     VA stamp 10:00:00.100   FR stamp 10:00:00.090
+     merge -> keep VA        ->  { headphones }     <-- "case" LOST
+
+  CRDT set (per-element, merge = union):
+     merge -> { headphones } ∪ { case }  ->  { headphones, case }
+                                             both kept, both regions agree
+</pre></div>
+
+<p>CRDTs come in shapes for different data. A <b>set</b> (carts, tags) merges by union. A <b>counter</b> (Lesson 06's like-counter, Lesson 21's mergeable sketches — those are CRDTs!) keeps a <i>separate sub-count per region</i> and merges by summing them, so two concurrent "+1"s both survive. A <b>register</b> (a single scalar like a display name) falls back to LWW or "keep all concurrent values and let the app pick." The skill is choosing a shape whose merge preserves what the user meant.</p>
+
+<div class="card calc">
+  <p><b>One subtlety: telling "concurrent" from "after".</b> If Frankfurt's write genuinely happened <i>after</i> it had already seen Virginia's, that's not a conflict — it's an update, and the later one should win. To tell the two apart <i>without</i> trusting wall clocks, each value carries a <b>version vector</b>: a little map <code>{VA: n, FR: m}</code> counting writes seen from each region. If VA's vector is <code>{VA:1, FR:0}</code> and FR's is <code>{VA:0, FR:1}</code>, neither dominates the other → truly <b>concurrent</b> → merge them. If FR's were <code>{VA:1, FR:1}</code>, it has <i>seen</i> VA's write and supersedes it → no conflict. This is Lesson 06/10's version idea and Lesson 22's "trust a monotonic number, not the clock," applied to detect concurrency.</p>
+</div>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Four journeys through the two regions: the clean merge, the genuine conflict with no right answer, the LWW clock-skew data-loss, and the counter that CRDTs get right where a register loses.</p>
+
+<h3>Path 1 — add / add: the union that just works</h3>
+<div class="diagram"><pre>
+  t=0     cart = {} in both regions
+  t=0     VA: add(headphones), vv={VA:1,FR:0}   VA cart={headphones}
+  t=0     FR: add(case),       vv={VA:0,FR:1}   FR cart={case}
+  t=90    each ships its op to the other
+  t=90    VA merges FR's op: neither vv dominates -> concurrent -> UNION
+  t=90    FR merges VA's op: same -> UNION
+  RESULT  both regions = {headphones, case}   ✔ converged, nothing lost
+</pre></div>
+<p>Because the cart is a CRDT set, the "conflict" was never a conflict. Concurrent adds to different elements commute, so the two regions reconcile with no coordination and no data loss. This is the happy path active-active is <i>for</i>.</p>
+
+<h3>Path 2 — add / remove the SAME item: a real conflict with a business answer, not a technical one</h3>
+<div class="diagram"><pre>
+  t=0     cart = {headphones} in both regions
+  t=0     VA: remove(headphones)   FR: add(headphones)   (concurrent!)
+  t=90    each hears the other. The ops DON'T commute:
+             remove-then-add  -> {headphones}
+             add-then-remove  -> {}
+          Order changes the answer -> a genuine conflict.
+
+  Resolution is a POLICY, not a fact:
+     add-wins    ->  {headphones}   (safer for a cart: keep the item)
+     remove-wins ->  {}             (safer for "I unsubscribed")
+</pre></div>
+<p>Here order matters, so there's no merge that's "correct" by logic — the CRDT's job is only to make <i>every replica pick the same policy</i> so they still converge. Which policy is a product decision: for a shopping cart, <b>add-wins</b> (don't lose a sale); for a "leave this group" toggle, <b>remove-wins</b> (respect the opt-out). <span class="key">A CRDT guarantees the replicas agree; it can't tell you <i>what</i> they should agree on. That's yours to choose.</span></p>
+
+<h3>Path 3 — LWW under clock skew: the newer write silently lost</h3>
+<div class="diagram"><pre>
+  Cart modeled as an LWW register (whole value, latest timestamp wins).
+  Frankfurt's clock runs 50 ms SLOW.
+
+  real 10:00:00.100  VA: set cart={A}   stamped 10:00:00.100
+  real 10:00:00.130  FR: set cart={A,B} stamped 10:00:00.080  (skewed!)
+                          ^ genuinely later, but its clock lied
+
+  merge: keep larger timestamp -> VA's .100 > FR's .080 -> keep {A}
+  RESULT  {A}. The later, correct write {A,B} is DROPPED. Item B gone,
+          no error, no log line. The clock decided, and the clock was wrong.
+</pre></div>
+<p>Nothing here is a bug in the code — it's a bug in <i>trusting a wall clock to order events across machines</i>. This is the same disease as Lesson 22's lease-expiry check: any safety or ordering argument that compares timestamps across regions is only as good as the clocks, and clocks skew. The fix is the same shape: order by a <b>logical</b> version, not the wall clock — or, better, don't model the cart as an overwrite-the-whole-thing register at all, and let the set CRDT keep both items.</p>
+
+<h3>Path 4 — the counter: a register loses, a CRDT counter doesn't</h3>
+<div class="diagram"><pre>
+  Item quantity starts at 1 in both regions. Two "+1" taps, concurrent.
+
+  As an LWW register on the NUMBER:
+     VA: 1 -> 2      FR: 1 -> 2      merge keeps one "2"  -> 2   ✗ (lost +1)
+        (Lesson 06's lost update, now ACROSS regions)
+
+  As a PN-counter CRDT (per-region sub-counts, merge = sum):
+     VA increments -> {VA:1, FR:0}    FR increments -> {VA:0, FR:1}
+     merge = element-wise max -> {VA:1, FR:1} -> base 1 + 1 + 1 = 3  ✔
+</pre></div>
+<p>Two shoppers each added one → the right answer is <b>3</b>. The register model loses an increment exactly as a single-node race did in Lesson 06 — the ocean just widened the gap. The counter CRDT keeps a private tally per region and sums them, so no increment is ever overwritten. Same lesson, one layer up: <span class="key">model the value by the <i>operation</i> (increment), not the <i>result</i> (the number), and concurrency stops destroying data.</span></p>
+
+<p class="note why"><b>Name the trade-off — CRDT convergence vs the metadata to get it.</b> CRDTs buy coordination-free, loss-free merges, but they aren't free: a set that supports removes must keep <b>tombstones</b> (Lesson 15/20's "deleted" markers) so a delete isn't undone by a late-arriving add, and those accumulate; a version vector grows with the number of regions/actors. You trade a little metadata and compaction work for never having to coordinate a write across an ocean. Usually a great trade — until the metadata is the cost, which is the next wall.</p>
+
+<h2>Move 4 — Find the first bottleneck: the write that <i>can't</i> be merged</h2>
+<p>Sets, counters, and last-write-wins cover a huge amount of real state. Then you hit data with a <b>global invariant</b> — a rule that must hold across <i>all</i> regions at once — and every merge rule breaks, because merging preserves <i>convergence</i>, not <i>invariants</i>.</p>
+
+<div class="card calc">
+  <p><b>Worked: the balance that goes negative.</b> An account holds <b>$100</b>. The invariant: <code>balance ≥ 0</code> — never overdraw. Model it as a PN-counter (the CRDT that merged perfectly above) and run two concurrent withdrawals:</p>
+  <p>• VA: withdraw $80. Local check: <code>100 − 80 = 20 ≥ 0</code> ✓, approve.<br>
+     • FR: withdraw $70, concurrently. Local check: <code>100 − 70 = 30 ≥ 0</code> ✓, approve.<br>
+     • Merge (sum the sub-counters): <code>100 − 80 − 70 = −$50</code>.</p>
+  <p>The counter <b>converged</b> flawlessly — both regions agree the balance is <b>−$50</b>. And that agreed value <b>violates the invariant</b>. Each region approved a withdrawal that was locally fine, but the rule was <i>global</i> and no region could see the other's spend in time. <span class="key">A CRDT guarantees all replicas reach the same number. It cannot guarantee that number obeys "≥ 0" — because enforcing a global limit is exactly the coordination active-active removed.</span> This is Lesson 11's scalar-balance dilemma, now named precisely: mergeable ≠ invariant-safe.</p>
+</div>
+
+<p>So for invariant-bound state you must give something back. Three options, each a different point on the trade:</p>
+<ul>
+  <li><b>Single-home the key.</b> Route <i>all</i> writes for one account to one region (its "home"), the single writer from Lessons 03/04/10/22. The invariant is enforced by one authority, so it can't be violated — but a shopper far from that home pays the ~90 ms cross-region tax on <i>their</i> account's writes. You've traded local-write speed (for that key) to keep the rule.</li>
+  <li><b>Synchronous consensus across regions.</b> Make the withdrawal a quorum write agreed by both regions before it returns (Lesson 10/11's CP path). The invariant holds globally, but every write pays the +90 ms RTT, and if the regions can't reach each other, the write <b>blocks</b> (availability given up — the CP choice from Lesson 11).</li>
+  <li><b>Escrow / reservation.</b> Split the invariant itself: give each region a <b>budget</b> — say $50 to Virginia, $50 to Frankfurt. Each region spends only its own budget with <i>no</i> coordination (fast, available), and only talks cross-region when its escrow runs dry (to borrow from the other). You've partitioned a global limit into local ones — the same "shard the counter" idea from Lessons 06/08, applied to an invariant. The cost: a region can refuse a withdrawal it <i>could</i> have covered if it could see the other's unused budget.</li>
+</ul>
+
+<p class="note why"><b>Name the core trade-off — local writes vs global order.</b> Active-active's whole promise is that a write commits locally, fast and always-available, without asking any other region's permission. A <b>global invariant</b> is the one thing that <i>requires</i> asking permission — you cannot both "never coordinate" and "enforce a rule across everyone." So per key you choose: keep it mergeable and coordination-free (carts, counters, tags, presence → CRDTs, local writes win), or accept it needs a global order and pay for it (balances, inventory, unique usernames → single-home / consensus / escrow). The art is sorting your data into those two buckets — and putting as little as possible in the expensive one.</p>
+
+<table>
+  <tr><th>State</th><th>Model</th><th>Merge / enforcement</th><th>Trade-off named</th></tr>
+  <tr><td>Cart items, tags</td><td><b>Set CRDT</b></td><td>union (add-wins)</td><td>coordination-free vs tombstone growth</td></tr>
+  <tr><td>Like / view counts</td><td><b>PN-counter CRDT</b></td><td>sum per-region sub-counts</td><td>no lost updates vs per-region metadata</td></tr>
+  <tr><td>Display name (scalar)</td><td><b>LWW register</b></td><td>largest timestamp wins</td><td>simple vs silently drops + clock-skew</td></tr>
+  <tr><td>Concurrent vs after?</td><td><b>Version vector</b></td><td>compare, don't trust clocks</td><td>correctness vs vector size ∝ #actors</td></tr>
+  <tr><td>Balance / stock (invariant)</td><td><b>Single-home</b></td><td>one region owns the key</td><td>rule held vs remote writes pay 90 ms</td></tr>
+  <tr><td>Balance (need both regions)</td><td><b>Consensus / escrow</b></td><td>quorum, or split the budget</td><td>global order vs latency / lost flexibility</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We took one shopping cart and put its service live on two continents at once. <b>Estimate</b> showed why: a synchronous cross-region write costs <code>~90 ms</code> (the 6,400 km speed-of-light floor is already 64 ms) versus <code>~1 ms</code> local — a 90× tax — while a second live region drops downtime from <code>8.76 h/yr</code> to <code>~32 s/yr</code> (six nines). So each region writes locally and replicates <b>asynchronously</b> (Lesson 11's AP: stay available, tolerate divergence). <b>Model</b> gave two ways to reconcile the divergence: <b>last-write-wins</b> (one timestamp comparison — but it silently <i>drops</i> the loser and trusts a skewable wall clock), and a <b>CRDT</b> — a value whose merge is commutative, associative, and idempotent, so every replica <b>converges</b> with zero coordination. <b>Tracing</b> concurrent edits showed the payoff and the limit: two adds to a set <b>union</b> cleanly (nothing lost); an add-vs-remove of the same item is a genuine conflict whose resolution is a <i>business policy</i> (add-wins for a cart) not a technical fact; LWW under a 50 ms-slow clock <b>drops the newer write</b>; and a counter modeled as a CRDT keeps both concurrent "+1"s (result <b>3</b>) where a register loses one (Lesson 06's lost update, now across an ocean). The <b>first bottleneck</b> was the write that <i>can't</i> be merged: a $100 balance withdrawn $80 in Virginia and $70 in Frankfurt <b>converges to −$50</b> — the CRDT agreed perfectly and still broke the <code>≥ 0</code> invariant, because merging preserves convergence, not global rules → so invariant-bound keys need <b>single-home</b> ownership, <b>synchronous consensus</b>, or <b>escrow</b> (split the limit), each paying latency or flexibility to buy the rule back. The real lesson: <span class="key">active-active trades the single writer for speed and availability, and the price is that you must sort every piece of state into "mergeable" (CRDT, write anywhere, coordinate never) or "globally ordered" (a balance, an invariant — pay to coordinate), and keep the expensive bucket as small as you can. The trade is local writes vs global order.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson builds directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>Schema changes &amp; migrations at scale:</b> we've kept two continents' <i>data</i> in agreement. Now change its <i>shape</i> — add or rename a column on a live 100M-row table, across regions, with zero downtime and no lost writes. The <b>expand/contract</b> dance: dual-write the old and new columns, backfill the history in the background, cut readers over, then drop the old column — every step reversible. The trade shifts from <b>local writes vs global order</b> to <b>migration safety vs deploy velocity.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">region</span>
+    <span class="pill">active-active</span>
+    <span class="pill">active-passive</span>
+    <span class="pill">synchronous replication</span>
+    <span class="pill">asynchronous replication</span>
+    <span class="pill">replication lag</span>
+    <span class="pill">conflict</span>
+    <span class="pill">last-write-wins (LWW)</span>
+    <span class="pill">CRDT</span>
+    <span class="pill">commutative / associative / idempotent</span>
+    <span class="pill">convergence</span>
+    <span class="pill">version vector</span>
+    <span class="pill">logical clock</span>
+    <span class="pill">clock skew</span>
+    <span class="pill">tombstone</span>
+    <span class="pill">PN-counter</span>
+    <span class="pill">OR-set (add-wins)</span>
+    <span class="pill">invariant</span>
+    <span class="pill">single-home</span>
+    <span class="pill">escrow / reservation</span>
+    <span class="pill">local writes vs global order</span>
+  </p>
+  <p>That's Lesson 23, built directly on Lesson 22's teaser (put writers on different continents with no lock to serialize them), reusing Lesson 11's CAP/AP-vs-CP and scalar-balance dilemma, Lesson 06's lost update and versions, Lesson 02/14's speed-of-light floor, Lesson 07's redundancy, Lesson 09's replication log, Lesson 21's mergeable sketches (CRDTs in disguise), Lesson 15/20's tombstones, and Lesson 03/04/10/22's single-writer routing as the escape hatch. <b>Ask me follow-ups</b> — e.g. "what exactly is the difference between a state-based (CvRDT) and op-based (CmRDT) CRDT?", "how does an OR-Set use unique tags to make add-wins work, and why do the tombstones pile up?", "how do Dynamo-style systems surface concurrent versions as siblings and make the client merge them?", "what does escrow/reservation look like for limited-stock flash-sale inventory?", or "when is active-passive (one write region) the right call instead of active-active?" When you're ready, say <b>next</b> and we'll go deeper on <i>Schema changes &amp; migrations at scale — the expand/contract dance for zero-downtime column changes on a live table.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "A shopper's cart is edited in Virginia (add headphones) and Frankfurt (add case) within the same 90 ms, before either region has heard the other. You want both items kept and both regions to agree. What's the right model?",
+    options: [
+      {t:"Model the cart as a CRDT set with per-item operations, so the merge is the union {headphones, case}. Concurrent adds to different elements commute — order, grouping, and duplicates don't change the result — so both regions converge to the same cart with zero coordination and nothing lost.",
+       ok:true,
+       fb:"Right. The 'conflict' only existed because a whole-cart blob forces one value to win. Modeled per-element, the two adds simply union; the CRDT's commutative/associative/idempotent merge guarantees both regions land in the same place without a lock or a cross-ocean round trip."},
+      {t:"Use last-write-wins on the whole cart: attach a timestamp to each write and keep the one with the larger timestamp. Both regions apply the same rule, so they converge.",
+       ok:false,
+       fb:"They do converge — but to {headphones} OR {case}, never both. LWW treats the cart as one opaque value and discards the loser, so one of the shopper's items silently vanishes. Converging isn't the goal; converging without losing data is, and LWW loses it here."},
+      {t:"Acquire a distributed lock on the cart before either add, so the two writes are serialized and can't conflict.",
+       ok:false,
+       fb:"A lock across regions means a ~90 ms cross-ocean round trip on every cart tap — the exact latency active-active exists to avoid — and if the link between regions is cut, the lock is unreachable and writes stall. The whole point is to write locally with no coordination; a set CRDT gets correctness without the lock."}
+    ]
+  },
+  {
+    stem: "You use last-write-wins keyed on wall-clock timestamps. Frankfurt's clock happens to run 50 ms slow. A genuinely later write in Frankfurt gets stamped with an earlier time than an older Virginia write. What happens, and what's the fix?",
+    options: [
+      {t:"LWW keeps the larger timestamp, so Virginia's older-but-higher-stamped write wins and Frankfurt's newer write is silently dropped — no error, no log. The fix is to order by a logical version (version vector), not the wall clock, so concurrency and ordering don't depend on clocks agreeing across machines.",
+       ok:true,
+       fb:"Exactly. Any ordering argument that compares timestamps across machines is only as trustworthy as the clocks, and clocks skew (Lesson 22's lease bug again). A version vector counts writes-seen per region, so it detects 'concurrent vs after' without trusting time — or model the value as a set so nothing is dropped at all."},
+      {t:"Nothing bad happens — NTP keeps clocks within a few milliseconds, so a 50 ms skew can't occur in practice and LWW is always safe.",
+       ok:false,
+       fb:"NTP drift, a leap second, or a VM live-migration time-jump can push clocks tens of milliseconds apart, and cross-region links make it worse. Betting correctness on synchronized wall clocks is exactly the assumption that fails; that's why logical clocks exist."},
+      {t:"The two writes are detected as concurrent and automatically merged, so both survive regardless of the clocks.",
+       ok:false,
+       fb:"That's the CRDT/version-vector behavior, not LWW. Plain LWW does not detect concurrency — it just compares timestamps and keeps one. With a skewed clock it keeps the wrong one and drops the other. You only get the auto-merge if you switch models."}
+    ]
+  },
+  {
+    stem: "An account holds $100 with the invariant balance ≥ 0. Virginia approves a $80 withdrawal (100−80=20, fine locally) and Frankfurt concurrently approves $70 (100−70=30, fine locally). You store the balance as a PN-counter CRDT. What's the outcome?",
+    options: [
+      {t:"The counter converges perfectly to 100−80−70 = −$50 — and that agreed value violates the ≥ 0 invariant. A CRDT guarantees convergence, not invariant preservation; enforcing a global limit needs coordination, which active-active removed. So this key needs single-home ownership, cross-region consensus, or escrow (split the balance into per-region budgets).",
+       ok:true,
+       fb:"Right. Both regions agree the balance is −$50 — mathematically consistent, financially an overdraft. Merging preserves 'all replicas agree', never 'the agreed value obeys a rule spanning all regions'. Invariant-bound keys are the state you must pull out of the coordination-free bucket."},
+      {t:"The PN-counter's merge rejects the second withdrawal automatically, because a CRDT enforces the ≥ 0 invariant as part of its merge function.",
+       ok:false,
+       fb:"CRDT merges have no idea about your business rules — a PN-counter merge just sums the per-region sub-counts. It will happily converge to −$50. Convergence and invariant-enforcement are different properties; the CRDT gives you only the first."},
+      {t:"There's no problem: each region checked the balance locally and both were fine, so the withdrawals are both valid and the account is correct.",
+       ok:false,
+       fb:"Each local check was correct given what that region could see — but neither could see the other's spend within the 90 ms window, and the invariant is global. Two locally-valid withdrawals sum to an overdraft. Local checks can't enforce a global limit; that's the whole bottleneck."}
+    ]
+  },
+  {
+    stem: "Your team is deciding replication for a new active-active feature. What's the actual trade-off between synchronous cross-region writes and asynchronous local writes?",
+    options: [
+      {t:"Async local writes commit in ~1 ms and stay available even if the inter-region link is cut (AP), but the regions diverge for the replication-lag window, so you must resolve conflicts (CRDT or LWW). Synchronous writes give a single global order but pay ~90 ms per write and block if the other region is unreachable (CP). It's local-writes-vs-global-order, chosen per key.",
+       ok:true,
+       fb:"Exactly. Async buys speed and availability at the cost of divergence you must reconcile; sync buys a global order at the cost of latency and blocking during a partition (Lesson 11's PACELC/CAP). Mergeable state goes async; invariant-bound state pays for sync/consensus. The skill is keeping the expensive bucket small."},
+      {t:"Synchronous is strictly better — it's always consistent — so use it everywhere and never worry about conflict resolution.",
+       ok:false,
+       fb:"Synchronous taxes every write ~90 ms across the ocean and gives up availability when regions can't reach each other (it blocks). For a shopping cart that's a terrible default; you'd throw away active-active's whole point. It's the right tool only for the small set of invariant-bound keys."},
+      {t:"Asynchronous is strictly better — writes are fast and always available — so use it everywhere and conflicts will sort themselves out.",
+       ok:false,
+       fb:"Async is right for mergeable state, but conflicts don't 'sort themselves out' — you must define the merge, and for invariant-bound state (a balance) no merge preserves the rule, so async alone produces an overdraft. Neither mode is universally better; you choose per key by whether the data is mergeable."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

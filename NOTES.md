@@ -252,9 +252,25 @@
     single-writer routing (L03/L04/L10). Efficiency lock (double-run wasteful → lease ok)
     vs correctness lock (double-run corrupts → need fencing). Trade: safety vs liveness.
     (Lesson 0022)
-23. Multi-region / active-active — replicating writes across continents: CRDTs
-    and last-write-wins for mergeable state (recap L11/L06), conflict resolution,
-    and the write-latency vs availability tax. Trade: local writes vs global order.
+23. ✅ **Multi-region / active-active** — one shopping cart served live from
+    Virginia + Frankfurt: a synchronous cross-region write costs ~90 ms (6,400 km
+    speed-of-light floor = 64 ms, L02/L14) vs ~1 ms local (90× tax) while a 2nd live
+    region cuts downtime 8.76 h/yr → ~32 s/yr (six nines, L07); so write locally +
+    replicate async (L11's AP: available, tolerate divergence). No single writer →
+    conflicts you must resolve: LWW (one timestamp compare, silently DROPS the loser,
+    trusts a skewable wall clock, L22) vs a CRDT (merge commutative/associative/
+    idempotent → converges w/ zero coordination). Trace: two adds UNION cleanly;
+    add-vs-remove same item = genuine conflict whose fix is a business POLICY
+    (add-wins cart) not a fact; LWW under 50 ms clock skew drops the newer write;
+    counter as PN-counter (per-region sub-counts, merge=sum) keeps both +1s → 3, where
+    a register loses one (L06 lost update across an ocean); version vector tells
+    concurrent from after w/o clocks. First wall = the un-mergeable global INVARIANT:
+    $100 balance withdrawn $80 (VA) + $70 (FR) CONVERGES to −$50 — CRDT agreed
+    perfectly, invariant broke (convergence ≠ invariant preservation, L11's scalar
+    balance) → single-home the key (L03/04/10/22, remote writes pay 90 ms) / sync
+    consensus (L10/11 CP, blocks on partition) / escrow (split the budget per region,
+    L06/08 shard-the-counter on an invariant). Trade: local writes vs global order.
+    (Lesson 0023)
 24. Schema changes & migrations at scale — the expand/contract (dual-write,
     backfill, cutover) dance to change a column on a live 100M-row table with zero
     downtime. Trade: migration safety vs deploy velocity.

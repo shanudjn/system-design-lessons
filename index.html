@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0023-multi-region-active-active.html">
+    <div class="num">LESSON 23</div>
+    <div class="title">Multi-Region Active-Active: Two Continents, One Cart, and the Write That Can't Be Merged</div>
+    <div class="blurb">Lesson 22 kept safety with one writer at a time. Now break that on purpose: run the service live in <b>Virginia</b> and <b>Frankfurt</b> and let <i>both</i> accept writes locally — <b>active-active</b>. A synchronous cross-region write costs <b>~90 ms</b> (the 6,400 km speed-of-light floor alone is 64 ms) vs <b>~1 ms</b> local, and a second live region cuts downtime from <b>8.76 h/yr</b> to <b>~32 s/yr</b> — but the instant there's no single writer, the same cart can be edited on both continents in one 90 ms window and you must <i>define</i> the merge. <b>Last-write-wins</b> is one timestamp compare that silently <b>drops</b> a shopper's item and trusts a skewable clock; a <b>CRDT</b> models the value so concurrent writes merge — a set unions {headphones, case}, a counter sums per-region tallies so two "+1"s make <b>3</b> not 2 (Lesson 06's lost update, now across an ocean). Trace the clean union, the add-vs-remove conflict whose answer is a <i>business policy</i>, and the clock-skew data-loss. Then the wall: a $100 balance withdrawn $80 in VA and $70 in FR <b>converges to −$50</b> — the CRDT agreed perfectly and still broke <code>balance ≥ 0</code>, because merging preserves convergence, not invariants → single-home, consensus, or escrow. Trade named throughout: local writes vs global order.</div>
+  </a>
   <a class="lesson" href="lessons/0022-distributed-locks.html">
     <div class="num">LESSON 22</div>
     <div class="title">Distributed Locks &amp; Leases: Two Workers, One Billing Job, and the Fencing Token</div>
