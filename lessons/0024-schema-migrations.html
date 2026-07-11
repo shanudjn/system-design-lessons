@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 24 — Schema Changes at Scale: Renaming a Column on a Live 100-Million-Row Table Without Downtime</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 24 · Worked Example</div>
+  <h1>Schema Changes at Scale: Renaming a Column on a Live 100-Million-Row Table Without Downtime</h1>
+  <p class="lead">Every lesson so far changed the <i>data</i> — where it lives (Lesson 03/04), how it's copied (Lesson 06), how two continents agree on it (Lesson 23). Now we change its <b>shape</b>. Product wants the <code>orders</code> table's <code>total</code> column — a plain integer count of cents — split into <code>amount_cents</code> plus a currency, because the old column silently assumed every order was in US dollars. The table has <b>100 million rows</b>, takes <b>50,000 reads/sec and 5,000 writes/sec</b>, and must not go down for a second. The naive move — one <code>ALTER TABLE ... RENAME</code> — is a trap: it can lock the table, and the instant you rename, every running copy of the old code breaks because it still asks for <code>total</code>. The skill is that a schema change and a code change are <b>two different deploys that can't be simultaneous</b> across a fleet, so you must make the database understand <i>both</i> shapes at once and cross the gap in small, reversible steps. We'll <b>estimate</b> what a blocking migration costs, <b>model</b> the <b>expand/contract</b> dance (add → dual-write → backfill → cut readers over → contract), <b>trace</b> a read and a write at every stage, and hit the wall: the backfill that fights the live write traffic. The trade underneath shifts from Lesson 23's local-writes-vs-global-order to a new one: <b>migration safety vs deploy velocity.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0024-schema-migrations.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>A payments service backed by one big SQL table, <code>orders</code>. It has <b>100 million rows</b> and grows by a few million a week. Live traffic is <b>50,000 reads/sec</b> (order-history pages, receipts) and <b>5,000 writes/sec</b> (new orders, status updates). Dozens of application servers run the same code and talk to this table. We must change the column <code>total</code> (an integer, cents, always assumed USD) into two columns, <code>amount_cents</code> and <code>currency</code>, so an order can be €40 or ¥5000 instead of "40, and we hope it's dollars."</p>
+<p>The naive plan is one command: <code>ALTER TABLE orders CHANGE total amount_cents ...</code> then ship code that reads the new name. That plan has two independent ways to cause an outage, and understanding both is the whole lesson: the <b>ALTER</b> itself can freeze the table, and even a free rename breaks every app server still running the old code. So instead of one big switch we take a sequence of small steps where, <i>at every moment</i>, both the old code and the new code work against the database as it currently is.</p>
+
+<div class="diagram"><pre>
+  THE TRAP WE'RE HERE TO AVOID   (schema deploy ≠ code deploy)
+
+  You cannot flip the schema and all the code at the same instant.
+  A fleet deploy is gradual: for minutes, OLD and NEW code run together.
+
+     t0   50 app servers, ALL running OLD code  ->  read/write column "total"
+     t1   you run: ALTER ... RENAME total -> amount_cents   (schema flips NOW)
+     t2   every OLD server's query "SELECT total" -> ERROR: no such column
+          ...outage... while the code deploy crawls across 50 servers
+     t3   deploy finally finishes, NEW code reads "amount_cents"  -> healthy
+
+  Between t1 and t3 the DB shape and the code disagree. That gap is the outage.
+
+  FIX: never let them disagree. Make the DB understand BOTH shapes
+       (old "total" AND new "amount_cents") for the whole transition,
+       and remove the old shape only after ALL code stopped using it.
+</pre></div>
+
+<p class="note"><span class="key">A schema change and the code that uses it are two separate deploys that are never simultaneous across a fleet. So you migrate in steps where old code and new code both work — never a step that only one of them survives.</span></p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Schema</b> — the <i>shape</i> of the table: which columns exist, their types, their constraints. Changing it is a <b>DDL</b> statement (<code>ALTER</code>, <code>CREATE</code>); changing rows is <b>DML</b> (<code>INSERT</code>, <code>UPDATE</code>).</li>
+  <li><b>Migration</b> — a versioned change to the schema (or to the data's shape), run as an ordered, repeatable step so every environment reaches the same state.</li>
+  <li><b>Online vs offline</b> — an <b>online</b> migration runs while the table keeps serving reads and writes; an <b>offline</b> one needs the table (or the app) stopped. We want online.</li>
+  <li><b>Lock</b> — while some <code>ALTER</code>s run, the database blocks other queries on that table (Lesson 22's lock, now held by the schema change itself). A long lock on a hot table = an outage.</li>
+  <li><b>Backfill</b> — copying/computing values for the <i>existing</i> 100M rows to populate a newly added column. New rows get it going forward; old rows need a sweep.</li>
+  <li><b>Dual-write</b> — for a transition period, the app writes <i>both</i> the old and the new column on every write, so the two are kept in sync no matter which the reader trusts.</li>
+  <li><b>Expand/contract</b> (a.k.a. parallel change) — the pattern: first <b>expand</b> the schema so old and new shapes coexist, migrate readers and writers across, then <b>contract</b> by removing the old shape. Each step is small and reversible.</li>
+  <li><b>Backward-compatible change</b> — a schema change that doesn't break code already running. <i>Adding</i> a nullable column is backward-compatible; <i>renaming</i> or <i>dropping</i> one is not.</li>
+  <li><b>Cutover</b> — the moment readers switch from trusting the old column to the new one. In expand/contract it's a plain code deploy, not a schema change — so it's instant and reversible.</li>
+</ul>
+
+<h2>Move 1 — Estimate: what a blocking migration actually costs</h2>
+<p>Two numbers decide whether the naive one-shot plan is survivable: how long the operation holds the table, and how much work backs up behind it while it does. Both are large.</p>
+
+<div class="card calc">
+  <p><b>Worked: the lock that becomes an outage.</b> Suppose the naive <code>ALTER</code> rewrites the whole table (many engines do, for a type change or some renames) and the table is <b>20 GB</b> on disk. The server rewrites at, say, <b>100 MB/s</b> once you account for indexes and WAL:</p>
+  <p>• rewrite time ≈ <code>20 GB ÷ 100 MB/s = 20,000 MB ÷ 100 MB/s = 200 s</code> ≈ <b>3.3 minutes</b>.</p>
+  <p>If that <code>ALTER</code> holds a write lock (or worse, a full lock) for those 200 s, every write queues behind it. At <b>5,000 writes/sec</b> the backlog is:</p>
+  <p>• <code>5,000 writes/sec × 200 s = 1,000,000</code> queued writes — a million requests stuck, connection pools exhausted, and (Lesson 07) timeouts cascading into the app tier. <span class="key">A 3-minute lock on a table doing 5k writes/sec isn't a slow migration; it's a million-request outage.</span> That's why "just run the ALTER" is off the table, and why every step below is designed to take a lock only for a fraction of a second, if at all.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Worked: the backfill is the expensive part, not the ALTER.</b> Even with an online tool, <i>filling in</i> <code>amount_cents</code> for 100M existing rows is real work. If you update in batches and sustain <b>10,000 rows/sec</b> (kept deliberately low so it doesn't starve live traffic — the Move-4 wall):</p>
+  <p>• backfill time ≈ <code>100,000,000 rows ÷ 10,000 rows/sec = 10,000 s</code> ≈ <b>2.8 hours</b>.</p>
+  <p>So the migration is not a moment — it's a <b>2.8-hour window</b> during which old rows already have the value and old rows don't yet. Any reader that trusts the new column before the backfill finishes will see <code>NULL</code> for un-migrated rows. <span class="key">This is why readers cut over <i>last</i>, after the backfill is verified complete — the sequence isn't bureaucracy, it's the only order that never exposes a half-filled column.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off — migration safety vs deploy velocity.</b> You <i>could</i> change the column in one command and one deploy in thirty seconds — and gamble on a lock and a code/schema gap. Or you spend hours-to-days moving through small reversible steps that never break a running server. Expand/contract chooses safety: more steps, more elapsed time, more discipline, in exchange for zero downtime and a working rollback at every stage. The rest of the lesson is that sequence.</p>
+
+<h2>Move 2 — Model: the expand/contract dance</h2>
+<p>The core idea is a <b>parallel change</b>: instead of transforming the old shape <i>into</i> the new one, you stand the new shape up <i>beside</i> the old, keep both in sync, move consumers across one at a time, then tear the old one down. Because both shapes exist through the whole middle, there is never a moment where a running server asks for something the database can't give. Five steps, each independently deployable and reversible:</p>
+
+<div class="diagram"><pre>
+  EXPAND / CONTRACT  —  5 steps, old code keeps working the whole time
+
+  START   column: total (int, cents)      code: reads+writes total
+
+  1 EXPAND SCHEMA (backward-compatible DDL, sub-second)
+      ADD COLUMN amount_cents INT NULL,  ADD COLUMN currency CHAR(3) NULL
+      -> old code ignores the new nullable columns. Nothing breaks.
+
+  2 DUAL-WRITE (code deploy)
+      new writes set BOTH:  total = X  AND  amount_cents = X, currency='USD'
+      -> from now on, every NEW row is correct in both shapes.
+         reads still trust "total".
+
+  3 BACKFILL (background job, batched, ~2.8 h)
+      for old rows where amount_cents IS NULL:
+          amount_cents = total, currency = 'USD'   (in small batches)
+      -> after this, ALL rows have both shapes. Verify counts match.
+
+  4 CUTOVER READS (code deploy — the flip)
+      readers now SELECT amount_cents, currency  (not total)
+      -> still dual-writing, so "total" stays correct as a safety net.
+         If wrong: redeploy readers back to "total". Instant rollback.
+
+  5 CONTRACT (stop dual-write, then drop, each a separate deploy)
+      stop writing "total"  ->  bake time  ->  DROP COLUMN total
+      -> old shape gone. Migration complete.
+</pre></div>
+
+<p>Notice the shape of it: step 1 and step 5 are schema changes but each is <b>backward-compatible</b> on its own (adding a nullable column breaks nobody; dropping a column nobody reads anymore breaks nobody). Steps 2 and 4 are ordinary <b>code deploys</b>. Step 3 is a <b>data</b> job that touches no schema. At no single step do the schema and the deployed code disagree — that's the invariant the whole dance protects.</p>
+
+<p class="note why"><b>Name the trade-off — one column of storage vs a safe transition.</b> For the whole middle of the migration you carry <i>both</i> columns and write both on every request — extra storage (100M × ~4 bytes ≈ 400 MB for the duplicate integer) and a little extra write cost (Lesson 12's write amplification, in miniature). You're paying redundant storage and writes to buy a migration where every step is reversible. Cheap insurance, and you reclaim it in step 5.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Follow one read and one write through each stage. The point is to prove the invariant: <b>at every stage, both old code and new code get a correct answer.</b></p>
+
+<h3>Stage A — after EXPAND, before DUAL-WRITE (columns added, still writing only <code>total</code>)</h3>
+<div class="diagram"><pre>
+  row 42: { total: 4000, amount_cents: NULL, currency: NULL }
+
+  WRITE (old code): UPDATE orders SET total=4500 WHERE id=42
+     -> total=4500, amount_cents still NULL     (fine: no one reads it yet)
+  READ  (old code): SELECT total ...            -> 4500   ✔
+</pre></div>
+<p>The new columns are dead weight so far — nullable, unread, unwritten. The only thing that happened is the schema got wider, which no running server noticed. This is the safe beachhead the rest of the dance stands on.</p>
+
+<h3>Stage B — during DUAL-WRITE + BACKFILL (both written; old rows filling in)</h3>
+<div class="diagram"><pre>
+  NEW row 90,000,001 (written by new code):
+     { total: 4000, amount_cents: 4000, currency: 'USD' }   both correct
+
+  OLD row 42, not yet backfilled:
+     { total: 4500, amount_cents: NULL, currency: NULL }
+
+  READ (still trusts total): SELECT total -> 4500  ✔  (correct for BOTH rows)
+
+  WRITE (new code, dual-write): UPDATE SET total=X, amount_cents=X, currency='USD'
+     -> if it touches row 42, that row is now consistent too.
+
+  Meanwhile backfill sweeps old rows in batches:
+     UPDATE orders SET amount_cents=total, currency='USD'
+       WHERE amount_cents IS NULL LIMIT 5000;   (repeat ~20,000 times)
+</pre></div>
+<p>This is the delicate stage and the reason for the exact ordering. <b>Dual-write is turned on <i>before</i> the backfill starts.</b> Why: if you backfilled first and enabled dual-write second, any row written in the gap between them could be updated with <code>total</code> only, leaving <code>amount_cents</code> stale — and the backfill, which only touches <code>NULL</code> rows, would skip it. Turning dual-write on first guarantees every <i>new</i> write is consistent, so the backfill just has to mop up the <i>old</i> rows once. Readers still trust <code>total</code>, which is correct for every row throughout, so the half-filled new column is never exposed.</p>
+
+<h3>Stage C — after CUTOVER (readers trust <code>amount_cents</code>; still dual-writing)</h3>
+<div class="diagram"><pre>
+  Precondition to flip: backfill DONE and verified —
+     SELECT COUNT(*) FROM orders WHERE amount_cents IS NULL;  -> must be 0
+
+  READ (new code): SELECT amount_cents, currency -> 4500,'USD'  ✔
+  WRITE (still dual): SET total=X, amount_cents=X, currency=...
+
+  total is now a WARM STANDBY: still written, no longer read.
+  If the new read path is wrong, redeploy readers back to "total" -> instant,
+  no data lost, because total was never allowed to go stale.
+</pre></div>
+<p>The cutover is a <b>code deploy, not a schema change</b> — that's what makes it instant and reversible. You verified the backfill left zero <code>NULL</code>s <i>before</i> flipping, so the new column is complete. And because dual-write is still on, <code>total</code> remains a correct fallback: rolling back the reader is a one-line redeploy, not a data-recovery project. <span class="key">The order — verify-then-flip, and keep the old column warm — is what turns "rename a column" from a scary one-way door into a reversible step.</span></p>
+
+<h3>Stage D — CONTRACT (retire the old column, in two separate deploys)</h3>
+<div class="diagram"><pre>
+  D1  deploy: STOP writing total (drop it from the write path)
+       -> total is now frozen but still present. Bake for a day:
+          if a hidden reader still needs it, you find out while it's
+          still there to roll back to.
+  D2  after bake, schema: ALTER TABLE orders DROP COLUMN total
+       -> backward-compatible: no deployed code reads or writes it.
+          Migration complete. Reclaim the ~400 MB.
+</pre></div>
+<p>Contract is expand run backwards, and it's split into two deploys on purpose. First stop <i>writing</i> the old column (code deploy) and let it bake — this is your last chance to discover a forgotten consumer while the column still holds good data. Only then <b>drop</b> it (schema change). Dropping a column that no live code touches is backward-compatible, so it breaks nobody, and it takes only a metadata lock in modern engines — sub-second, not the 200 s rewrite from Move 1.</p>
+
+<p class="note why"><b>Name the trade-off — reversibility vs elapsed time.</b> Every arrow above is a separate, independently-deployable step with a working rollback. That's the safety. The cost is that a change one <code>ALTER</code> could <i>attempt</i> in 30 seconds now spans hours (backfill) and days (bake times), across five deploys. You trade calendar time and process for the guarantee that no single step can take the site down and every step can be undone.</p>
+
+<h2>Move 4 — Find the first bottleneck: the backfill vs the live table</h2>
+<p>The schema steps are sub-second and the code deploys are routine. The one part that runs for hours against the hot table is the <b>backfill</b>, and done carelessly it becomes its own outage — the exact thing the whole dance was avoiding.</p>
+
+<div class="card calc">
+  <p><b>Worked: the one big UPDATE that locks the table.</b> The tempting backfill is a single statement:</p>
+  <p><code>UPDATE orders SET amount_cents = total, currency = 'USD' WHERE amount_cents IS NULL;</code></p>
+  <p>That touches <b>100 million rows in one transaction</b>. Consequences, all bad: it holds locks on a huge row set for minutes (Lesson 22's lock, now blocking 5,000 writes/sec of live traffic); it inflates the undo/redo log to tens of GB and can run the disk out of space; and if it fails at row 90 million, the whole thing <b>rolls back</b> — 90 million rows of work undone, zero progress. This is the Move-1 lock outage wearing a different hat.</p>
+  <p><b>The fix — batch it.</b> Walk the table in small chunks, each its own transaction, with a pause between:</p>
+  <p><code>UPDATE orders SET amount_cents=total, currency='USD' WHERE amount_cents IS NULL ORDER BY id LIMIT 5000;</code> → commit → sleep 50 ms → repeat.</p>
+  <p>• batches = <code>100,000,000 ÷ 5,000 = 20,000</code> batches. Each locks only 5,000 rows for a few ms and commits, so live writes slip between batches; a failure loses only the last 5,000-row batch, not 90M; and the log stays small. At ~10,000 rows/sec effective (batch + pause) that's the <b>2.8 hours</b> from Move 1 — slower on purpose, because the goal is to be <b>invisible to live traffic</b>, not fast.</p>
+</div>
+
+<p>Two more sharp edges the batched backfill still has to respect:</p>
+<ul>
+  <li><b>Throttle against replication lag (Lesson 06).</b> Every batch you write must also travel to the read replicas that serve those 50,000 reads/sec. Push batches too fast and the replicas fall behind — read-your-writes breaks and stale reads spread. So the backfill watches <b>replica lag</b> and slows down when it climbs: the backfill's speed is governed by the <i>slowest replica</i>, not the primary's capacity.</li>
+  <li><b>Seek, don't offset (Lesson 18).</b> Page the batches by <code>WHERE id > :last_id ORDER BY id LIMIT 5000</code> (a cursor), not <code>OFFSET n</code>. Offset re-scans all the rows it already skipped, so batch 20,000 would read ~100M rows to find its 5,000 — the migration would slow to a crawl exactly as page 50,000 did in Lesson 18. The cursor seek stays O(batch) at any depth.</li>
+</ul>
+
+<p class="note why"><b>Name the core trade-off — migration safety vs deploy velocity.</b> The fastest change is one <code>ALTER</code> and one deploy; it is also the one that locks a hot table and opens a code/schema gap. Everything in expand/contract — the extra column, dual-writing, the batched throttled backfill, the verify-before-flip, the bake before drop — spends velocity to buy safety: no lock long enough to notice, no moment where deployed code and schema disagree, and a working rollback at every step. On a table nobody depends on, skip the dance. On a 100M-row table taking 5,000 writes/sec, the dance <i>is</i> the design.</p>
+
+<table>
+  <tr><th>Step</th><th>Kind</th><th>Lock / cost</th><th>Reversible by</th></tr>
+  <tr><td>1 · Add nullable columns</td><td><b>Schema</b> (backward-compat)</td><td>metadata lock, sub-second</td><td>drop the unused columns</td></tr>
+  <tr><td>2 · Dual-write</td><td><b>Code</b> deploy</td><td>+1 column written per write</td><td>redeploy old write path</td></tr>
+  <tr><td>3 · Backfill</td><td><b>Data</b> job</td><td>batched, ~2.8 h, throttled</td><td>re-runnable / idempotent</td></tr>
+  <tr><td>4 · Cutover reads</td><td><b>Code</b> deploy</td><td>instant flip</td><td>redeploy to read old column</td></tr>
+  <tr><td>5a · Stop dual-write</td><td><b>Code</b> deploy</td><td>bake time (a day)</td><td>redeploy dual-write</td></tr>
+  <tr><td>5b · Drop old column</td><td><b>Schema</b> (backward-compat)</td><td>metadata lock, sub-second</td><td>irreversible — bake first!</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We changed the <i>shape</i> of a live 100M-row table — splitting an ambiguous <code>total</code> into <code>amount_cents</code> + <code>currency</code> — with zero downtime. <b>Estimate</b> showed why the naive path is an outage: a table-rewriting <code>ALTER</code> on 20 GB at 100 MB/s holds a lock for <code>~200 s</code>, and at 5,000 writes/sec that queues <b>~1,000,000</b> writes; separately, backfilling 100M rows at a deliberately gentle 10,000 rows/sec is a <b>~2.8-hour</b> window where old rows have the value and older ones don't. So the change can't be one command — a schema deploy and a code deploy are never simultaneous across a fleet, and the gap between them is the outage. <b>Model</b> gave the <b>expand/contract</b> dance: <i>expand</i> the schema with backward-compatible nullable columns, <i>dual-write</i> both shapes, <i>backfill</i> the old rows in the background, <i>cut readers over</i> with a plain code deploy, then <i>contract</i> by stopping the dual-write and dropping the old column — five small, independently-deployable, reversible steps where old and new code both always work. <b>Tracing</b> a read and a write through each stage proved the invariant and pinned down the two ordering rules that make it safe: <b>dual-write turns on before the backfill</b> (so no write slips through with a stale new column), and <b>readers cut over only after the backfill is verified zero-NULL</b>, keeping the old column warm as an instant-rollback fallback. The <b>first bottleneck</b> was the backfill fighting live traffic: one 100M-row <code>UPDATE</code> locks the table and rolls back all-or-nothing → <b>batch</b> it into 20,000 small committed chunks (5,000 rows each), <b>throttle</b> on replica lag (Lesson 06) so stale reads don't spread, and page by <b>cursor not offset</b> (Lesson 18) so batch 20,000 doesn't re-scan 100M rows. The real lesson: <span class="key">a schema change on a live table is not an event, it's a <i>sequence</i> — you make the database understand both the old and new shape at once, move every reader and writer across in small reversible steps, and remove the old shape only after nothing uses it. The trade is migration safety vs deploy velocity.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson builds directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>Payments &amp; ledgers:</b> we just made the <code>orders</code> table safe to reshape — now make the <i>money</i> in it trustworthy. A double-entry ledger where every movement is an immutable append (never an <code>UPDATE</code>), money moves exactly once (Lesson 13's idempotency, now load-bearing for dollars), and the whole thing reconciles to the penny even under eventual consistency. The trade shifts from <b>migration safety vs deploy velocity</b> to <b>correctness/auditability vs throughput.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">schema</span>
+    <span class="pill">DDL / DML</span>
+    <span class="pill">migration</span>
+    <span class="pill">online vs offline</span>
+    <span class="pill">lock</span>
+    <span class="pill">backfill</span>
+    <span class="pill">dual-write</span>
+    <span class="pill">expand/contract</span>
+    <span class="pill">parallel change</span>
+    <span class="pill">backward-compatible change</span>
+    <span class="pill">nullable column</span>
+    <span class="pill">cutover</span>
+    <span class="pill">bake time</span>
+    <span class="pill">batched update</span>
+    <span class="pill">replication lag</span>
+    <span class="pill">cursor vs offset</span>
+    <span class="pill">rollback / reversibility</span>
+    <span class="pill">migration safety vs deploy velocity</span>
+  </p>
+  <p>That's Lesson 24, built directly on Lesson 23's teaser (we kept two continents' data in agreement; now change its shape), reusing Lesson 06's replication lag &amp; read-your-writes for the backfill throttle, Lesson 07's cascading timeouts as the failure mode of a locked table, Lesson 12's write amplification for the dual-write cost, Lesson 18's cursor-not-offset for the batch paging, and Lesson 22's lock as the thing a long ALTER holds. <b>Ask me follow-ups</b> — e.g. "how do online-DDL tools like pt-online-schema-change or gh-ost do this with a shadow table and triggers instead of dual-write in the app?", "what changes if the migration is a NOT-NULL constraint or a new index instead of a column split?", "how do you make the backfill itself idempotent and resumable after a crash?", "when is a blue-green / shadow-table cutover better than in-place expand/contract?", or "how does this dance work across the two regions from Lesson 23?" When you're ready, say <b>next</b> and we'll go deeper on <i>Payments &amp; ledgers — double-entry immutability and exactly-once money movement.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "You need to rename orders.total to amount_cents on a live table with 50 app servers running the old code. Why is a single 'ALTER TABLE ... RENAME' followed by one code deploy the wrong plan?",
+    options: [
+      {t:"Because a fleet deploy is gradual: the instant the schema renames the column, every server still running the old code issues 'SELECT total' against a column that no longer exists and errors out — an outage that lasts until the code deploy finishes crawling across all 50 servers. The schema and the code disagree for that whole window.",
+       ok:true,
+       fb:"Right. A schema change and a code change are two separate deploys that are never simultaneous across a fleet, so there's an unavoidable window where old code meets the new schema. Renaming in place makes that window fatal. Expand/contract removes it by making the DB understand both shapes at once."},
+      {t:"Because renaming a column always rewrites the entire table on every database engine, and that is guaranteed to take exactly 200 seconds regardless of table size.",
+       ok:false,
+       fb:"A long rewrite-and-lock is one real risk (Move 1's ~200 s / million queued writes), but it's engine- and change-specific, and the 200 s figure came from a 20 GB table at 100 MB/s — not a universal constant. The deeper, always-present problem is the code/schema gap during the gradual deploy, which breaks old code even for a free, instant rename."},
+      {t:"Because you can never add or change columns on a table that is currently serving traffic — all schema changes require taking the database offline first.",
+       ok:false,
+       fb:"Not true — online schema changes are exactly what this lesson is about. Adding a nullable column takes a sub-second metadata lock and serves traffic throughout. The problem isn't that schema changes need downtime; it's that a *rename* isn't backward-compatible, so old code breaks the moment it lands."}
+    ]
+  },
+  {
+    stem: "In the expand/contract dance you enable dual-write BEFORE starting the backfill, and cut readers over to the new column only AFTER the backfill is verified. Why that exact order?",
+    options: [
+      {t:"Dual-write first guarantees every NEW write fills both columns, so the backfill only has to mop up OLD rows once and can't be undone by a concurrent write. Readers cut over last because until the backfill finishes, un-migrated rows still have NULL in the new column — trusting it early would serve NULLs. Verify-then-flip keeps the new column from ever being read half-filled.",
+       ok:true,
+       fb:"Exactly. If you backfilled first and dual-wrote second, a write landing in the gap could update the old column only, and the backfill (which touches only NULL rows) would skip that now-stale row. Dual-write-first makes new writes self-consistent; verify-before-cutover makes sure the new column is complete before anyone trusts it."},
+      {t:"The order doesn't actually matter — backfill and dual-write can happen in either order, and readers can cut over at any point, because the database keeps the columns in sync automatically.",
+       ok:false,
+       fb:"The database does NOT keep two independent columns in sync automatically — that's the whole reason for dual-write in the app. Get the order wrong (backfill before dual-write) and rows written in the gap end up stale and the backfill skips them. And cutting readers over before the backfill completes serves NULLs from un-migrated rows."},
+      {t:"You cut readers over first so they start using the fast new column immediately, then backfill afterward to fill in whatever the readers noticed was missing.",
+       ok:false,
+       fb:"Backwards and dangerous. Cutting readers over before the backfill means every read of an un-migrated row returns NULL for amount_cents — wrong answers served to users. Readers must go last, only after a 'SELECT COUNT(*) WHERE amount_cents IS NULL' returns 0."}
+    ]
+  },
+  {
+    stem: "For the backfill, a colleague proposes one statement: UPDATE orders SET amount_cents=total, currency='USD' WHERE amount_cents IS NULL — all 100M rows at once. What's wrong, and what's the fix?",
+    options: [
+      {t:"One statement touches 100M rows in a single transaction: it holds locks for minutes (blocking the 5,000 writes/sec of live traffic), balloons the undo/redo log toward tens of GB, and if it fails at row 90M the whole thing rolls back — zero progress. Fix: batch it into ~20,000 small committed chunks (LIMIT 5,000, paged by cursor), throttled on replica lag, so each batch locks briefly and a failure loses only the last batch.",
+       ok:true,
+       fb:"Right. The single mega-UPDATE is just Move 1's lock outage in disguise, plus an all-or-nothing rollback risk. Batching turns it into thousands of tiny transactions that slip between live writes; cursor paging (not OFFSET) keeps each batch O(batch); watching replica lag stops stale reads from spreading. Slower on purpose — the goal is invisibility, not speed."},
+      {t:"Nothing is wrong — a single UPDATE is the fastest way to backfill, and databases handle 100M-row transactions efficiently, so this is the recommended approach.",
+       ok:false,
+       fb:"A 100M-row transaction is precisely what you must avoid: minutes-long locks on a hot table, a huge transaction log that can exhaust disk, and a total rollback if it fails near the end. 'Fastest' here means 'most likely to cause the outage the whole migration was designed to prevent.'"},
+      {t:"The problem is only the WHERE clause — remove 'WHERE amount_cents IS NULL' so it updates every row unconditionally, and it will be safe.",
+       ok:false,
+       fb:"That makes it strictly worse: you'd rewrite all 100M rows including the ones already correct, doing more work under the same table-locking single transaction. The WHERE clause is fine (it lets the job be re-run/resumed). The real fix is batching into many small transactions, not touching more rows in one."}
+    ]
+  },
+  {
+    stem: "You've cut readers over to amount_cents and everything looks healthy. Your teammate wants to immediately DROP COLUMN total in the same deploy to reclaim space. Why hold off?",
+    options: [
+      {t:"Because dropping the old column is the one irreversible step, and while dual-write is still on, 'total' is a warm standby that makes the reader cutover instantly reversible — if the new read path turns out wrong, you redeploy readers back to 'total' with no data lost. So you first stop dual-writing, bake for a day to flush out any hidden consumer, and only then drop. Reclaiming 400 MB isn't worth losing the rollback.",
+       ok:true,
+       fb:"Exactly. Every other step has a working rollback; DROP COLUMN does not. Keeping 'total' warm (still dual-written) is what makes the risky cutover reversible, and the bake period is your last chance to discover a forgotten reader while the column still holds good data. Contract is deliberately two deploys — stop writing, bake, then drop."},
+      {t:"Because DROP COLUMN always locks the table for the same ~200 seconds as the original rewrite, so it must be scheduled for a maintenance window regardless of anything else.",
+       ok:false,
+       fb:"In modern engines, dropping a column no live code uses is backward-compatible and takes only a sub-second metadata lock — it's not the 200 s rewrite. The reason to wait isn't lock duration; it's that DROP is irreversible and you want to keep 'total' as a rollback safety net until you're certain nothing needs it."},
+      {t:"Because you can never drop a column once it has been added — SQL databases keep every column that has ever existed for audit purposes.",
+       ok:false,
+       fb:"Columns can absolutely be dropped; that's the whole 'contract' half of the dance. The caution is about *timing*: drop is the single irreversible step, so you retire it last — after stopping dual-write and baking — not that it's impossible."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

@@ -271,15 +271,53 @@
     consensus (L10/11 CP, blocks on partition) / escrow (split the budget per region,
     L06/08 shard-the-counter on an invariant). Trade: local writes vs global order.
     (Lesson 0023)
-24. Schema changes & migrations at scale — the expand/contract (dual-write,
-    backfill, cutover) dance to change a column on a live 100M-row table with zero
-    downtime. Trade: migration safety vs deploy velocity.
+24. ✅ **Schema changes & migrations at scale** — split the `orders` table's
+    ambiguous `total` (int cents, assumed USD) into `amount_cents` + `currency` on a
+    live 100M-row table (50k reads/s, 5k writes/s) with zero downtime. The naive
+    `ALTER ... RENAME` is a double trap: a table-rewriting ALTER on 20 GB @ 100 MB/s
+    locks ~200 s → queues ~1,000,000 writes (L07 cascade), AND a fleet code deploy is
+    gradual so the instant the column renames, every old server's `SELECT total`
+    errors — a schema deploy and a code deploy are NEVER simultaneous, and that gap is
+    the outage. Fix = **expand/contract** (parallel change): (1) expand schema with
+    backward-compatible nullable columns (sub-second metadata lock), (2) **dual-write**
+    both shapes, (3) **backfill** old rows in background (~2.8 h @ 10k rows/s), (4)
+    **cutover** readers with a plain code deploy (instant, reversible), (5) **contract**
+    — stop dual-write, bake, DROP old column. Two ordering rules make it safe: dual-write
+    ON *before* backfill (else a gap-write leaves the new col stale and backfill skips
+    NULL-only rows), and cut readers over only *after* verifying zero-NULL, keeping the
+    old col warm as instant rollback. First wall = the backfill vs live table: one
+    100M-row UPDATE locks + rolls back all-or-nothing → batch into 20k committed chunks
+    (LIMIT 5k), throttle on **replica lag** (L06), page by **cursor not offset** (L18).
+    DROP is the one irreversible step → bake first. Trade: migration safety vs deploy
+    velocity. (Lesson 0024)
 25. Payments & ledgers — double-entry immutability, exactly-once money movement
     (recap L13), reconciliation, and eventual consistency you can audit. Trade:
     correctness/auditability vs throughput.
 26. Real-time delivery (WebSocket/push at scale) — fan-out to millions of live
     connections: connection state, presence, the thundering reconnect (recap
     L02/L07), and sticky routing. Trade: statefulness vs elastic scale.
+
+### Advanced topics (next batch — queued so the course never runs dry)
+27. Autoscaling & capacity planning — size a fleet from load: queueing theory
+    (Little's Law L13, utilization vs latency knee at ~70%), reactive vs predictive
+    scaling, cold-start & scale-up lag, the scale-to-zero vs always-warm dial. Trade:
+    cost vs headroom for spikes.
+28. Backpressure & flow control end-to-end — a fast producer overwhelming a slow
+    consumer across a whole call graph (recap L05/L07/L09): bounded queues, credit-based
+    flow control, load shedding vs buffering, and where to put the "no" (admission
+    control). Trade: throughput vs tail latency & stability.
+29. Data warehousing & OLAP (batch + streaming) — the 25-trillion-event firehose
+    (L21) answered with columnar storage, partitioning/pruning, the OLTP-vs-OLAP split,
+    and the lambda/kappa (batch vs streaming) reconciliation. Trade: query freshness vs
+    cost & complexity.
+30. Secrets, keys & encryption at rest/in transit — protecting the payment data from
+    L24/L25: envelope encryption, key rotation without re-encrypting everything, the
+    KMS as a coordination point (recap L10), and TLS termination placement. Trade:
+    security blast-radius vs operational friction.
+31. Deployments & progressive rollout — ship new code to the L24 fleet safely:
+    blue-green vs canary vs rolling, health-gated promotion, feature flags as the
+    decouple-deploy-from-release lever, and instant rollback. Trade: release velocity
+    vs blast radius.
 
 ## Lesson format conventions
 - Four reusable "moves" framing introduced in Lesson 01: estimate → model →

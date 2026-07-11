@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0024-schema-migrations.html">
+    <div class="num">LESSON 24</div>
+    <div class="title">Schema Changes at Scale: Renaming a Column on a Live 100M-Row Table Without Downtime</div>
+    <div class="blurb">Lesson 23 kept two continents' <i>data</i> in agreement. Now change its <i>shape</i>: split the <code>orders</code> table's ambiguous <code>total</code> into <code>amount_cents</code> + <code>currency</code> — on <b>100M rows</b> taking <b>50k reads/sec and 5k writes/sec</b> — with zero downtime. The naive <code>ALTER ... RENAME</code> is a double trap: a table-rewriting ALTER on 20 GB locks for <b>~200 s</b> and queues <b>~1,000,000</b> writes, and even a <i>free</i> rename breaks every app server still running old code, because a schema deploy and a code deploy are never simultaneous across a fleet. Fix it with the <b>expand/contract</b> dance — add nullable columns, <b>dual-write</b> both shapes, <b>backfill</b> the old rows in the background (~2.8 h), <b>cut readers over</b> with a plain code deploy, then <b>contract</b> — five small reversible steps where old and new code both always work. Trace a read and write at each stage to pin the two ordering rules (dual-write <i>before</i> backfill; cut readers over only after verifying zero-NULL, keeping the old column warm for instant rollback). Then the wall: one 100M-row <code>UPDATE</code> locks the table and rolls back all-or-nothing → batch it into 20,000 chunks, throttle on replica lag (L06), page by cursor not offset (L18). Trade named throughout: migration safety vs deploy velocity.</div>
+  </a>
   <a class="lesson" href="lessons/0023-multi-region-active-active.html">
     <div class="num">LESSON 23</div>
     <div class="title">Multi-Region Active-Active: Two Continents, One Cart, and the Write That Can't Be Merged</div>
