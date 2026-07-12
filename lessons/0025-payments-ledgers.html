@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 25 — Payments &amp; Ledgers: Moving $50 So It Can Never Be Lost, Doubled, or Un-Audited</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 25 · Worked Example</div>
+  <h1>Payments &amp; Ledgers: Moving $50 So It Can Never Be Lost, Doubled, or Un-Audited</h1>
+  <p class="lead">Lesson 24 made the <code>orders</code> table safe to <i>reshape</i>. Now we make the <b>money</b> inside it trustworthy. The system is a digital wallet: Alice pays Bob <b>$50</b>, and afterwards three things must be true forever — the $50 left Alice and arrived at Bob (never vanished, never doubled), a retry of the same request moves the money <b>once</b> (Lesson 13, now load-bearing for dollars), and an auditor six months later can prove every balance to the penny. The tempting design — a <code>balance</code> column you <code>UPDATE balance = balance + 50</code> — fails all three: it races (Lesson 06's lost update), it keeps <i>no history</i> to audit, and a single bad write silently corrupts the number with no way to recompute it. The fix is the oldest idea in accounting, the <b>double-entry ledger</b>: money is never edited, only <b>appended</b> as paired entries that sum to zero. We'll <b>estimate</b> the scale and the cost of getting it wrong, <b>model</b> the ledger (accounts, immutable entries, transactions), <b>trace</b> a transfer, a duplicate retry, and a refund, and hit the wall: computing a hot account's balance by summing millions of entries. The trade shifts from Lesson 24's migration-safety-vs-velocity to a new one: <b>correctness &amp; auditability vs throughput.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0025-payments-ledgers.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>A digital wallet. Users hold a balance, top it up from a bank, and pay each other. We handle about <b>10 million transfers per day</b> (~116/sec average, ~1,200/sec at peak). Every dollar amount is stored in <b>integer cents</b> — never a float, because <code>0.1 + 0.2</code> in floating point is <code>0.30000000000000004</code>, and money that doesn't add up exactly is a bug you can't ship. The single most concrete operation, the one we trace all lesson, is: <b>Alice pays Bob $50.00</b> — that is, <b>5000 cents</b>.</p>
+<p>The naive design keeps one row per user with a mutable <code>balance</code> column and, on a transfer, runs two updates: <code>balance = balance − 5000</code> for Alice and <code>balance = balance + 5000</code> for Bob. It looks obviously right and is quietly disastrous. So instead of <i>editing</i> balances, we <b>record movements</b> and never touch them again. Here is the whole idea in one picture.</p>
+
+<div class="diagram"><pre>
+  DOUBLE-ENTRY LEDGER  —  one transfer, two entries that sum to zero
+
+  Alice pays Bob $50.00   (5000 cents)
+
+  transactions (the request)        entries (append-only: never UPDATE, never DELETE)
+  +----------------------+          +-----+----------+----------+
+  | txn_id   T1          |          | txn | account  |  amount  |
+  | idem_key ab-9f       |  ----->  | T1  | Alice    |   -5000  |
+  | status   posted      |          | T1  | Bob      |   +5000  |
+  +----------------------+          +-----+----------+----------+
+                                                 sum of T1 = 0   <-- the invariant
+
+  balance(account) = SUM(amount) over ALL its entries        (derived, not stored)
+     balance(Alice) drops by 50      balance(Bob) rises by 50
+     SUM of EVERY entry in the whole ledger = 0   (money is only moved, never made)
+</pre></div>
+
+<p class="note"><span class="key">A balance is not a number you edit. It is the running total of an append-only list of movements. You never change money that already happened — you only add a new entry. That one rule buys you correctness, auditability, and safe retries all at once.</span></p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Ledger</b> — the append-only record of every money movement. The <i>source of truth</i>; everything else (balances, reports) is derived from it.</li>
+  <li><b>Account</b> — a bucket money can sit in: a user's wallet, a merchant, a fee account, or a <b>system account</b> that represents the outside world (the bank). A balance belongs to an account.</li>
+  <li><b>Entry</b> (a.k.a. a <b>posting</b>) — one line: "this account changed by this signed amount." Entries are <b>immutable</b> — once written, never updated or deleted.</li>
+  <li><b>Transaction</b> (ledger sense) — a group of entries that belong together and must be applied all-or-nothing. Its entries always <b>sum to zero</b>.</li>
+  <li><b>Debit / credit</b> — accountants call the two sides of an entry a debit and a credit. We'll use plain <b>signed amounts</b> and keep only the rule that matters: <b>the entries of one transaction sum to zero.</b> That's double-entry in one sentence.</li>
+  <li><b>Immutable / append-only</b> — the ledger only grows. To "change" the past you <i>append</i> a correcting entry, so the original stays visible for the auditor.</li>
+  <li><b>Balance</b> — <code>SUM(amount)</code> over all of an account's entries. <b>Derived</b>, not stored as a truth of its own.</li>
+  <li><b>Idempotency key</b> — a client-chosen id (Lesson 13) attached to a transfer so that retrying it moves money at most once.</li>
+  <li><b>Reconciliation</b> — checking the books balance: every account's stored/snapshot balance equals the sum of its entries, and the whole ledger still sums to zero.</li>
+  <li><b>Compensating transaction</b> — a <i>new</i> transaction that reverses an earlier one (a refund), instead of deleting the original.</li>
+</ul>
+
+<h2>Move 1 — Estimate: the scale, and the price of a single wrong move</h2>
+<p>Two numbers set the stage: how much the ledger grows, and how much one mistake costs. The growth is easy; the cost of error is the reason every design choice below leans toward safety.</p>
+
+<div class="card calc">
+  <p><b>Worked: how fast the ledger grows.</b> Double-entry means each transfer writes <b>2 entries</b> (one per side). At 10M transfers/day:</p>
+  <p>• entries/day = <code>10,000,000 × 2 = 20,000,000</code> rows.</p>
+  <p>• entries/year = <code>20,000,000 × 365 ≈ 7.3 billion</code> rows.</p>
+  <p>• at ~100 bytes/entry that's <code>7.3 × 10⁹ × 100 B ≈ 730 GB/year</code>. Modest for a database — the append-only ledger is <i>cheap to keep</i>, which is exactly why we never throw a movement away. <span class="key">Storage is not the problem; correctness is.</span></p>
+</div>
+
+<div class="card calc">
+  <p><b>Worked: what one duplicate costs.</b> Suppose 2% of requests get retried after a timeout (Lesson 07 — a timeout is a <i>partial</i> failure; the money may already have moved). If the design isn't exactly-once, every retry moves the money again:</p>
+  <p>• duplicated moves/day = <code>10,000,000 × 2% = 200,000</code>.</p>
+  <p>• at $50 each = <code>200,000 × $50 = $10,000,000/day</code> of money moved that shouldn't have been.</p>
+  <p>That is the same $10M/day from Lesson 13 — but here it isn't an over-charge you refund, it's <i>wrong balances across the whole system</i>, and once balances are wrong you don't ship a fix, you run a forensic audit. <span class="key">In payments, a bug isn't a bad pixel — it's money that moved wrong, and someone has to find every cent.</span> This is why the ledger is built to make wrong moves structurally hard, not just unlikely.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — correctness &amp; auditability vs throughput.</b> A single mutable <code>balance</code> column is the fastest possible design: one row, one write, done. The ledger is slower and larger — two immutable rows per move, balances computed instead of read, nothing ever edited in place. We pay that throughput and storage to buy something a fast counter can never give back: a complete, tamper-evident history where every balance can be re-derived and proven. The rest of the lesson is spending throughput to buy correctness — and then, at the wall, buying some of the throughput back.</p>
+
+<h2>Move 2 — Model: accounts, immutable entries, transactions that sum to zero</h2>
+<p>Three tables. <b>Accounts</b> (who can hold money). <b>Transactions</b> (one row per money-moving request, carrying the idempotency key and a status). <b>Entries</b> (the append-only movements; two or more per transaction, always summing to zero). Balances are not a table — they're a query over entries.</p>
+
+<div class="diagram"><pre>
+  THE THREE TABLES
+
+  accounts                 transactions                      entries (APPEND-ONLY)
+  +---------+-------+       +-----+----------+--------+       +----+---------+--------+
+  | id      | kind  |       | id  | idem_key | status |       | id | txn/acct| amount |
+  +---------+-------+       +-----+----------+--------+       +----+---------+--------+
+  | Alice   | user  |       | T1  | ab-9f    | posted |       | e1 | T1/Alice|  -5000 |
+  | Bob     | user  |       +-----+----------+--------+       | e2 | T1/Bob  |  +5000 |
+  | bank    | system|         ^ UNIQUE(idem_key)             +----+---------+--------+
+  | fees    | system|           = exactly-once (L13)            ^ never updated/deleted
+  +---------+-------+
+
+  RULE 1 (atomicity):  all entries of a transaction commit together, or none do.
+  RULE 2 (balance):    SUM(amount) within one transaction = 0.
+  => therefore SUM(amount) over the WHOLE ledger is ALWAYS 0. Money is conserved.
+</pre></div>
+
+<p>Where does money <i>enter</i> the system? It can't appear from nowhere without breaking Rule 2. So the outside world gets an account too — a <b>system account</b> named <code>bank</code>. A top-up of $100 into Alice's wallet is still a zero-sum transaction: <code>bank −10000</code>, <code>Alice +10000</code>. The <code>bank</code> account's (negative) balance is exactly "how much real money we owe the world," and the ledger stays a closed, self-checking system whose grand total never leaves zero. A platform fee works the same way: Alice pays Bob $50 with a $2 fee becomes three entries — <code>Alice −5000</code>, <code>Bob +4800</code>, <code>fees +200</code> — still summing to zero.</p>
+
+<p class="note why"><b>Name the trade-off — derived balance vs stored balance.</b> By making the balance a <code>SUM</code> over immutable entries instead of a stored number, we get a balance that is <i>always</i> re-derivable and <i>impossible</i> to silently corrupt: there is no single number a bad write can wreck, because the number doesn't exist until you add it up. The cost is that reading a balance is now work (a sum), not a lookup — and that bill comes due in Move 4 on a hot account. Truth you can rebuild vs a number you can read cheaply: we chose rebuildable truth, and we'll buy back the cheap read carefully.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Three journeys prove the model: a clean transfer, a duplicate retry (exactly-once), and a refund (immutability). Watch the same invariant hold every time — <b>every transaction sums to zero, and nothing already written is ever changed.</b></p>
+
+<h3>Path A — the happy transfer (and why the two entries commit as one)</h3>
+<div class="diagram"><pre>
+  Alice pays Bob $50.  Request carries idem_key = ab-9f.
+
+  BEGIN transaction (one atomic database commit)
+    INSERT transactions (T1, idem_key=ab-9f, status=posted)   -- UNIQUE(idem_key)
+    INSERT entries (T1, Alice, -5000)
+    INSERT entries (T1, Bob,   +5000)
+    -- optional guard: check balance(Alice) >= 5000 before commit
+  COMMIT                                        <-- both entries land, or neither
+
+  After: balance(Alice) -= 50,  balance(Bob) += 50,  sum(T1) = 0  OK
+</pre></div>
+<p>The two entries go in <b>one database transaction</b> (Lesson 13's "commit the effect and the record together"). This is not optional. If you wrote <code>Alice −5000</code>, then crashed before <code>Bob +5000</code>, $50 would have <i>vanished</i> — the ledger's total would no longer be zero and the books would never balance again. Atomicity is what makes "sum to zero" a guarantee instead of a hope. The optional balance check (don't let Alice go negative) rides inside the same commit so it can't race — it's the same single-transaction discipline, now protecting an <i>invariant</i> (<code>balance ≥ 0</code>), exactly the un-mergeable invariant from Lesson 23.</p>
+
+<h3>Path B — the duplicate retry (exactly-once money movement, recap L13)</h3>
+<div class="diagram"><pre>
+  Alice's phone times out waiting for T1 and retries — SAME idem_key ab-9f.
+
+  BEGIN
+    INSERT transactions (T2, idem_key=ab-9f, ...)
+      -> UNIQUE(idem_key) VIOLATION  (ab-9f already used by T1)
+  ROLLBACK
+    -> look up the existing transaction for ab-9f, return ITS result.
+       No new entries written. Money moved exactly once.
+
+  Balances unchanged by the retry. sum still 0.
+</pre></div>
+<p>The idempotency key is a <b>unique constraint</b> on the transactions table. The first request claims <code>ab-9f</code>; the retry's insert hits the constraint and fails <i>before any entry is written</i> — so the second attempt cannot move money. This is the atomic "claim the key" from Lesson 13, now the thing standing between a network blip and a doubled balance. <span class="key">Exactly-once <i>delivery</i> is impossible on a network (Lesson 09), but exactly-once <i>effect</i> is easy: let the database's unique index be the one place a duplicate is caught.</span></p>
+
+<h3>Path C — the refund (you don't delete money, you append its reversal)</h3>
+<div class="diagram"><pre>
+  Bob refunds Alice's $50.  DO NOT delete or edit T1's entries.
+
+  Append a NEW compensating transaction:
+    INSERT transactions (T3, idem_key=refund-ab-9f, reverses=T1, status=posted)
+    INSERT entries (T3, Bob,   -5000)
+    INSERT entries (T3, Alice, +5000)                sum(T3) = 0
+
+  History now reads:  T1  Alice->Bob $50   (still there, untouched)
+                      T3  Bob->Alice $50   (the reversal)
+  Net effect: zero. Audit trail: complete. Alice's balance: back to start.
+</pre></div>
+<p>Refunds, corrections, chargebacks — <i>all</i> of them are new transactions, never edits. Deleting T1 would make the money "un-happen," and an auditor asking "what occurred on the 3rd?" would get a lie. Appending T3 tells the truth: the payment happened <i>and</i> was reversed, both visible. This is why immutability isn't fussiness — it's the property that makes the ledger <b>auditable</b>. The general reconciliation check falls straight out of it: sum every entry in the whole ledger; if the total isn't exactly <b>0</b>, money leaked and you have a bug to hunt. Because entries never change, that check is always valid and always reproducible.</p>
+
+<p class="note why"><b>Name the trade-off — append-forever vs edit-in-place.</b> Never editing means the ledger only grows (Move 1's 730 GB/year) and a "simple" correction becomes a whole new transaction. In return, the past is <i>fixed</i>: no write can rewrite history, every state is reconstructable by replaying entries, and every dispute has a paper trail. Storage and a little ceremony, traded for a history you can stand behind in a courtroom.</p>
+
+<h2>Move 4 — Find the first bottleneck: a hot account's balance is a SUM of millions of rows</h2>
+<p>Reads are where "balance = derived" bites. For Alice it's nothing — a handful of entries. But the <code>bank</code> account and popular merchants sit on one side of a huge fraction of all transfers, so their entry list is enormous, and <code>SUM</code> over it is <b>O(n)</b>.</p>
+
+<div class="card calc">
+  <p><b>Worked: the merchant whose balance takes seconds to read.</b> A busy merchant has been on the platform three years and has <b>100 million</b> entries. Reading them through an index (Lesson 12: ~16 bytes per index entry) to add them up means scanning:</p>
+  <p>• <code>100,000,000 × 16 B = 1.6 GB</code> of index, at ~500 MB/s ≈ <code>1.6 GB ÷ 0.5 GB/s ≈ 3.2 s</code>.</p>
+  <p>A <b>3.2-second</b> balance read, on every page load, for your best customers. Worse, the <code>bank</code> account touches <i>every</i> top-up and withdrawal, so it grows fastest of all. Computing truth from scratch is correct but does not scale. <span class="key">The very thing that made the balance incorruptible — deriving it from all history — is what makes it slow to read.</span></p>
+  <p><b>The fix — snapshot the running balance.</b> Periodically write a checkpoint: "as of entry #100,000,000, this account's balance is X." A balance read becomes <code>snapshot + SUM(entries since the snapshot)</code>:</p>
+  <p>• if 1,000 entries have landed since the last checkpoint, the read sums <b>1,000</b> rows, not 100M — a <code>100,000×</code> cut, back to sub-millisecond.</p>
+</div>
+
+<p>Two properties keep the snapshot honest, and they're the whole reason it's safe:</p>
+<ul>
+  <li><b>The snapshot is a cache, not a new source of truth.</b> The entries remain the ground truth; the snapshot is a <i>derived</i> convenience (Lesson 12's covering index / Lesson 02's cache, applied to money). If a snapshot is ever doubted, you delete it and recompute from entries — the truth was never lost. Contrast the mutable <code>balance</code> column we rejected: <i>that</i> was the only copy, so corrupting it lost the truth. A snapshot corrupted is just a stale cache.</li>
+  <li><b>Reconciliation still works.</b> The nightly audit sums raw entries (ignoring snapshots) and checks the ledger totals zero and each snapshot matches its recomputed sum. Snapshots make reads fast <i>without</i> becoming something you have to trust blindly.</li>
+</ul>
+
+<p>Behind the slow read hides a second wall — the same one from Lessons 06, 08, and 23. The <code>bank</code> account isn't just slow to <i>read</i>; it's a single row every top-up must <i>write</i> to, so it serializes writes and becomes a hot row (contention, lost-update pressure). The fix is the one we keep meeting: <b>shard the account</b> into N sub-accounts (<code>bank#0 … bank#7</code>), spread writes across them, and define the real balance as the sum of the shards (Lesson 21's mergeable counter). Trade named: an exact single-row balance vs a sharded balance that scales writes but must be summed to read.</p>
+
+<p class="note why"><b>Name the core trade-off — correctness &amp; auditability vs throughput.</b> Everything in this lesson spent throughput to buy correctness: two immutable entries instead of one mutable update, balances derived instead of stored, nothing ever edited. Move 4 buys throughput back <i>without</i> giving up correctness — snapshots and sharded accounts make hot balances fast, but only as <b>derived</b> accelerators over an untouched append-only ledger. That's the discipline of payments systems: make truth cheap to read, but never let the fast path <i>become</i> the truth. The ledger is always the source; the fast numbers are always rebuildable from it.</p>
+
+<table>
+  <tr><th>Concern</th><th>Naive (mutable balance)</th><th>Ledger design</th><th>Trade bought</th></tr>
+  <tr><td>Move money</td><td><code>UPDATE balance</code> (races, L06)</td><td>append 2 entries in one commit</td><td>correctness over a single fast write</td></tr>
+  <tr><td>Retry safety</td><td>double-moves</td><td><code>UNIQUE(idem_key)</code> (L13)</td><td>exactly-once effect</td></tr>
+  <tr><td>Refund</td><td>edit/undo the number</td><td>append compensating txn</td><td>full audit trail</td></tr>
+  <tr><td>Read balance</td><td>read one column (fast)</td><td><code>SUM</code> of entries (slow on hot acct)</td><td>rebuildable truth</td></tr>
+  <tr><td>Hot balance fix</td><td>—</td><td>snapshot + shard the account</td><td>throughput back, truth kept</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We moved <b>$50</b> from Alice to Bob in a way that can never lose it, double it, or hide it. <b>Estimate</b> sized the ledger (2 entries/transfer → ~7.3B rows/year ≈ 730 GB — cheap) and priced a single mistake (2% retries × 10M/day × $50 = <b>$10M/day</b> of wrongly-moved money, which in payments means a forensic audit, not a hotfix) — so the design leans everywhere toward safety. <b>Model</b> gave the <b>double-entry ledger</b>: immutable <b>entries</b> grouped into <b>transactions</b> that <b>sum to zero</b>, balances <i>derived</i> as <code>SUM(amount)</code> rather than stored, and the outside world represented by a <code>bank</code> <b>system account</b> so the whole ledger always totals zero — money is conserved, never created. <b>Tracing</b> proved three things: the two entries commit in <b>one atomic transaction</b> (or $50 vanishes and the books never balance again); a duplicate retry is stopped cold by a <b>unique idempotency key</b> before any entry is written (Lesson 13's exactly-once <i>effect</i>, now moving dollars); and a refund is a <b>new compensating transaction</b>, never a deletion — which is exactly what keeps the ledger auditable and makes "sum every entry, expect 0" a reconciliation check you can always run. The <b>first bottleneck</b> was the hot account whose balance is a <code>SUM</code> of 100M entries (~3.2 s per read) → <b>snapshot</b> the running balance (read <code>snapshot + SUM(since)</code>, a 100,000× cut) and <b>shard</b> the account for write throughput (Lesson 21), with both kept strictly as <i>derived</i> accelerators over an untouched ledger. The real lesson: <span class="key">a balance is not a number you store and edit — it's the running total of an append-only list of movements you never change. That single rule gives you correctness, safe retries, and a provable audit trail at once; the price is throughput, which you buy back with derived snapshots that never get to be the truth. The trade is correctness &amp; auditability vs throughput.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson builds directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>Real-time delivery (WebSocket / push at scale):</b> the ledger settled the money; now tell millions of phones the instant their balance changed. Hold millions of <i>live</i> connections open, track presence, route a "you got paid" push to the one device that cares, and survive the thundering reconnect when a server dies (Lessons 02 &amp; 07 return). The trade shifts from <b>correctness &amp; auditability vs throughput</b> to <b>statefulness vs elastic scale.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">ledger</span>
+    <span class="pill">account</span>
+    <span class="pill">system account</span>
+    <span class="pill">entry / posting</span>
+    <span class="pill">transaction (ledger)</span>
+    <span class="pill">debit / credit</span>
+    <span class="pill">double-entry</span>
+    <span class="pill">sum-to-zero invariant</span>
+    <span class="pill">immutable / append-only</span>
+    <span class="pill">atomic commit</span>
+    <span class="pill">balance (derived)</span>
+    <span class="pill">integer cents</span>
+    <span class="pill">idempotency key</span>
+    <span class="pill">exactly-once effect</span>
+    <span class="pill">compensating transaction</span>
+    <span class="pill">reconciliation</span>
+    <span class="pill">balance snapshot</span>
+    <span class="pill">account sharding</span>
+    <span class="pill">correctness/auditability vs throughput</span>
+  </p>
+  <p>That's Lesson 25, built directly on Lesson 24's teaser (we made the <code>orders</code> table safe to reshape; now make the money in it trustworthy), reusing Lesson 06's lost update &amp; hot row (why not a mutable balance column), Lesson 07's timeout-is-a-partial-failure (why retries happen), Lesson 09's no-exactly-once-on-the-wire (so exactly-once <i>effect</i> instead), Lesson 12's derived index / snapshot shape, Lesson 13's idempotency key (now load-bearing for dollars), Lesson 21's mergeable sharded counter (for the hot account), and Lesson 23's un-mergeable invariant (<code>balance ≥ 0</code>). <b>Ask me follow-ups</b> — e.g. "how do you enforce <code>balance ≥ 0</code> without locking the whole account on every write?", "what's the difference between a <i>pending</i>/authorized hold and a <i>posted</i> entry, and how do two-phase captures fit the ledger?", "how does the ledger reconcile against the <i>real</i> bank statement when their clock and ours disagree?", "where do currencies and FX rates live so a EUR→USD transfer still sums to zero?", or "how would you build the ledger to survive a whole region failing (Lesson 23) without double-posting?" When you're ready, say <b>next</b> and we'll go deeper on <i>Real-time delivery — WebSockets and push to millions of live connections.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "A teammate proposes the simplest wallet: one row per user with a balance column, and a transfer does UPDATE balance = balance − 5000 for Alice and + 5000 for Bob. Name the deepest reason this is the wrong design for money.",
+    options: [
+      {t:"It keeps no history and stores the balance as the only copy of the truth: concurrent transfers race into lost updates (Lesson 06), a single bad write silently corrupts the number with nothing to recompute it from, and an auditor has no record of what actually moved. A ledger instead appends immutable entries and derives the balance, so the truth is always rebuildable and every movement is on the record.",
+       ok:true,
+       fb:"Right. The mutable column is fast but it IS the truth — corrupt it and the truth is gone, and it carries no audit trail. Double-entry makes the balance a derived SUM over an append-only list, so no single write can wreck it and every cent is accounted for."},
+      {t:"It's wrong only because integers can overflow — you must use a floating-point balance column so large balances fit, and then the two updates are perfectly safe.",
+       ok:false,
+       fb:"Backwards on two counts. Floats are exactly what money must NOT use (0.1 + 0.2 ≠ 0.3 in floating point), and overflow isn't the issue — 64-bit integer cents hold far more than any real balance. The real problem is that a single mutable number races, keeps no history, and can be silently corrupted."},
+      {t:"It's wrong because UPDATE statements are always slower than INSERTs, so the ledger is chosen purely for write speed.",
+       ok:false,
+       fb:"The ledger is actually MORE write work (two immutable inserts instead of one update) — it's chosen for correctness and auditability, not speed. In fact Move 4 spends effort buying read throughput back. Speed is the thing we trade away here, not the thing we're chasing."}
+    ]
+  },
+  {
+    stem: "Alice's phone times out and retries the same $50 transfer, reusing idem_key ab-9f. In the ledger design, what structurally guarantees the money moves exactly once?",
+    options: [
+      {t:"A UNIQUE constraint on the transaction's idempotency key: the first request claims ab-9f, and the retry's INSERT hits the constraint and fails BEFORE any entry is written, so the second attempt cannot post entries. The server then returns the original transaction's result. The database index is the single place a duplicate is caught.",
+       ok:true,
+       fb:"Exactly. Exactly-once delivery is impossible on a network (Lesson 09), but exactly-once effect is easy: make the unique index reject the duplicate atomically, before it can move money. This is Lesson 13's 'claim the key' now guarding dollars."},
+      {t:"Nothing structural is needed — the client should just remember it already sent the request and never retry, so duplicates can't happen in the first place.",
+       ok:false,
+       fb:"You can't rely on that. A timeout is a partial failure (Lesson 07): the client genuinely doesn't know if the first attempt succeeded, so it MUST be safe to retry. The safety has to live server-side in the unique idempotency key, not in a hope that clients never resend."},
+      {t:"The two entries summing to zero guarantees it — because each transaction is balanced, running it twice cancels out and leaves the money unchanged.",
+       ok:false,
+       fb:"Sum-to-zero keeps each transaction internally consistent, but running the transfer twice posts TWO balanced transactions — Alice ends up down $100 and Bob up $100, each set summing to zero. Balanced-but-duplicated is still wrong. The unique key is what stops the second one from posting at all."}
+    ]
+  },
+  {
+    stem: "Bob needs to refund Alice's $50. One engineer wants to DELETE T1's two entries so it's like it never happened. Why does the ledger instead append a NEW reversing transaction?",
+    options: [
+      {t:"Because entries are immutable: deleting T1 would make the payment 'un-happen' and an auditor asking what occurred would get a lie. Appending a compensating transaction (Bob −5000, Alice +5000, sum 0) tells the truth — the payment happened AND was reversed, both visible — nets the balances back to start, and keeps the whole-ledger 'sum to 0' reconciliation check valid because no past entry ever changed.",
+       ok:true,
+       fb:"Right. Immutability is what makes the ledger auditable: corrections are new facts, not erasures. Delete history and you lose the paper trail AND you can break the reconciliation invariant; append the reversal and everything stays provable."},
+      {t:"Because deleting rows is slower than inserting them, so appending a reversal is just a performance optimization.",
+       ok:false,
+       fb:"It's not about speed — it's about truth. The reason to append is that the original event genuinely happened and the audit trail must show it, along with its reversal. Performance isn't the driver; auditability and immutability are."},
+      {t:"Because you can never remove rows from a SQL table once inserted — databases forbid DELETE on any table holding money.",
+       ok:false,
+       fb:"Databases happily allow DELETE; there's no such rule. The immutability here is a DESIGN discipline the ledger imposes on itself precisely so history can't be rewritten — not a limitation of the database."}
+    ]
+  },
+  {
+    stem: "A busy merchant has 100M entries, so reading its balance as SUM(amount) takes ~3.2 s. You add periodic balance snapshots so a read becomes snapshot + SUM(entries since). Why is this safe when the mutable balance column from question 1 was not?",
+    options: [
+      {t:"Because the snapshot is a DERIVED cache, not the source of truth: the immutable entries remain ground truth, so a doubted snapshot can simply be deleted and recomputed from entries — the truth was never lost. The rejected mutable column was the ONLY copy, so corrupting it lost the truth. Reconciliation still sums raw entries to verify each snapshot, so the fast path never has to be trusted blindly.",
+       ok:true,
+       fb:"Exactly. A snapshot corrupted is just a stale cache over an intact ledger (recompute and move on); the mutable column corrupted was the truth itself, gone. The snapshot buys back read speed WITHOUT becoming the source of truth — that's the whole discipline."},
+      {t:"It's safe because once you have snapshots you can delete the old entries they summarize, shrinking the table so nothing can go wrong.",
+       ok:false,
+       fb:"Deleting the entries would destroy the audit trail and break reconciliation — the exact opposite of the goal. The snapshot works precisely BECAUSE the entries are kept immutable underneath it; the snapshot is disposable, the entries are not."},
+      {t:"It's safe because the snapshot replaces the ledger as the new source of truth, so you no longer need the entries at all.",
+       ok:false,
+       fb:"That would recreate the original mistake — a single mutable number as the only truth, silently corruptible. The snapshot is explicitly NOT the source of truth; it's a derived accelerator that must always be reproducible from the entries, which stay the ground truth."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

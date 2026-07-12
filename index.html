@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0025-payments-ledgers.html">
+    <div class="num">LESSON 25</div>
+    <div class="title">Payments &amp; Ledgers: Moving $50 So It Can Never Be Lost, Doubled, or Un-Audited</div>
+    <div class="blurb">Lesson 24 made the <code>orders</code> table safe to <i>reshape</i>. Now make the <b>money</b> in it trustworthy: Alice pays Bob <b>$50</b>, and forever after the $50 must never vanish or double, a retry must move it <b>once</b>, and an auditor must prove every balance to the penny. The tempting <code>UPDATE balance = balance + 50</code> fails all three — it races (L06's lost update), keeps <i>no history</i> to audit, and one bad write silently corrupts the number with no way to recompute it. The fix is the oldest idea in accounting: the <b>double-entry ledger</b>, where money is never edited, only <b>appended</b> as paired immutable <b>entries that sum to zero</b> — so a balance is a <code>SUM</code> you derive, not a number you store, and the whole ledger always totals zero (money is conserved via a <code>bank</code> system account). Trace a clean transfer (two entries in <b>one atomic commit</b>, or $50 vanishes), a duplicate retry stopped cold by a <b>unique idempotency key</b> before any entry is written (L13's exactly-once <i>effect</i>, now moving dollars), and a refund that <b>appends a reversal</b> instead of deleting — which is what keeps the books auditable. Then the wall: a hot merchant's balance = <code>SUM</code> of 100M entries takes <b>~3.2 s</b> → snapshot the running balance (100,000× cut) and shard the account (L21), both kept as <i>derived</i> accelerators over an untouched ledger. Trade named throughout: correctness &amp; auditability vs throughput.</div>
+  </a>
   <a class="lesson" href="lessons/0024-schema-migrations.html">
     <div class="num">LESSON 24</div>
     <div class="title">Schema Changes at Scale: Renaming a Column on a Live 100M-Row Table Without Downtime</div>

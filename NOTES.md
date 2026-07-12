@@ -290,9 +290,25 @@
     (LIMIT 5k), throttle on **replica lag** (L06), page by **cursor not offset** (L18).
     DROP is the one irreversible step → bake first. Trade: migration safety vs deploy
     velocity. (Lesson 0024)
-25. Payments & ledgers — double-entry immutability, exactly-once money movement
-    (recap L13), reconciliation, and eventual consistency you can audit. Trade:
-    correctness/auditability vs throughput.
+25. ✅ **Payments & ledgers** — a digital wallet moving $50 from Alice to Bob so it
+    can never be lost, doubled, or un-audited. Reject the mutable `balance` column
+    (L06 lost update, no history, single corruptible copy of the truth) for the
+    **double-entry ledger**: immutable append-only **entries** grouped into
+    **transactions** that **sum to zero**, balances *derived* as `SUM(amount)` not
+    stored, money entering/leaving via a `bank` **system account** so the whole ledger
+    always totals 0 (money conserved). Estimate: 2 entries/transfer → ~7.3B rows/yr ≈
+    730 GB (cheap); one duplicate class = 2% × 10M/day × $50 = **$10M/day** wrongly
+    moved (an audit, not a hotfix). Trace: two entries in **one atomic commit** (else
+    $50 vanishes, books never balance again, guards `balance ≥ 0` = L23 invariant);
+    duplicate retry stopped by **UNIQUE(idem_key)** before any entry writes (L13
+    exactly-once *effect*, no exactly-once on the wire L09); refund = **compensating
+    transaction** appended, never a delete → keeps the "sum all entries = 0"
+    reconciliation valid. First wall = hot account balance = `SUM` of 100M entries
+    (1.6 GB index scan ≈ **3.2 s**) → **snapshot** running balance (`snapshot + SUM(since)`,
+    100,000× cut) + **shard the account** (L21 mergeable counter) for write throughput,
+    both strictly *derived* accelerators over an untouched ledger (a corrupted snapshot
+    is a stale cache; the rejected mutable column was the only truth). Trade:
+    correctness/auditability vs throughput. (Lesson 0025)
 26. Real-time delivery (WebSocket/push at scale) — fan-out to millions of live
     connections: connection state, presence, the thundering reconnect (recap
     L02/L07), and sticky routing. Trade: statefulness vs elastic scale.
