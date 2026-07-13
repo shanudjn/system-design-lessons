@@ -309,9 +309,31 @@
     both strictly *derived* accelerators over an untouched ledger (a corrupted snapshot
     is a stale cache; the rejected mutable column was the only truth). Trade:
     correctness/auditability vs throughput. (Lesson 0025)
-26. Real-time delivery (WebSocket/push at scale) — fan-out to millions of live
-    connections: connection state, presence, the thundering reconnect (recap
-    L02/L07), and sticky routing. Trade: statefulness vs elastic scale.
+26. ✅ **Real-time delivery (WebSocket/push at scale)** — tell 10M phones "you got
+    paid" the instant L25's ledger moves, in ~100 ms, without them asking. Estimate:
+    10M idle sockets ≈ 200 GB across ~40 gateways @ 250k each (idle conns cheap), and
+    polling every 5s = 2M req/s to carry only ~232 real events/s (10M transfers/day ×2
+    notified) = ~8,600× waste AND still 5s stale → hold live connections. Model the
+    split that makes a stateful layer scalable: a dumb DISPOSABLE **gateway** holds the
+    raw **WebSocket** (an HTTP request UPGRADED into a persistent full-duplex socket),
+    while the durable truth `user→gateway` lives OFF-gateway in a shared **connection
+    registry** with a heartbeat-renewed TTL; **presence** = "is there a live entry?"
+    for free. Trace: (A) Bob connects, LB picks any gateway, registry write is the only
+    durable effect; (B) Alice pays Bob → dispatcher does registry lookup → forward to
+    that one gateway (L09 pub-sub) → one frame down the open socket (~100 ms), fanned
+    out to all his devices (L15); (C) Bob offline → NOT dropped, degrade to
+    store-and-forward mobile push (APNs/FCM) + durable inbox (L15) — the live socket is
+    a best-effort ACCELERATOR, never the system of record (L25's disposable-fast-path).
+    First wall = correlated motion: gateway w/ 250k sockets dies → all 250k reconnect
+    in ~1s (~6,410/s per survivor = 51× baseline, ~20 cores of TLS handshake, lockstep
+    metastable storm, L02/L07 thundering herd) → **backoff + jitter** (L07, → ~1.7×
+    baseline, breaks lockstep), **capacity headroom** (L07/L23 N−1 absorbs the dead
+    box), **sticky-but-disposable** routing (socket sticky by nature, but any reconnect
+    lands anywhere & re-announces). Secondary walls = slow-consumer backpressure (bound
+    the per-conn send buffer, L07 unbounded queue) and the registry as a hot dependency
+    (shard/replicate, L04/L06). Trade: statefulness vs elastic scale — can't make a
+    connection stateless, but make it cheap to lose (truth off the gateway → a death
+    costs a reconnect, not a message). (Lesson 0026)
 
 ### Advanced topics (next batch — queued so the course never runs dry)
 27. Autoscaling & capacity planning — size a fleet from load: queueing theory

@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 26 — Real-Time Delivery: Telling 10 Million Phones "You Got Paid" the Instant It Happens</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 26 · Worked Example</div>
+  <h1>Real-Time Delivery: Telling 10 Million Phones "You Got Paid" the Instant It Happens</h1>
+  <p class="lead">Lesson 25 settled the money — Alice's $50 moved to Bob as two immutable ledger entries that can never be lost or doubled. But Bob's phone still doesn't <i>know</i>. The old way to find out is to ask over and over ("any change? any change?"); we want the opposite — the server tells Bob the instant his balance moves, in about <b>100 ms</b>, without him asking. That means holding a <b>live connection</b> open to every phone at once: <b>10 million</b> of them, sitting idle almost all the time, each ready to receive the one message that matters to it. We'll <b>estimate</b> the cost of holding that many open sockets (and why polling instead would drown us), <b>model</b> the pieces (the WebSocket, the gateway that holds it, the registry that routes to it, presence), <b>trace</b> three paths — Bob connects, Alice's payment finds Bob's socket, and Bob is offline — and then hit the wall that defines this whole domain: a gateway holding 250,000 live connections dies, and all 250,000 phones try to reconnect <i>at the same instant</i>. The trade shifts from Lesson 25's correctness-vs-throughput to a new one: <b>statefulness vs elastic scale.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0026-realtime-delivery.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>A real-time delivery layer for the wallet from Lesson 25. Users keep the app open; the moment their balance changes — a payment arrives, a transfer clears — their screen updates on its own, no refresh, no tap. Concretely we serve about <b>10 million users with the app open at once</b> (concurrent connections), and the single event we trace all lesson is: <b>Alice pays Bob $50, and Bob's phone must show "You got paid $50" within ~100 ms.</b></p>
+<p>The naive design is <b>polling</b>: every phone asks the server "anything new for me?" every few seconds. It's simple and it works for ten users. At ten million it's a firehose of requests that almost always answer "no" — we'll price that in a moment. The alternative flips who speaks first: the phone opens <i>one</i> long-lived connection and then stays quiet, and the <i>server</i> speaks the instant there's news. Here is the whole shape in one picture.</p>
+
+<div class="diagram"><pre>
+  REAL-TIME DELIVERY  —  the server speaks first, over a connection it already holds
+
+      Bob's phone                    GATEWAYS (hold the live sockets)         event source
+   +-------------+                   +--------+  +--------+  +--------+       +-----------+
+   |  app open   | == WebSocket ===> |  G0    |  |  G7    |  |  G39   |       |  ledger   |
+   |  (idle)     |    (1 socket,     | 250k   |  | 250k   |  | 250k   |       | (L25)     |
+   +-------------+     stays open)   | conns  |  | conns  |  | conns  |       +-----------+
+        ^                            +--------+  +--------+  +--------+             |
+        |                                            ^                             | "Bob +$50"
+        |   "You got paid $50"  (~100 ms)            |                             v
+        +--------------------------------------------+                      +-------------+
+                     G7 writes one frame                                    | dispatcher  |
+                     down Bob's existing socket  <----- "send to Bob" ----- | + registry  |
+                                                                            +-------------+
+                                                        registry:  Bob -> G7   (who holds Bob?)
+
+  Polling would instead have all 10M phones ASK every 5s = 2,000,000 requests/sec,
+  ~99.99% of them answered "nothing new." Push sends only the ~232 real events/sec.
+</pre></div>
+
+<p class="note"><span class="key">A real-time system doesn't make messages travel faster — it removes the asking. Instead of ten million phones repeatedly asking "anything for me?", the server keeps a connection open to each one and speaks only when there's something to say. The whole design is about affording to hold those connections and knowing which one to speak into.</span></p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Polling</b> — the client repeatedly asks the server for updates on a timer. Simple; wasteful when updates are rare.</li>
+  <li><b>WebSocket</b> — one long-lived TCP connection, upgraded from an ordinary HTTP request, that stays open and lets <i>either</i> side send a message at any time (full-duplex). The default tool for real-time.</li>
+  <li><b>Persistent / long-lived connection</b> — a socket that stays open for minutes or hours, not one request then closed. Holding millions of these is the core cost.</li>
+  <li><b>Server-Sent Events (SSE)</b> — a simpler cousin: the server can push to the client over HTTP, but the client can't push back on the same channel (one-way). Good when only the server has news.</li>
+  <li><b>Gateway</b> (a.k.a. edge / connection server) — the server whose whole job is to <i>hold</i> the live sockets and shovel messages down them. Stateful by nature: a socket lives on exactly one gateway.</li>
+  <li><b>Connection registry</b> — the lookup table <code>user → which gateway holds their socket</code>. Without it, an event has no idea where to go.</li>
+  <li><b>Presence</b> — who is online <i>right now</i>, derived from which connections are alive.</li>
+  <li><b>Heartbeat (ping/pong)</b> — a tiny message sent every N seconds to prove the connection is still alive, because a dead phone doesn't announce itself.</li>
+  <li><b>Fan-out</b> — delivering one event to many connections (Lesson 15, now to live sockets instead of stored inboxes).</li>
+  <li><b>Sticky routing</b> — pinning a client's traffic to one specific server. A live socket is inherently sticky; the skill is making that stickiness <i>disposable</i>.</li>
+  <li><b>Backoff + jitter</b> — retry after a growing, randomized delay (Lesson 07) so a crowd doesn't retry in lockstep.</li>
+  <li><b>Mobile push (APNs / FCM)</b> — the phone-OS notification channel that reaches a device even when your app is closed. The fallback when there's no live connection.</li>
+</ul>
+
+<h2>Move 1 — Estimate: what it costs to hold 10 million open sockets (and why polling is worse)</h2>
+<p>Two numbers decide the architecture: how much a fleet of open connections costs, and how much polling would cost instead. The second number is why we bother with the first.</p>
+
+<div class="card calc">
+  <p><b>Worked: the cost of holding the connections.</b> Say <b>10,000,000</b> users have the app open at once. An idle WebSocket costs memory on both the kernel side (socket buffers) and the app side (who is this, what do they subscribe to) — call it <b>~20 KB per connection</b> all-in.</p>
+  <p>• fleet memory = <code>10,000,000 × 20 KB = 200,000,000 KB ≈ 200 GB</code> — spread across many boxes, unremarkable.</p>
+  <p>• how many gateways? A tuned connection server comfortably holds <b>~250,000</b> idle sockets (the limit is memory and file descriptors, not CPU — idle connections do nothing). So <code>10,000,000 ÷ 250,000 = 40 gateways</code>, each using <code>250,000 × 20 KB = 5 GB</code> of RAM for connections. <span class="key">Idle connections are cheap in CPU and modest in RAM — the cost of real-time is not holding the sockets, it's the storms when they all move at once (Move 4).</span></p>
+</div>
+
+<div class="card calc">
+  <p><b>Worked: why polling is the expensive design.</b> Drop WebSockets and let each phone poll "anything new?" every <b>5 seconds</b>:</p>
+  <p>• request rate = <code>10,000,000 ÷ 5 s = 2,000,000 requests/sec</code>, forever, just to learn "nothing changed."</p>
+  <p>• How many are useful? From Lesson 25 the wallet does <b>10M transfers/day = ~116/sec</b>, each notifying 2 people → <b>~232 real events/sec</b>. So out of 2,000,000 polls/sec, about <b>232</b> carry news — <code>2,000,000 ÷ 232 ≈ 8,600×</code> more requests than there is news to deliver.</p>
+  <p>And it's still <b>up to 5 seconds stale</b>. To make polling feel instant (~100 ms) you'd poll 50× harder → <b>100M requests/sec</b>. <span class="key">Polling pays for every possible update whether or not it happened; push pays only for updates that actually happened. When events are rare relative to clients, push wins by orders of magnitude.</span> That ~8,600× gap is the entire reason to hold the connections.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — hold state vs stay stateless.</b> Polling is beautifully stateless: each request stands alone, any server answers it, scaling is trivial (Lesson 18's REST). Push is <i>stateful</i>: the server must keep a live socket per user and remember who is connected where. We take on that statefulness precisely to kill the 8,600× waste — and the rest of the lesson is the bill for statefulness: routing to the right socket, detecting dead ones, and surviving the moment a stateful server dies.</p>
+
+<h2>Move 2 — Model: the gateway, the registry, and presence</h2>
+<p>Split the job in two. The <b>gateway</b> layer holds sockets and nothing durable — it is deliberately dumb and disposable. The <b>durable truth</b> (who is connected where, what's undelivered) lives <i>off</i> the gateway, in a <b>connection registry</b>. That split is the whole trick to scaling something stateful: keep the expensive-to-lose state somewhere a gateway dying can't destroy.</p>
+
+<div class="diagram"><pre>
+  THE PIECES, AND WHO KNOWS WHAT
+
+  phone ── WebSocket ──> GATEWAY G7            REGISTRY (durable, off-gateway)
+                         holds the raw socket  +--------------+-----------+--------+
+                         for Bob               | user         | gateway   | expires|
+                         (state that dies      +--------------+-----------+--------+
+                          with G7 — on purpose)| Bob          | G7        | +60 s  |
+                                               | Alice        | G0        | +60 s  |
+   ledger event "Bob +$50"                     +--------------+-----------+--------+
+        |                                         ^  heartbeat renews the TTL;
+        v                                         |  no heartbeat -> entry expires
+   DISPATCHER: look up Bob in registry -> "G7" ---+  -> Bob is now "offline"
+        |
+        v  forward "Bob +$50" to G7 (internal RPC / pub-sub, L09)
+   G7 writes ONE WebSocket frame down Bob's existing socket  -> phone shows it
+
+  PRESENCE = "is there a live registry entry for this user?"  (online = yes)
+</pre></div>
+
+<p>Why keep the registry separate from the gateway that holds the socket? Because the socket and the routing fact have different lifetimes. The <b>socket</b> is fragile — it dies the instant G7 crashes or the phone loses signal. The <b>routing fact</b> ("Bob is reachable, currently via G7") is what every event needs, and it must survive one gateway dying. So the socket lives on the gateway; the fact lives in a shared, replicated store (Redis-style, keyed by user) with a short <b>TTL</b> that the connection's heartbeat keeps renewing. When G7 dies, its entries stop being renewed and expire within ~60 s — the system self-heals to "Bob is offline" without anyone cleaning up.</p>
+
+<p><b>Presence falls out for free.</b> "Is Bob online?" is just "does a live registry entry for Bob exist?" No separate system — presence is a <i>view</i> of the connection registry. The heartbeat that keeps a socket alive is the same signal that keeps presence honest: miss two pings and the entry expires, and Bob flips to offline whether he closed the app or drove into a tunnel.</p>
+
+<p class="note why"><b>Name the trade-off — where does the connection state live?</b> Put the routing table <i>on</i> the gateway and lookups are a local, zero-latency read — but a dead gateway takes the only copy of "who was connected here" with it, and no event can find those users until they reconnect and re-announce. Put it in a <i>shared</i> registry and every event pays a small network lookup, but any gateway can die without losing the map. We choose the shared registry: <span class="key">the socket is allowed to be disposable only because the fact of the connection is stored somewhere the socket's death can't reach.</span></p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Three journeys. Bob connecting, Alice's payment reaching Bob's live socket, and the same payment when Bob is offline. Watch the same rule hold: the gateway carries no truth of its own — every durable fact lives in the registry or the event source.</p>
+
+<h3>Path A — Bob opens the app (the connection is born)</h3>
+<div class="diagram"><pre>
+  1. Bob's phone sends an ordinary HTTPS request with:  Upgrade: websocket
+  2. A load balancer routes it to some gateway — say G7 (any gateway will do).
+  3. G7 authenticates Bob (his token), then completes the WebSocket handshake:
+        the HTTP request "upgrades" into a persistent full-duplex socket.
+  4. G7 writes the routing fact to the registry:   Bob -> G7, expires in 60 s
+  5. The socket goes idle. Every 30 s: phone <--ping/pong--> G7, which also
+     renews  Bob -> G7  in the registry (heartbeat = liveness AND presence).
+</pre></div>
+<p>The connection starts life as a normal HTTPS request and is <b>upgraded</b> in place — that's why WebSockets sail through the same ports and proxies as web traffic. The load balancer picks <i>any</i> gateway; there's no "Bob's gateway," which is exactly what lets us add or drain gateways freely. The one durable side effect is line 4: the registry now knows where to find Bob. Everything else about this connection is disposable.</p>
+
+<h3>Path B — Alice pays Bob, and the event finds Bob's socket</h3>
+<div class="diagram"><pre>
+  Ledger (L25) commits "Alice -$50 / Bob +$50" and emits an event: {to: Bob, ...}
+
+  dispatcher:
+    lookup registry[Bob]  ->  "G7"        (the routing table earns its keep here)
+    forward event to G7    (internal pub-sub / RPC, L09)
+  G7:
+    find Bob's live socket in local memory
+    write ONE frame: {"type":"credit","amount":5000,"from":"Alice"}
+  Bob's phone: renders "You got paid $50"      total time ~100 ms
+
+  If Bob has the app open on 2 devices -> registry[Bob] = {G7, G12}
+    -> fan out the event to BOTH gateways (L15 fan-out, now to live sockets)
+</pre></div>
+<p>The event never guesses. It asks the registry <i>where</i> Bob is, forwards to that one gateway, and the gateway does the only thing it's good at: write bytes down an open socket. Note the clean division — the <b>ledger</b> decided the money moved (the truth, Lesson 25), the <b>registry</b> decided where Bob is (the routing), and the <b>gateway</b> just delivered. Multiple devices are the fan-out from Lesson 15 applied to sockets: the registry holds a <i>set</i> of gateways for Bob, and the event is copied to each. <span class="key">Delivery is a lookup plus a write; all the intelligence is in keeping the lookup correct.</span></p>
+
+<h3>Path C — Bob is offline (degrade to store-and-forward push)</h3>
+<div class="diagram"><pre>
+  dispatcher: lookup registry[Bob]  ->  (nothing; entry expired — Bob's app is closed)
+
+  Real-time delivery is impossible: there is no socket. So DON'T drop the event.
+    -> hand it to mobile push (APNs / FCM): "You got paid $50"
+       which stores-and-forwards to Bob's device even with the app closed.
+    -> also persist it to Bob's inbox (L15) so it's there when he reopens.
+
+  Bob reopens the app later -> Path A (reconnect) -> app pulls the inbox to catch up.
+</pre></div>
+<p>A live connection is a <i>best-effort accelerator</i>, never the system of record. When it's absent, the message must not vanish — it falls back to the phone-OS push channel (store-and-forward, reaches a closed app) and to a durable inbox (Lesson 15) that the app drains on reconnect. This is the same discipline as Lesson 25's snapshot: the fast path (live socket) is disposable; the durable path (inbox + push) is the truth. <span class="key">Real-time is a latency optimization layered on top of reliable delivery — if you skip the durable fallback, every dropped connection is a lost message.</span></p>
+
+<p class="note why"><b>Name the trade-off — instant-but-fragile vs durable-but-slower.</b> The WebSocket gives ~100 ms delivery but only while it's up. Mobile push and the stored inbox are seconds-slower and clunkier, but they survive a closed app, a dead gateway, and a lost signal. Serious systems run <i>both</i>: push over the socket when it exists, fall back to store-and-forward when it doesn't. You don't pick one; you layer the fast path over the reliable one.</p>
+
+<h2>Move 4 — Find the first bottleneck: a gateway dies and 250,000 phones reconnect at once</h2>
+<p>The steady state is calm — millions of idle sockets sipping heartbeats. The danger is <i>correlated motion</i>: an event that makes a huge number of connections move in the same instant. The worst one is a gateway failing. G7 holds <b>250,000</b> live sockets; it crashes (or you deploy new code and restart it). Every one of those 250,000 phones notices the drop within a second or two and does the obvious thing: <b>reconnect immediately.</b> That's the thundering herd from Lessons 02 and 07, now made of connections.</p>
+
+<div class="card calc">
+  <p><b>Worked: the reconnect storm.</b> Baseline new-connection rate across the fleet is gentle — say <b>~5,000/sec</b>, or <code>5,000 ÷ 40 ≈ 125/sec</code> per gateway. Now G7 dies and its 250,000 clients all retry within ~1 second, landing on the surviving <b>39</b> gateways:</p>
+  <p>• burst per gateway = <code>250,000 ÷ 39 ≈ 6,410 new connections/sec</code> — about <code>6,410 ÷ 125 ≈ 51×</code> the normal rate, in a spike.</p>
+  <p>• each reconnect is <i>expensive</i>: a full TLS handshake (~3 ms of CPU), re-auth, and a registry write. At <code>6,410/s × 3 ms = 19.2</code> CPU-seconds of handshake work <i>per wall-second</i> — you'd need ~20 cores per box doing nothing but handshakes. The registry takes a <b>250,000-write spike</b> at the same moment.</p>
+  <p>Worse, if every client uses the same fixed 1-second retry, they reconnect <b>in lockstep</b> — connect, overload a gateway, get dropped, all retry together one second later: a synchronized wave that never settles. That's the metastable failure from Lesson 07, now a self-sustaining reconnect storm that can topple the <i>surviving</i> gateways one by one (the cascade).</p>
+</div>
+
+<p>The fixes are the ones we've earned, applied to connections:</p>
+<ul>
+  <li><b>Backoff + jitter on reconnect (Lesson 07).</b> Instead of retrying at a fixed 1 s, each client waits a <i>random</i> delay that grows on repeated failure — spread over, say, 30 s. Then <code>250,000 ÷ 30 ≈ 8,300/sec</code> across the fleet, <code>8,300 ÷ 39 ≈ 213/sec</code> per gateway — only <code>~1.7×</code> baseline instead of 51×, and handshake CPU drops to <code>213 × 3 ms ≈ 0.64</code> CPU-s/s. The jitter is what breaks the lockstep so waves never form.</li>
+  <li><b>Capacity headroom (Lessons 07 &amp; 23).</b> The remaining 39 gateways must hold the dead one's 250,000 sockets too. If every gateway already ran at 100%, one death has nowhere to go. Run gateways below capacity so <code>N</code> boxes can absorb the load of <code>N−1</code> — the price of surviving a failure at all.</li>
+  <li><b>Sticky, but disposable, routing.</b> A socket is sticky by nature — it lives on one gateway and can't be moved. But because the durable state is in the registry (Move 2), a reconnecting client can land on <i>any</i> gateway and simply re-announce itself. Stickiness that lasts only until the next reconnect is what lets a stateful layer scale and heal like a stateless one.</li>
+</ul>
+
+<p>Two more walls hide behind the storm. First, the <b>slow consumer</b>: a phone on a weak network can't read as fast as events arrive, so the gateway's per-connection send buffer fills. Unbounded, that buffer is a memory leak that kills the gateway (Lesson 07's unbounded queue). Bound it, and when it's full either drop the socket (let the client reconnect and pull the inbox) or shed — backpressure on a single connection. Second, the registry itself is now a <b>hot dependency</b> every event and every reconnect hits; it needs the sharding and replication of Lessons 04 and 06, or it becomes the single point the whole real-time layer waits on.</p>
+
+<p class="note why"><b>Name the core trade-off — statefulness vs elastic scale.</b> A gateway holding a live socket is irreducibly <i>stateful</i>: that connection exists on exactly one box and can't be load-balanced away mid-flight. Yet elastic scaling, rolling deploys, and failure recovery all want servers to be <i>disposable</i>. We resolve the tension not by removing the state but by making it <b>cheap to lose</b>: the durable truth (registry, inbox, the ledger itself) lives off the gateway, so any gateway can be killed at any moment and its clients just reconnect elsewhere — with backoff and jitter so the killing doesn't start a storm. <span class="key">You can't make a connection stateless, but you can make it disposable — hold the socket on the gateway and the truth everywhere else, so losing a gateway costs a reconnect, not a message.</span></p>
+
+<table>
+  <tr><th>Concern</th><th>Polling</th><th>Real-time (push)</th><th>Trade bought</th></tr>
+  <tr><td>Learn of an update</td><td>ask every 5 s (2M req/s)</td><td>server pushes on the ~232 events/s</td><td>~8,600× less waste, ~100 ms not ~5 s</td></tr>
+  <tr><td>Server state</td><td>stateless (any box answers)</td><td>stateful (socket lives on one gateway)</td><td>freshness for statefulness</td></tr>
+  <tr><td>Route an event</td><td>n/a (client pulls)</td><td>registry lookup <code>user → gateway</code></td><td>a small lookup per event</td></tr>
+  <tr><td>Client offline</td><td>just doesn't poll</td><td>fall back to mobile push + inbox</td><td>reliability under a fragile socket</td></tr>
+  <tr><td>Gateway dies</td><td>nothing to lose</td><td>backoff+jitter reconnect, headroom</td><td>survive the storm, not cause it</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We told <b>10 million phones</b> about their money the instant it moved, without any of them asking. <b>Estimate</b> sized the fleet (10M idle sockets ≈ 200 GB across ~40 gateways at 250k each — cheap to hold) and priced the alternative: polling every 5 s is <b>2,000,000 req/s</b> to carry only <b>~232 real events/s</b>, an ~8,600× waste that's <i>still</i> 5 s stale — the entire reason to hold live connections. <b>Model</b> split the job: a dumb, disposable <b>gateway</b> holds the raw socket, while the durable truth — <code>user → gateway</code> — lives in a shared <b>connection registry</b> with a heartbeat-renewed TTL, and <b>presence</b> falls out as "is there a live entry?" for free. <b>Tracing</b> proved the division of labor: Bob's connection is an HTTP request <i>upgraded</i> in place (line 4, the registry write, its only durable effect); Alice's payment reaches Bob by <b>registry lookup → forward to that gateway → one frame down the open socket</b> (~100 ms), fanned out to all his devices (Lesson 15); and when Bob is offline the event does <b>not</b> vanish — it degrades to store-and-forward mobile push plus a durable inbox, because the live socket is a best-effort <i>accelerator</i>, never the system of record. The <b>first bottleneck</b> was correlated motion: a gateway dies, its 250,000 clients reconnect in ~1 s (<b>~6,410/s per surviving gateway, 51× baseline</b>, ~20 cores of handshake CPU, a lockstep metastable storm) → fixed with <b>backoff + jitter</b> (Lesson 07, spreads it to ~1.7× baseline and breaks the lockstep), <b>capacity headroom</b> so N−1 gateways absorb the load, and <b>sticky-but-disposable</b> routing that lets a reconnect land anywhere. The real lesson: <span class="key">real-time delivery isn't faster messages — it's the server holding a connection so it can speak first, and then engineering around the fact that the connection is stateful. Hold the socket on the gateway and every durable truth everywhere else, so a dead gateway costs a reconnect, not a message. The trade is statefulness vs elastic scale.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson builds directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>Autoscaling &amp; capacity planning:</b> we just insisted on "headroom" so N−1 gateways survive — but how much headroom, and how do you add gateways <i>before</i> the storm instead of during it? Size a fleet from load with a little queueing theory (Little's Law from Lesson 13 returns), find the utilization knee where latency explodes (~70%), weigh reactive vs predictive scaling, and pay the cold-start tax of a server that isn't ready the instant you need it. The trade shifts from <b>statefulness vs elastic scale</b> to <b>cost vs headroom for spikes.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">polling</span>
+    <span class="pill">WebSocket</span>
+    <span class="pill">persistent connection</span>
+    <span class="pill">Server-Sent Events</span>
+    <span class="pill">gateway / edge server</span>
+    <span class="pill">connection registry</span>
+    <span class="pill">presence</span>
+    <span class="pill">heartbeat (ping/pong)</span>
+    <span class="pill">TTL renewal</span>
+    <span class="pill">fan-out to sockets</span>
+    <span class="pill">sticky routing</span>
+    <span class="pill">HTTP upgrade</span>
+    <span class="pill">dispatcher</span>
+    <span class="pill">store-and-forward</span>
+    <span class="pill">mobile push (APNs/FCM)</span>
+    <span class="pill">thundering reconnect</span>
+    <span class="pill">backoff + jitter</span>
+    <span class="pill">capacity headroom</span>
+    <span class="pill">slow consumer / backpressure</span>
+    <span class="pill">statefulness vs elastic scale</span>
+  </p>
+  <p>That's Lesson 26, built directly on Lesson 25's teaser (the ledger settled the money; now tell the phones), reusing Lesson 02's thundering herd &amp; edge caching shape, Lesson 07's timeout / backoff+jitter / unbounded-queue backpressure, Lesson 09's pub-sub forwarding, Lesson 15's fan-out (now to live sockets) and durable inbox, Lesson 23's N−1 headroom for surviving a failure, and Lesson 25's "the fast path is a disposable accelerator, never the truth." <b>Ask me follow-ups</b> — e.g. "how do you keep a message ordered and gap-free across a reconnect (sequence numbers / resume tokens)?", "when should I use Server-Sent Events or long-polling instead of a WebSocket?", "how does a group chat with 100k members fan out without melting one gateway?", "how do you do a zero-downtime rolling deploy of the gateways without dropping every socket at once?", or "how do you rate-limit a single abusive connection (Lesson 08) without hurting everyone on the same gateway?" When you're ready, say <b>next</b> and we'll go deeper on <i>Autoscaling &amp; capacity planning — sizing the fleet before the spike hits.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "A teammate says: 'Skip the WebSockets — just have every phone poll GET /updates every 5 seconds. It's stateless and simple.' For our 10M-user wallet, what's the strongest reason to hold live connections instead?",
+    options: [
+      {t:"Polling pays for every possible update whether or not it happened: 10M phones ÷ 5 s = 2,000,000 requests/sec, but only ~232 real events/sec exist to deliver — an ~8,600× waste — and it's still up to 5 s stale. Push holds a connection and speaks only on the ~232 real events, delivering in ~100 ms. When events are rare relative to clients, push wins by orders of magnitude.",
+       ok:true,
+       fb:"Right. The gap is structural: polling cost scales with clients × frequency, push cost scales with actual events. With 10M clients and ~232 events/s, that's ~8,600× fewer requests AND far fresher — which is exactly why we take on the statefulness."},
+      {t:"WebSockets are always cheaper on memory than polling, because an open socket uses no server resources while it's idle.",
+       ok:false,
+       fb:"An idle socket isn't free — it costs ~20 KB (≈200 GB across 10M connections) and, more importantly, forces the server to be stateful. Push wins on wasted-request volume and freshness, not by being resource-free. Idle connections are cheap, not costless."},
+      {t:"Polling can't deliver JSON, so you're forced to use WebSockets to send structured messages like a balance update.",
+       ok:false,
+       fb:"Polling returns JSON perfectly well — it's ordinary HTTP (Lesson 18). The problem isn't the payload format; it's that 2M req/s carry ~232 events' worth of news and arrive up to 5 s late. The reason to push is waste and latency, not data format."}
+    ]
+  },
+  {
+    stem: "Alice pays Bob. Bob's phone has one open socket somewhere among 40 gateways. How does the payment event actually reach that specific socket?",
+    options: [
+      {t:"A dispatcher looks Bob up in the connection registry (user → gateway), which says 'G7', forwards the event to G7, and G7 writes one frame down Bob's already-open socket. The registry is the durable routing table kept off the gateways; the gateway just does the final write.",
+       ok:true,
+       fb:"Exactly. Delivery is 'lookup where Bob is, forward there, write the frame.' All the intelligence is in keeping the registry correct; the gateway is a dumb pipe. If Bob's on two devices, the registry holds both gateways and the event fans out to each (Lesson 15)."},
+      {t:"The event is broadcast to all 40 gateways, and each one checks whether it happens to hold Bob's socket; the 39 that don't simply ignore it.",
+       ok:false,
+       fb:"That works but wastes 40× the internal traffic on every single event (and gets far worse with more gateways) — a broadcast where a lookup would do. The registry exists precisely so you forward to the one gateway that holds Bob, not shout at all of them."},
+      {t:"Each user is permanently assigned to a fixed gateway by hashing their user ID, so you compute Bob's gateway directly and never need a registry.",
+       ok:false,
+       fb:"Tempting, but a socket lives on whichever gateway the client connected to, and that changes every reconnect — after a gateway dies, Bob lands somewhere new. A fixed hash would point at the wrong (or dead) box. The routing fact must be looked up, not computed, because it's mutable."}
+    ]
+  },
+  {
+    stem: "Gateway G7 (250,000 live sockets) crashes. All 250,000 phones detect the drop and, being well-written, immediately reconnect one second later. What's the right fix?",
+    options: [
+      {t:"Reconnect with backoff + jitter (Lesson 07): each client waits a random, growing delay spread over ~30 s instead of a fixed 1 s. That turns a 250k-in-1-s spike (~6,410/s per surviving gateway, ~51× baseline) into ~8,300/s fleet-wide (~1.7× baseline), and the randomness breaks the lockstep so synchronized reconnect waves never form. Pair it with capacity headroom so N−1 gateways can hold the load.",
+       ok:true,
+       fb:"Right. A fixed-interval retry synchronizes the whole herd into waves that can topple the survivors (metastable failure). Jitter spreads them in time and breaks the lockstep; headroom gives the load somewhere to land. Same tools as Lesson 07, now applied to connections."},
+      {t:"Have every client reconnect faster — retry every 100 ms — so the herd clears quickly and service is restored sooner.",
+       ok:false,
+       fb:"That makes it far worse: you concentrate 250k reconnects into an even tighter spike and hammer the survivors harder, and synchronized fast retries are exactly the metastable storm that cascades. The fix is to spread reconnects OUT with jitter, not compress them."},
+      {t:"Store each socket's state on the gateway so that when G7 restarts it can restore all 250,000 connections exactly where they were, avoiding any reconnect.",
+       ok:false,
+       fb:"A TCP socket can't be resurrected on a restarted process — the clients' connections are already gone and must be re-established. That's why we keep the durable truth in the registry and treat the socket as disposable: recovery IS the reconnect, so the job is to make that reconnect gentle, not to prevent it."}
+    ]
+  },
+  {
+    stem: "We call the gateway 'stateful but disposable' and insist the connection registry, inbox, and ledger live off the gateway. Why does that split matter?",
+    options: [
+      {t:"Because it makes losing a gateway cost only a reconnect, not a message: the socket (fragile, tied to one box) can die anytime, but the durable truth — where users are, what's undelivered, the money itself — survives elsewhere, so clients just reconnect to another gateway and re-announce. That's what lets an irreducibly stateful layer scale, deploy, and heal like a stateless one.",
+       ok:true,
+       fb:"Exactly. You can't make a live connection stateless, but you can make it cheap to lose. Keep the socket on the gateway and every durable fact off it, and any gateway becomes killable at will — the cost of a death is a reconnect (softened by jitter), never a lost message."},
+      {t:"Because storing the registry on the gateway would be slower to read than a network call to a shared store, so off-gateway is a pure latency win.",
+       ok:false,
+       fb:"Backwards on latency — a local read is FASTER than a network hop to a shared registry. We pay that extra hop on purpose: the point is durability, not speed. A shared registry survives a gateway death; an on-gateway copy dies with the box and takes its users' routing with it."},
+      {t:"Because keeping state off the gateway makes the gateway fully stateless, so it behaves exactly like a Lesson 18 REST server and needs no special handling at all.",
+       ok:false,
+       fb:"The gateway is NOT stateless — it still holds the live socket, which can't be load-balanced away mid-connection. Moving the durable truth off it makes that state disposable, not absent. The reconnect storm in Move 4 is the special handling a truly stateless server would never need."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

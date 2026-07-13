@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0026-realtime-delivery.html">
+    <div class="num">LESSON 26</div>
+    <div class="title">Real-Time Delivery: Telling 10 Million Phones "You Got Paid" the Instant It Happens</div>
+    <div class="blurb">Lesson 25 settled the money; now tell Bob's phone the instant his balance moves — in <b>~100 ms</b>, without him asking. That means holding a <b>live connection</b> open to every phone at once: <b>10 million</b> of them, idle almost all the time, each ready for the one message that matters. Polling instead — every phone asking "anything new?" every 5 s — is <b>2,000,000 requests/sec</b> to carry only <b>~232 real events/sec</b> (an ~8,600× waste) and it's <i>still</i> 5 s stale. So flip it: the phone opens one <b>WebSocket</b> (an HTTP request <i>upgraded</i> into a persistent full-duplex socket) and stays quiet; the server speaks first. Model the split that makes a stateful layer scalable — a dumb, disposable <b>gateway</b> holds the raw socket (250k per box, ~40 boxes), while the durable truth <code>user → gateway</code> lives in a shared <b>connection registry</b> with a heartbeat-renewed TTL (and <b>presence</b> falls out for free). Trace Bob connecting, Alice's payment reaching his socket by <b>lookup → forward → one frame</b>, and Bob offline degrading to store-and-forward mobile push + a durable inbox (the live socket is an accelerator, never the truth). Then the wall: a gateway dies and its <b>250,000</b> phones reconnect in one second (~6,410/s per survivor, 51× baseline, a lockstep metastable storm) → <b>backoff + jitter</b> (L07), <b>capacity headroom</b> (L23's N−1), and sticky-but-disposable routing. Trade named throughout: statefulness vs elastic scale.</div>
+  </a>
   <a class="lesson" href="lessons/0025-payments-ledgers.html">
     <div class="num">LESSON 25</div>
     <div class="title">Payments &amp; Ledgers: Moving $50 So It Can Never Be Lost, Doubled, or Un-Audited</div>
