@@ -336,10 +336,28 @@
     costs a reconnect, not a message). (Lesson 0026)
 
 ### Advanced topics (next batch — queued so the course never runs dry)
-27. Autoscaling & capacity planning — size a fleet from load: queueing theory
-    (Little's Law L13, utilization vs latency knee at ~70%), reactive vs predictive
-    scaling, cold-start & scale-up lag, the scale-to-zero vs always-warm dial. Trade:
-    cost vs headroom for spikes.
+27. ✅ **Autoscaling & capacity planning** — the API tier behind L26's gateways:
+    40k req/s peak, 40 ms/req, 8 cores/server. Size the fleet TWICE and make them
+    agree: Little's Law (L13) fixes the floor (λ·S = 40,000×0.04 = 1,600 busy cores =
+    200 servers at an impossible 100%), and the utilization KNEE (M/M/1 response time
+    T = S/(1−ρ): 40 ms → 133 ms @70% but 4,000 ms @99% — flat then vertical) sets the
+    real target at 286 servers (the extra 43% ≈ $377k/yr buys distance from the cliff,
+    not throughput). Model the autoscaler as a FEEDBACK LOOP (measure ρ → compare to
+    ρ*=70% → desired = load/(C·ρ*) → act → cooldown), scale-out fast / scale-in slow,
+    wide band + cooldown so it doesn't FLAP (L10's leadership flap in servers). Trace
+    three loads on the one comparison that decides all — does load rise slower or faster
+    than a server boots: gentle morning ramp (reactive works, the default), sudden 2×
+    spike (reactive CAN'T catch it — fleet runs ρ=80k/57.2k=140% for ~3 min, backlog
+    grows 22,800/s ≈ 4.1M requests, latency leaves the knee → timeouts → L07 retry
+    storm/metastable), known 8:30 surge (beat only by PREDICTIVE/scheduled pre-scaling
+    ahead of it). First wall = the ~3-min COLD-START lag = a control loop's DEAD TIME
+    (minutes vs seconds-long spikes; you can't zero boot time) → attack the GAP not the
+    boot: spike-buffer headroom (run 60% → 333 servers, absorbs +16% to 46,620/s
+    instantly = one boot-window of slack), warm pools (pay idle, take traffic in
+    seconds), predictive pre-scale (L Path C), faster warm-up (smaller images/snapshot);
+    SCALE-TO-ZERO is the opposite extreme of the same dial (cost vs cold-start latency).
+    Reuses L13 Little's Law, L07 metastable/retry storm past the knee, L10 flapping.
+    Trade: cost vs headroom for spikes. (Lesson 0027)
 28. Backpressure & flow control end-to-end — a fast producer overwhelming a slow
     consumer across a whole call graph (recap L05/L07/L09): bounded queues, credit-based
     flow control, load shedding vs buffering, and where to put the "no" (admission

@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 27 — Autoscaling &amp; Capacity Planning: Sizing a Fleet Before the Spike Hits</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 27 · Worked Example</div>
+  <h1>Autoscaling &amp; Capacity Planning: Sizing a Fleet Before the Spike Hits</h1>
+  <p class="lead">Lesson 26 leaned on a word without earning it: <b>headroom</b>. We said "run the gateways below capacity so N−1 boxes can absorb a death" — but <i>how far</i> below, and how do you add servers <b>before</b> the storm instead of scrambling during it? This lesson answers both for the API tier behind those gateways: <b>40,000 requests per second</b> at peak, each request needing about <b>40 ms</b> of CPU. We'll <b>estimate</b> the fleet size two ways that must agree (Little's Law from Lesson 13 returns), find the <b>utilization knee</b> near ~70% where latency stops being linear and shoots to the moon, <b>model</b> the autoscaler as a feedback loop (measure → decide → provision → warm), <b>trace</b> three loads — a gentle morning ramp, a sudden 2× spike, and a known scheduled surge — and then hit the wall that defines this whole domain: a server takes <b>~3 minutes</b> to boot and warm up, so a reactive autoscaler can never catch a spike that rises faster than that. The trade shifts from Lesson 26's statefulness-vs-scale to the one every capacity decision comes down to: <b>cost vs headroom for spikes.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0027-autoscaling.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>An API fleet — plain stateless request/response servers (Lesson 18's REST), the tier that does the actual work behind the connection gateways of Lesson 26. Every server is identical and interchangeable; a load balancer sprays requests across them. Our job is to decide <b>how many servers to run</b>, moment to moment, as load rises and falls — enough to keep responses fast, not so many that we burn money on idle boxes. Concretely: <b>peak load ≈ 40,000 requests/second</b>, each request costs about <b>40 ms of CPU time</b> (one core, one request, 40 ms — call this the <b>service time</b>), and each server has <b>8 cores</b>.</p>
+<p>The naive plan is "watch CPU, add a server when it's busy, remove one when it's idle." That instinct is right and also the source of every autoscaling disaster, because a server you ask for now doesn't exist for another few minutes. Here is the whole shape in one picture — the control loop, and the curve that makes it dangerous.</p>
+
+<div class="diagram"><pre>
+  AUTOSCALING  —  a feedback loop steering a fleet, fighting a curve that isn't linear
+
+     load (req/s)                 the AUTOSCALER control loop                  the FLEET
+   ~~~~~~~~~~~~~~~            +-----------------------------------+       +----+ +----+ +----+
+   40k ... 80k spike  =====> | 1. MEASURE  utilization  ρ = 85%  |  ==>   | s1 | | s2 | | s3 | ...
+        |                    | 2. COMPARE  to target    ρ* = 70% |        | 70%| | 70%| | 70%|
+        |                    | 3. DECIDE   desired = N·ρ/ρ*      |        +----+ +----+ +----+
+        |                    | 4. PROVISION  launch new servers  |          ^  286 servers
+        |                    | 5. WARM       ~3 min until ready  | ---------+  (each 8 cores)
+        |                    +-----------------------------------+   the lag lives in step 5
+        v
+   RESPONSE TIME vs UTILIZATION  (T = S / (1 - ρ),  service time S = 40 ms):
+
+     ρ=50% |##                        80 ms      <- linear-ish, calm
+     ρ=70% |####                     133 ms      <- the KNEE: still fine, edge of safe
+     ρ=80% |#######                  200 ms
+     ρ=90% |###############          400 ms      <- past the knee, latency runs away
+     ρ=95% |###############################      800 ms
+     ρ=99% |############################...####  4,000 ms   (same servers, 1% more load)
+
+  Size the fleet to sit at the knee (~70%). The gap from 70% to 100% isn't 30% more
+  slowness — it's the difference between 133 ms and a timeout.
+</pre></div>
+
+<p class="note"><span class="key">Autoscaling is a control loop with a delay built into it. The autoscaler measures load, decides how many servers it wants, and asks for them — but the servers take minutes to arrive. So capacity planning is really two questions: what is the right number of servers for a given load (the knee), and how do you have them running before the load that needs them shows up (the lag). Everything in this lesson is one of those two.</span></p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Service time (S)</b> — how long one request occupies one core of work. Here <b>40 ms</b>. Not the same as response time (which includes waiting).</li>
+  <li><b>Throughput / capacity (C)</b> — how many requests a server can finish per second at full tilt. One core at 40 ms/req does <code>1 ÷ 0.04 = 25 req/s</code>; 8 cores → <b>200 req/s</b> per server.</li>
+  <li><b>Utilization (ρ, "rho")</b> — the fraction of capacity in use: <code>ρ = load ÷ capacity</code>. A server taking 140 req/s of its 200 possible is at 70%.</li>
+  <li><b>Response time (T)</b> — service time <i>plus</i> time spent waiting in the queue for a free core. This is what the user feels.</li>
+  <li><b>Little's Law (Lesson 13)</b> — in any stable system, <code>items in flight = arrival rate × time each spends inside</code>: <code>L = λ × W</code>. It ties fleet size to load and latency.</li>
+  <li><b>The utilization knee</b> — the point (~70–80%) where the response-time curve bends sharply upward. Below it, more load costs a little latency; above it, a little more load costs a lot.</li>
+  <li><b>Autoscaler</b> — the controller that watches a metric and adds/removes servers to keep it near a target. <b>Target tracking</b> = "keep utilization at 70%."</li>
+  <li><b>Scale-out / scale-in</b> — add servers / remove servers (horizontal). Distinct from scale-<i>up</i> (bigger servers, vertical).</li>
+  <li><b>Cold start / warm-up lag</b> — the minutes between "launch a server" and "that server can safely take traffic": boot, app start, JIT/cache warm, health checks.</li>
+  <li><b>Reactive vs predictive scaling</b> — respond to load you're already seeing, vs provision ahead of load you expect (a schedule, a forecast).</li>
+  <li><b>Warm pool</b> — pre-booted standby servers kept ready so they can take traffic in seconds instead of minutes. You pay for idle to buy speed.</li>
+  <li><b>Cooldown / flapping</b> — a wait after each scaling action so the fleet doesn't thrash (add-remove-add) around the threshold (Lesson 10's leadership flap, now for capacity).</li>
+  <li><b>Scale-to-zero</b> — run <i>no</i> servers when idle; the first request pays a full cold start. The extreme end of the cost-vs-latency dial.</li>
+</ul>
+
+<h2>Move 1 — Estimate: how many servers, two ways that must agree</h2>
+<p>We size the fleet twice — once from raw work, once from the latency we're willing to tolerate — and the two answers have to line up. The gap between them <i>is</i> the headroom decision.</p>
+
+<div class="card calc">
+  <p><b>Worked (way 1): the floor, from Little's Law.</b> At peak, <b>λ = 40,000 req/s</b> arrive, each needing <b>S = 40 ms = 0.04 s</b> of core time. Little's Law says the number of cores kept busy at once is:</p>
+  <p>• busy cores = <code>λ × S = 40,000 × 0.04 = 1,600 cores</code> working every second, flat out.</p>
+  <p>• at 8 cores/server that's <code>1,600 ÷ 8 = 200 servers</code> — but only if every core runs at <b>100%</b>. This is the absolute floor: fewer than 200 servers physically cannot finish 40,000 req/s, no matter the latency. <span class="key">Little's Law gives you the wall you can't go below; it does not give you a number you'd actually run at.</span></p>
+</div>
+
+<div class="card calc">
+  <p><b>Worked (way 2): the target, from the knee.</b> Nobody runs at 100% — that's the right edge of the curve where latency is seconds. Model one server as a queue: response time <code>T = S ÷ (1 − ρ)</code>. Watch what utilization does to a 40 ms request:</p>
+  <p>• ρ=0.5 → <code>40 ÷ 0.5 = 80 ms</code>&nbsp;·&nbsp; ρ=0.7 → <code>40 ÷ 0.3 = 133 ms</code>&nbsp;·&nbsp; ρ=0.8 → <code>200 ms</code>&nbsp;·&nbsp; ρ=0.9 → <code>400 ms</code>&nbsp;·&nbsp; ρ=0.95 → <code>800 ms</code>&nbsp;·&nbsp; ρ=0.99 → <code>4,000 ms</code>.</p>
+  <p>The curve is flat then vertical — that bend is the <b>knee</b>. Pick <b>ρ* = 70%</b> as the operating point (133 ms, still on the flat part, with room to rise before disaster). Each server then safely carries <code>200 × 0.70 = 140 req/s</code>, so:</p>
+  <p>• fleet = <code>40,000 ÷ 140 = 285.7 → 286 servers</code>. (Cross-check via cores: <code>1,600 ÷ 0.70 = 2,286 cores ÷ 8 = 286</code>. The two ways agree.)</p>
+</div>
+
+<p>So the honest fleet is <b>286 servers, not 200</b>. Those extra <b>86 servers (43% more)</b> buy nothing but distance from the knee — they exist so that when load twitches upward, latency rises from 133 ms toward 200 ms instead of from 4 s toward a timeout. At ~$0.50/server-hour that headroom costs <code>86 × $0.50 × 24 × 365 ≈ <b>$377,000/year</b></code>. That is the price, in dollars, of the word "headroom."</p>
+
+<p class="note why"><b>Name the trade-off — latency vs cost, decided at the knee.</b> Run closer to 100% and you spend less on servers but sit on the vertical part of the curve, where any small surge (or one dead box, Lesson 26) tips you into multi-second latency and timeouts. Run at 50% and latency is rock-steady but you're paying for nearly double the fleet. The knee (~70%) is the defensible middle: the last utilization where the curve is still flat enough that a normal wobble doesn't hurt. <span class="key">Capacity planning is choosing where on the T = S/(1−ρ) curve to live — and the knee exists because queueing latency is not linear in load.</span></p>
+
+<h2>Move 2 — Model: the autoscaler as a feedback loop</h2>
+<p>We don't run 286 servers all day — peak is 40,000 req/s but 3 a.m. might be 4,000. Running peak-sized around the clock wastes ~90% of the fleet at night. So the number of servers must <i>track</i> the load. That tracking is a control loop: measure a signal, compare it to a target, change the fleet, wait, repeat.</p>
+
+<div class="diagram"><pre>
+  THE CONTROL LOOP  (target tracking on utilization)
+
+   every ~30-60 s:
+     1. MEASURE   average utilization across the fleet    ->  ρ = 0.85  (85%, too hot)
+     2. COMPARE   to target                               ->  ρ* = 0.70
+     3. DECIDE    desired = ceil( current × ρ / ρ* )      ->  286 × 0.85/0.70 = 348
+                  (equivalently: desired = ceil( load ÷ (C × ρ*) ) = 40k/... )
+     4. ACT       launch (348 − 286) = 62 new servers
+     5. COOLDOWN  wait before the next change, so the fleet doesn't thrash
+                                                             |
+     ...but each of those 62 servers isn't usable for ~3 min ---+  <-- the lag (Move 4)
+
+  Scaling metric options (what to put in step 1):
+     utilization  — direct, but lags a sudden spike a little
+     req/s per server — proportional to load, predictable
+     queue depth / p99 latency — reacts fastest, but noisy
+</pre></div>
+
+<p>The decision in step 3 is just algebra: if you're at 85% and want 70%, you need <code>0.85 ÷ 0.70 = 1.21×</code> the current servers. Feed it load instead and it's the Move 1 formula living on a timer: <code>desired = load ÷ (capacity/server × ρ*)</code>. Nothing clever — the whole art is in the parts the formula hides: <i>which</i> metric you steer on, how often you look, and how long you wait between moves.</p>
+
+<p>Two design choices matter most. First, <b>scale-out fast, scale-in slow.</b> Adding servers late is an outage; removing them late is a few dollars. So react quickly when hot and dawdle when cold — a long <b>cooldown</b> on scale-in. Second, <b>don't thrash.</b> If you add at 71% and remove at 69%, a fleet hovering near 70% will add-remove-add forever, and since each add costs a 3-minute warm-up, the thrash is pure waste. Widen the band (add above 75%, remove below 55%) and enforce a cooldown — the same <b>flapping</b> failure as Lesson 10's leader election, now measured in servers instead of votes.</p>
+
+<p class="note why"><b>Name the trade-off — responsiveness vs stability.</b> Steer on a twitchy signal (p99 latency, queue depth) with a short window and the autoscaler reacts to spikes fast — but it also jumps at every random blip and flaps. Steer on a smooth signal (average utilization) with a long window and cooldown and the fleet is calm and cheap — but slow to notice a real surge. You can't have instant <i>and</i> stable from one reactive loop; you tune where on that dial to sit, and (Move 4) you add a second, non-reactive mechanism for the surges the loop can't catch in time.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Three loads through the same loop. Watch one thing: whether the load rises <i>slower</i> or <i>faster</i> than a server can boot. That single comparison decides whether reactive scaling works or fails.</p>
+
+<h3>Path A — the morning ramp (reactive scaling works)</h3>
+<div class="diagram"><pre>
+  07:00  load 8,000 req/s   -> fleet 57,  ρ ~70%,  calm
+  09:00  load rising ~ +5% every 5 min (a slow, smooth climb toward the 40k peak)
+
+  loop each minute:  ρ drifts to 75% -> desired = 57 × 75/70 -> add a few servers
+                     new servers ready in ~3 min, but load only moved a few % in 3 min
+                     -> capacity stays a step ahead of demand the whole ramp
+  11:00  load 40,000 req/s  -> fleet 286,  ρ ~70%,  still calm
+</pre></div>
+<p>A gentle ramp is the easy case: demand rises slowly enough that the 3-minute warm-up doesn't matter — by the time you need the servers, the ones you asked for three minutes ago have arrived. Reactive target-tracking handles the daily up-and-down of most services beautifully, which is exactly why it's the default. <span class="key">Reactive scaling works whenever load changes slower than servers boot.</span></p>
+
+<h3>Path B — the sudden spike (reactive scaling fails)</h3>
+<div class="diagram"><pre>
+  12:00:00  load 40,000 req/s, fleet 286, ρ=70%   (marketing push fires / L26 gateway dies)
+  12:00:30  load has DOUBLED to 80,000 req/s in 30 s
+
+  reactive loop:
+    +30 s   metric window notices ρ pinned at ~140%  (80k on a 40k fleet)
+    decide  desired = 40k→80k  ->  need 572 servers (add 286)
+    launch  286 servers ... ready at +3 min
+
+  MEANWHILE, from 12:00:30 to ~12:03:30, the fleet is 286 vs a load of 80,000:
+     ρ = 80,000 ÷ (286 × 200) = 1.40   -> 140%, past 100%, the queue grows without bound
+     response time leaves the knee entirely -> seconds -> timeouts -> retries (L07)
+     -> retries add load -> metastable collapse risk while you WAIT for boots
+</pre></div>
+<p>Same loop, opposite outcome. The load doubled in 30 seconds; the servers to serve it don't exist for 3 minutes. For those ~3 minutes the fleet is running at <b>140%</b> — which isn't "slow," it's a queue that grows every second, response times in the seconds, timeouts, and the retry storm of Lesson 07 piling on more load precisely when you have none to give. <span class="key">A reactive autoscaler cannot catch a spike that rises faster than a server boots — by definition it's chasing a number that's already wrong.</span> This is the wall; Move 4 is how you don't hit it.</p>
+
+<h3>Path C — the scheduled surge (predict, don't react)</h3>
+<div class="diagram"><pre>
+  Known event: the 8:30 AM daily push (index.html says so!) sends every user a link.
+  Reactive would discover the surge at 8:30:30 and be 3 min late = a 3-min brownout.
+
+  Predictive / scheduled scaling:
+    08:20  autoscaler PRE-SCALES to 572 servers on a schedule (10 min early)
+    08:30  the surge lands on a fleet that is ALREADY warm  -> ρ jumps 35% -> 70%, calm
+    08:45  surge passes -> scale back in slowly (long cooldown)
+</pre></div>
+<p>When a spike is <i>predictable</i> — a daily cron, a product launch, a Super Bowl ad, market open — you don't have to lose the race against boot time, because you can start before the gun. Scheduled scaling (or a forecast-driven predictive autoscaler) provisions the fleet <b>ahead</b> of the known load, so the servers are warm when it arrives. The reactive loop still runs underneath to catch the surprises; prediction just removes the surprises you already know about. <span class="key">The cure for boot-time lag is to start booting before you need the capacity — which you can only do for load you saw coming.</span></p>
+
+<p class="note why"><b>Name the trade-off — react vs predict.</b> Reactive scaling needs no forecast and follows any shape of load, but it's always one warm-up behind, so it's helpless against a step change. Predictive/scheduled scaling is early enough to beat the step, but only for load you can foresee, and it wastes money (or under-provisions) whenever the forecast is wrong. Real systems run <i>both</i>: predict the known surges, react to everything else — and keep enough headroom that "everything else" never fully outruns the boot.</p>
+
+<h2>Move 4 — Find the first bottleneck: the cold-start lag (a control loop with dead time)</h2>
+<p>Path B named the wall; here's why it's fundamental and how you engineer around it. Every feedback loop has <b>dead time</b> — the delay between acting and the action taking effect. In autoscaling the dead time is the warm-up, and it's brutal because it's minutes long while spikes are seconds long. Let's break down where the ~3 minutes goes and then reduce its damage — because you can't reduce the boot time to zero.</p>
+
+<div class="card calc">
+  <p><b>Worked: where the 3 minutes goes, and why the fleet drowns.</b> Ask for a new server at t=0:</p>
+  <p>• <code>~30 s</code> provision the machine (VM/instance boot, kernel, network) · <code>~30 s</code> pull &amp; start the app image · <code>~60 s</code> JIT/connection-pool/cache warm-up (a cold app is slow and would itself fall over) · <code>~30 s</code> pass health checks before the load balancer trusts it. Plus the autoscaler's own <code>~30 s</code> metric window to even <i>notice</i>. Total ≈ <b>180 s</b> from spike to safe traffic.</p>
+  <p>• During that window in Path B, load is 80,000 on a fleet built for 40,000: <code>ρ = 80,000 ÷ 57,200 = 1.40</code>. Above 100% the queue has no steady state — backlog grows at <code>80,000 − 57,200 = 22,800 requests/second</code>. Over ~180 s that's <b>~4.1 million</b> requests queued or dropped before help arrives. <span class="key">The bottleneck isn't a lack of servers — it's the time-to-server. Capacity you can't have for 3 minutes is capacity you don't have during a 30-second spike.</span></p>
+</div>
+
+<p>You cannot delete the boot time, so you attack the <i>gap</i> it opens — four levers, each a familiar tool aimed at the lag:</p>
+<ul>
+  <li><b>Headroom as a spike buffer (revisit Move 1).</b> Run at <b>60%</b> instead of 70% and the fleet is <code>40,000 ÷ (200 × 0.60) = 333 servers</code> (47 more, ~$206k/yr). Now the empty 40% absorbs a bump instantly: load can rise to <code>333 × 200 × 0.70 = 46,620 req/s</code> (+16%) before you even reach the knee — buying one whole boot-window of slack with zero new servers. Headroom converts money into reaction time you'd otherwise have to wait for.</li>
+  <li><b>Warm pools (pay idle to buy speed).</b> Keep some servers <i>pre-booted and warm</i> on standby; when the spike hits they take traffic in <b>seconds</b>, not minutes, while the real boots happen behind them. A pool of, say, 60 warm boxes covers the first slice of a doubling instantly. You pay for idle capacity to shrink the dead time — the direct cost-for-latency trade.</li>
+  <li><b>Predictive / scheduled pre-scaling (Path C).</b> For any surge you can foresee, start booting before it lands so the lag happens on <i>your</i> clock, not the spike's.</li>
+  <li><b>Faster warm-up (shrink the lag itself).</b> Smaller images, pre-baked machine images, lazy-loading less at startup, snapshot/restore of a warm process — every second shaved off the 180 s is a second less drowning. This is why "cold start" is a first-class metric, not a footnote.</li>
+</ul>
+
+<p>And at the far end of the same dial sits <b>scale-to-zero</b>: for a spiky, low-traffic service (an internal tool, a rarely-hit endpoint) you can run <i>no</i> servers when idle and eat a full cold start on the first request — trading user-facing latency for near-zero cost. For a user-facing tier like ours that's unacceptable; you keep a warm floor. Same knob, opposite ends: <span class="key">how much idle capacity you pre-pay is exactly how much cold-start latency you refuse to expose.</span></p>
+
+<p class="note why"><b>Name the core trade-off — cost vs headroom for spikes.</b> Every lever above is the same purchase in a different currency: extra headroom, warm pools, scale-to-zero avoidance, and generous cooldowns all cost money for idle-ish capacity, and what they buy is <b>the ability to absorb a spike faster than you can boot for it</b>. Run lean and you save cash but stand naked in front of the next 30-second surge; run padded and you're safe but paying for servers doing nothing most of the time. There is no setting that is both cheapest and spike-proof — the autoscaler doesn't remove that choice, it just lets you re-make it every minute. <span class="key">Autoscaling doesn't beat the cost-vs-headroom trade; it turns a once-a-quarter capacity meeting into a continuous one, and the boot-time lag is why you can never set headroom all the way to zero.</span></p>
+
+<table>
+  <tr><th>Concern</th><th>Run lean (~95%)</th><th>Run at the knee (~70%)</th><th>Trade bought</th></tr>
+  <tr><td>Steady-state latency</td><td>~800 ms (past the knee)</td><td>~133 ms (on the flat)</td><td>latency for cost</td></tr>
+  <tr><td>Fleet size @ 40k</td><td>~211 servers</td><td>286 servers (+43%)</td><td>~$377k/yr for the headroom</td></tr>
+  <tr><td>A sudden +16% bump</td><td>tips over the knee → timeouts</td><td>absorbed, 133→~210 ms</td><td>survive a wobble instantly</td></tr>
+  <tr><td>A sudden 2× spike</td><td>collapse (ρ&gt;1 for ~3 min)</td><td>still ρ&gt;1, but shallower</td><td>needs warm pool / predict, not just knee</td></tr>
+  <tr><td>Known surge (8:30 push)</td><td>3-min brownout (reactive)</td><td>pre-scale ahead (predictive)</td><td>foresight beats boot-time lag</td></tr>
+  <tr><td>Idle 3 a.m. traffic</td><td>scale-to-zero (cold first hit)</td><td>warm floor kept</td><td>cost vs cold-start latency</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We sized and steered the API fleet behind Lesson 26's gateways. <b>Estimate</b> gave the fleet two ways that had to agree: Little's Law fixed the floor (<code>40,000 × 0.04 s = 1,600 busy cores = 200 servers</code> at an impossible 100%), and the utilization knee (<code>T = S/(1−ρ)</code>: 133 ms at 70%, but 4,000 ms at 99%) set the real target at <b>286 servers</b> — the extra 86 (43%, ~$377k/yr) buying nothing but distance from the vertical part of the curve. <b>Model</b> made the autoscaler a feedback loop — measure utilization, compare to a 70% target, set <code>desired = load ÷ (C × ρ*)</code>, act, cool down — with the design living in the parts the formula hides: scale-out fast / scale-in slow, and a wide band + cooldown so the fleet doesn't <b>flap</b> (Lesson 10, now in servers). <b>Tracing</b> three loads exposed the one comparison that matters — does load rise slower or faster than a server boots: a gentle morning ramp reactive scaling handles for free; a sudden 2× spike it <i>cannot</i> catch (the fleet runs at <b>140%</b> for ~3 minutes, ~4.1M requests backed up while boots complete); and a known 8:30 surge you beat only by pre-scaling <b>ahead</b> of it. The <b>first bottleneck</b> was that ~3-minute <b>cold-start lag</b> — a control loop's dead time, minutes long against seconds-long spikes — attacked not by deleting boot time (you can't) but by shrinking the gap it opens: spike-buffer <b>headroom</b> (run 60%, absorb +16% instantly), <b>warm pools</b> (pay idle, take traffic in seconds), <b>predictive/scheduled</b> pre-scaling for foreseeable surges, and faster warm-up itself — with <b>scale-to-zero</b> as the opposite extreme of the same dial. The real lesson: <span class="key">an autoscaler doesn't give you infinite instant capacity — it gives you a feedback loop with a minutes-long delay steering against a latency curve that goes vertical near 100%. You can't set headroom to zero, because the boot-time lag means the capacity you order now isn't the capacity you have now. The trade is cost vs headroom for spikes.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson builds directly on this:</b></p>
+  <p style="margin:.2rem 0">• <b>Backpressure &amp; flow control end-to-end:</b> we just proved scaling can't beat a spike that outruns boot time — so for those ~3 minutes, something has to give. The honest answer isn't "queue everything" (that's the 4.1M-request backlog that collapses); it's to <i>say no gracefully</i>. We'll take a fast producer overwhelming a slow consumer across a whole call graph (recap of Lessons 05, 07, 09), and place bounded queues, credit-based flow control, and load shedding — deciding <i>where</i> in the chain to put the "no" (admission control at the edge). The trade shifts from <b>cost vs headroom</b> to <b>throughput vs tail latency &amp; stability.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">service time</span>
+    <span class="pill">throughput / capacity</span>
+    <span class="pill">utilization (ρ)</span>
+    <span class="pill">response time</span>
+    <span class="pill">Little's Law</span>
+    <span class="pill">utilization knee</span>
+    <span class="pill">M/M/1 queue</span>
+    <span class="pill">autoscaler</span>
+    <span class="pill">target tracking</span>
+    <span class="pill">scale-out / scale-in</span>
+    <span class="pill">reactive vs predictive</span>
+    <span class="pill">cold start / warm-up lag</span>
+    <span class="pill">dead time</span>
+    <span class="pill">warm pool</span>
+    <span class="pill">headroom buffer</span>
+    <span class="pill">cooldown / flapping</span>
+    <span class="pill">scheduled scaling</span>
+    <span class="pill">scale-to-zero</span>
+    <span class="pill">cost vs headroom</span>
+  </p>
+  <p>That's Lesson 27, built directly on Lesson 26's teaser (we promised "headroom" — here's how much and why), reusing Lesson 13's Little's Law to size the fleet, Lesson 07's timeout / retry-storm / metastable collapse as what happens when you run past the knee, and Lesson 10's flapping as the autoscaler's thrash. <b>Ask me follow-ups</b> — e.g. "why is the response-time curve <code>S/(1−ρ)</code> shaped the way it is (what's an M/M/1 queue)?", "how do you autoscale on a metric that isn't CPU — like queue depth or p99 latency — without flapping?", "how does autoscaling a <i>stateful</i> tier like Lesson 26's gateways differ from this stateless one?", "what does capacity planning look like when a request fans out to 20 services (Lesson 17) each with its own knee?", or "how do spot/preemptible instances change the headroom math?" When you're ready, say <b>next</b> and we'll go deeper on <i>Backpressure &amp; flow control end-to-end — saying no gracefully when scaling can't keep up.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Little's Law says you need 1,600 busy cores (200 servers) to finish 40,000 req/s at 40 ms each. A teammate says 'great, run exactly 200 servers.' Why is that the wrong number to actually run?",
+    options: [
+      {t:"200 servers means every core runs at 100% utilization, which is the far-right edge of the response-time curve (T = S/(1−ρ)) where latency is effectively infinite. Little's Law gives the physical floor — fewer than 200 can't finish the work at all — not a healthy operating point. You size to the utilization knee (~70%), which needs ~286 servers, so a normal wobble in load moves latency from 133 ms toward 200 ms instead of into a timeout.",
+       ok:true,
+       fb:"Right. Little's Law fixes the floor (λ×S = busy cores); the knee fixes where you live above it. At 100% the queue has no slack, so any surge, retry, or dead box tips you onto the vertical part of T = S/(1−ρ). The 86 extra servers are the cost of not sitting on that cliff."},
+      {t:"200 servers is fine for throughput; you just also need to lower the service time to 20 ms so each server can do 400 req/s and absorb the spike.",
+       ok:false,
+       fb:"Halving service time is great if you can get it, but it's a different lever (make each request cheaper) and doesn't address the problem: at ANY service time, running at 100% utilization puts you on the vertical part of the latency curve. Even at 20 ms/req, a fleet at ρ=1.0 has no slack for a wobble. You still size to the knee, not to the floor."},
+      {t:"200 servers is correct — Little's Law already accounts for queueing, so 200 servers will serve 40,000 req/s at the full 40 ms latency with no waiting.",
+       ok:false,
+       fb:"Little's Law (L = λ×W) is a conservation identity; it does not promise low latency. It tells you 1,600 cores are busy — at 100% utilization there's zero idle capacity to absorb the natural burstiness of arrivals, so requests queue and W balloons far past 40 ms. The floor is real; the comfortable operating point is well below it."}
+    ]
+  },
+  {
+    stem: "At 12:00 your fleet (286 servers, 70%) is fine. At 12:00:30 a marketing push doubles load to 80,000 req/s. Your reactive autoscaler is tuned perfectly to target 70% utilization. What happens?",
+    options: [
+      {t:"For about 3 minutes you're overloaded no matter how good the autoscaler is: it notices within ~30 s and launches the needed ~286 more servers, but each takes ~3 min to boot and warm before it can take traffic. In that window the existing fleet runs at ρ = 80,000/(286×200) ≈ 140% — a queue growing ~22,800 req/s — so latency leaves the knee, requests time out, and retries pile on. Reactive scaling can't catch a spike that rises faster than a server boots.",
+       ok:true,
+       fb:"Exactly. The autoscaler is a feedback loop with minutes of dead time (the warm-up). A step change that's faster than the boot time is unwinnable reactively — the fix is a warm pool, spike-buffer headroom, or (if foreseeable) pre-scaling, not a better-tuned reactive loop."},
+      {t:"No problem — the autoscaler instantly provisions 286 more servers the moment utilization crosses 70%, so the fleet is at 572 within a second and latency never moves.",
+       ok:false,
+       fb:"This is the core misconception the lesson attacks. 'Provision' is not 'have.' A requested server isn't usable for ~3 minutes (boot + app start + warm-up + health checks). During that lag the old fleet eats the full 80,000 at 140% utilization. Autoscaling is fast to decide and slow to deliver."},
+      {t:"The autoscaler prevents the overload by immediately raising the utilization target from 70% to 140%, letting the existing 286 servers legally handle the doubled load.",
+       ok:false,
+       fb:"Utilization isn't a policy you raise — it's a measured fact (load ÷ capacity). You can't 'allow' 140%; above 100% the servers simply can't keep up and the queue grows without bound. Changing the target number doesn't change the physics of 80,000 req/s hitting a 40,000-capacity fleet."}
+    ]
+  },
+  {
+    stem: "You know a large, predictable surge lands every day at 8:30 AM (the daily push). Your reactive autoscaler works fine the rest of the day. What's the right way to handle the 8:30 surge specifically?",
+    options: [
+      {t:"Pre-scale on a schedule: provision the larger fleet a few minutes BEFORE 8:30 so the servers are already booted and warm when the surge lands, then scale back in slowly afterward. The reactive loop still runs underneath for everything unpredictable. You beat the boot-time lag by starting to boot before you need the capacity — which you can only do for load you see coming.",
+       ok:true,
+       fb:"Right. Predictive/scheduled scaling moves the 3-minute lag onto your clock instead of the spike's. Reactive scaling would only discover the surge at 8:30:30 and be 3 minutes late — a guaranteed daily brownout. Predict the known spikes; react to the rest."},
+      {t:"Lower the utilization target to 40% permanently so the fleet is always big enough to absorb the 8:30 surge with no new servers.",
+       ok:false,
+       fb:"That works but it's the expensive blunt instrument: you'd pay for a near-double fleet all 24 hours to cover one predictable 15-minute event. Scheduled pre-scaling gives you the big fleet only around 8:30 and lets you run lean the rest of the day. Use foresight for foreseeable load, not permanent over-provisioning."},
+      {t:"Shorten the autoscaler's metric window to 5 seconds so it reacts to the 8:30 surge almost instantly.",
+       ok:false,
+       fb:"A shorter window makes the autoscaler DECIDE sooner, but the bottleneck isn't the decision — it's the ~3-minute warm-up before a new server can take traffic. Reacting 25 seconds faster still leaves you ~3 minutes short, and a twitchy 5 s window invites flapping the rest of the day. For a known spike, start early; don't just look more often."}
+    ]
+  },
+  {
+    stem: "The cold-start lag means a requested server isn't usable for ~3 minutes, and you can't make boot time zero. Which set of levers actually reduces the DAMAGE that lag does during a spike?",
+    options: [
+      {t:"Attack the gap the lag opens, not the boot time itself: run with spike-buffer headroom (e.g. 60% not 70%, so the empty margin absorbs a +16% bump instantly), keep a warm pool of pre-booted servers that take traffic in seconds while the real boots happen behind them, pre-scale for foreseeable surges, and shave the warm-up (smaller images, less startup work). Each one is money spent on idle-ish capacity to buy reaction time you'd otherwise have to wait for.",
+       ok:true,
+       fb:"Exactly. You can't delete the 3 minutes, so you shrink the window during which it hurts: headroom and warm pools give you seconds-fast capacity, prediction moves the lag off the critical path, and faster warm-up cuts the lag directly. All of it is the cost-vs-headroom trade in different currencies."},
+      {t:"Set the utilization target to 99% so you're getting the maximum work out of every server, leaving the most budget to buy more servers when the spike hits.",
+       ok:false,
+       fb:"Backwards. Running at 99% puts you on the vertical part of the latency curve BEFORE any spike, with zero slack to absorb even a small wobble — and 'buy more servers when the spike hits' is exactly the move the 3-minute lag defeats. Lean utilization removes the very headroom that survives the boot window."},
+      {t:"Rely entirely on retries: when the fleet is overloaded during the lag, clients retry until a server frees up, so no request is truly lost.",
+       ok:false,
+       fb:"Retries during an overload make it worse, not better — they add load precisely when you have none to give, which is the metastable collapse of Lesson 07. Retries are a correctness tool for transient failures, not a capacity strategy. The lag needs pre-provisioned headroom (and, next lesson, backpressure), not more traffic."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

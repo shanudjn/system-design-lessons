@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0027-autoscaling.html">
+    <div class="num">LESSON 27</div>
+    <div class="title">Autoscaling &amp; Capacity Planning: Sizing a Fleet Before the Spike Hits</div>
+    <div class="blurb">Lesson 26 leaned on a word without earning it — <b>headroom</b>. Now earn it for the API tier behind those gateways: <b>40,000 req/s</b> at peak, <b>40 ms</b> of CPU each, <b>8 cores</b> per server. Size the fleet two ways that must agree: Little's Law (L13) fixes the floor — <code>40,000 × 0.04 s = 1,600 busy cores = 200 servers</code> at an impossible 100% — and the <b>utilization knee</b> (<code>T = S/(1−ρ)</code>: a 40 ms request is 133 ms at 70% but <b>4,000 ms</b> at 99%) sets the real target at <b>286 servers</b>, the extra 43% (~$377k/yr) buying nothing but distance from the cliff. Model the autoscaler as a feedback loop (measure → compare to 70% → <code>desired = load ÷ (C × ρ*)</code> → act → cool down), scale-out fast / scale-in slow so it doesn't flap (L10). Trace three loads and watch the one thing that decides everything — does load rise slower or faster than a server boots: a gentle morning ramp reactive scaling handles for free; a sudden 2× spike it <i>cannot</i> catch (fleet at <b>140%</b> for ~3 min, ~4.1M requests backed up); a known 8:30 surge you beat only by pre-scaling ahead. Then the wall: the ~3-minute <b>cold-start lag</b> — a control loop's dead time, minutes against seconds — fought not by deleting boot time but by shrinking the gap: spike-buffer headroom, warm pools, predictive pre-scaling, faster warm-up (and scale-to-zero as the opposite extreme). Trade named throughout: cost vs headroom for spikes.</div>
+  </a>
   <a class="lesson" href="lessons/0026-realtime-delivery.html">
     <div class="num">LESSON 26</div>
     <div class="title">Real-Time Delivery: Telling 10 Million Phones "You Got Paid" the Instant It Happens</div>
