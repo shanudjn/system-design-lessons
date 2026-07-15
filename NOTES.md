@@ -358,10 +358,28 @@
     SCALE-TO-ZERO is the opposite extreme of the same dial (cost vs cold-start latency).
     Reuses L13 Little's Law, L07 metastable/retry storm past the knee, L10 flapping.
     Trade: cost vs headroom for spikes. (Lesson 0027)
-28. Backpressure & flow control end-to-end — a fast producer overwhelming a slow
-    consumer across a whole call graph (recap L05/L07/L09): bounded queues, credit-based
-    flow control, load shedding vs buffering, and where to put the "no" (admission
-    control). Trade: throughput vs tail latency & stability.
+28. ✅ **Backpressure & flow control end-to-end** — L27's unwinnable 2× spike
+    (80k req/s offered, 40k servable for the ~3-min boot window): the naive "buffer the
+    overflow" detonates twice — an unbounded queue grows 40k/s → ~144 GB in 180 s (×20 KB
+    in-flight) → OOM crash, AND **goodput** collapses to ~0 while **throughput** stays a
+    deceptive 40k/s (server pegged finishing requests whose clients already timed out at
+    1 s, the goodput cliff). One fix: **bound every queue**, sized from the timeout
+    (depth < timeout×rate = 40k → pick 20k → max wait 0.5 s, memory fixed 400 MB, goodput
+    restored). A full bounded queue has two moves: **block** the producer (credit-based
+    flow control = the "no" as a continuously-advertised number; TCP receive window /
+    HTTP-2 window / Reactive Streams request(n)) when you CONTROL the producer, or **drop**
+    (honest 429, L07) when you don't — backpressure propagates inward as blocking,
+    terminates at the edge as shedding. Trace 3 responses by wasted-work: unbounded
+    (crash + L07 retry-storm metastable), bounded-but-shed-deep (survives, but 40k/s of
+    rejects already burned edge+API CPU = ~200 stolen cores, L27 knee math), bounded +
+    **edge admission control** (downstream fullness → credit signal upstream → 429 the
+    excess for ~free → goodput preserved). First wall = WHERE the "no" goes, three traps:
+    an unbounded queue hiding at ANY hop reopens the OOM & swallows the signal (bound every
+    hop); blocking a shared user-facing pool re-creates L07 thread-pool freeze (bulkhead +
+    non-blocking edge); blind shedding wastes goodput (drop retries<first-tries, low<paid
+    tier, stale head via FIFO→LIFO; NEVER health checks). Reuses L13 Little's Law (queue
+    sizing), L07 timeout/429/retry-storm/metastable, L05/L09 consumer-lag & partition
+    queues. Trade: throughput vs tail latency & stability. (Lesson 0028)
 29. Data warehousing & OLAP (batch + streaming) — the 25-trillion-event firehose
     (L21) answered with columnar storage, partitioning/pruning, the OLTP-vs-OLAP split,
     and the lambda/kappa (batch vs streaming) reconciliation. Trade: query freshness vs

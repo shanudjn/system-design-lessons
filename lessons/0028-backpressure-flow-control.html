@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 28 — Backpressure &amp; Flow Control: Saying No Gracefully When Scaling Can't Keep Up</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 28 · Worked Example</div>
+  <h1>Backpressure &amp; Flow Control: Saying No Gracefully When Scaling Can't Keep Up</h1>
+  <p class="lead">Lesson 27 ended on a hard fact: a sudden 2× spike outruns the 3-minute boot time, so for those ~3 minutes the fleet is offered <b>80,000 requests/second</b> while it can only finish <b>40,000</b>. Something has to give. The tempting answer — "just queue the extra work until servers arrive" — is the exact move that turns a slowdown into a total outage. This lesson takes that mismatch (a fast producer, a slow consumer, across a whole call graph) and traces what actually happens: we'll <b>estimate</b> how fast an unbounded buffer fills memory (~144 GB in 3 minutes → crash) and how <b>goodput</b> collapses to zero even while <b>throughput</b> stays high, <b>model</b> the one fix that matters — a <b>bounded queue</b> sized from the client timeout — plus the two ways it can say no (<b>block</b> upstream, or <b>drop</b>), <b>trace</b> three responses to the same overload, and hit the wall that names the whole domain: <i>where</i> in the chain you put the "no." The trade shifts from Lesson 27's cost-vs-headroom to the one every overloaded system is really deciding: <b>throughput vs tail latency &amp; stability.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0028-backpressure-flow-control.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>Take the request path from the last few lessons. Phones hit an <b>edge</b> (a load balancer / API gateway, Lesson 26), which forwards to the <b>API tier</b> (the stateless servers of Lesson 27), which calls a <b>downstream</b> service that does the slow, expensive part — say the ledger writer of Lesson 25, bound by a database that can durably commit only so many writes per second. During the 2× spike, the edge is offered <b>80,000 req/s</b> but the downstream can sustain only <b>40,000 req/s</b>. That gap — <b>40,000 req/s of work with nowhere to go</b> — is the whole problem. Here is the shape, and the two numbers that decide whether the system bends or breaks.</p>
+
+<div class="diagram"><pre>
+  BACKPRESSURE  —  a fast producer, a slow consumer, and where you put the "no"
+
+     80,000 req/s                                            can only finish
+     offered                                                 40,000 req/s
+        |                                                          |
+        v                                                          v
+   +---------+      +-----------+      +-----------+      +-------------------+
+   |  EDGE   | ---> | API tier  | ---> |  queue    | ---> |    DOWNSTREAM     |
+   | (LB /   |      | (stateless|      |  [ | | | ]|      | (ledger DB writer)|
+   |  gateway)|     |  workers) |      |           |      |   40,000 req/s    |
+   +---------+      +-----------+      +-----------+      +-------------------+
+        ^                                    |
+        |         backpressure signal        |   overflow = 80,000 - 40,000
+        +------------------------------------+                = 40,000 req/s
+             "I'm full — slow down / say no HERE"        piling up every second
+
+  Two questions decide everything:
+    1. Is that queue BOUNDED?   unbounded -> fills memory -> crash (total outage)
+    2. WHERE does the "no" go?  at the slow end (wasted work) or at the EDGE (cheap)?
+</pre></div>
+
+<p class="note"><span class="key">Backpressure is the signal a slow consumer sends back up the chain that says "stop handing me work faster than I can finish it." Flow control is the machinery that carries and obeys that signal. The failure this lesson is about is what happens when there is no such signal: the producer keeps pushing, the work piles up somewhere, and the pile itself becomes the outage. You cannot make the consumer faster in the moment (Lesson 27 proved that), so the only honest move is to make the producer slower — or to refuse work you can't do. Everything here is one of those two.</span></p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Producer / consumer</b> — whatever hands off work, and whatever does it. The edge produces requests; the downstream consumes them. Any two adjacent hops are a producer/consumer pair.</li>
+  <li><b>Backpressure</b> — the "slow down" signal flowing <i>against</i> the direction of work, from the overloaded consumer back toward the producer.</li>
+  <li><b>Flow control</b> — the mechanism that produces, carries, and enforces that signal so the producer's rate is capped at the consumer's rate.</li>
+  <li><b>Bounded vs unbounded queue</b> — a buffer with a hard maximum length vs one that grows until memory runs out. The single most important choice in this whole lesson.</li>
+  <li><b>Throughput</b> — responses produced per second. <b>Goodput</b> — <i>useful</i> responses per second: ones that arrive before the client gave up. Under overload these two diverge, and goodput is the one that matters.</li>
+  <li><b>Load shedding</b> — deliberately dropping work you can't do in time, returning a fast, honest rejection (an HTTP <code>429 Too Many Requests</code>, Lesson 07) instead of a slow timeout.</li>
+  <li><b>Admission control</b> — deciding at the <i>entrance</i> whether to accept a request at all, before it consumes any downstream work.</li>
+  <li><b>Credit-based flow control</b> — the consumer advertises how much it can take (a number of free slots, a "credit" or "window"); the producer sends only up to that credit and blocks at zero. TCP's receive window, HTTP/2 flow-control windows, and Reactive Streams' <code>request(n)</code> all work this way.</li>
+  <li><b>Block vs drop</b> — the two ways a full bounded queue can say no: <b>block</b> the producer (push-back — only works if you control the producer) or <b>drop</b> the request (shed — the only option when the producer is the public internet).</li>
+  <li><b>Head-of-line blocking</b> — one stuck item at the front of a queue holding up everything behind it, even work that could proceed.</li>
+</ul>
+
+<h2>Move 1 — Estimate: doing nothing is worse than doing less</h2>
+<p>Before designing a fix, price the naive plan — "buffer the overflow until Lesson 27's new servers boot." Two independent numbers say that plan doesn't just degrade, it detonates.</p>
+
+<div class="card calc">
+  <p><b>Worked (way 1): the unbounded buffer eats memory.</b> Overflow piles up at <code>80,000 − 40,000 = 40,000 requests/second</code>. Each in-flight request holds real memory — parsed body, response buffer, connection and TLS state — call it a modest <b>~20 KB</b>. We're waiting out the ~<b>180 s</b> boot window from Lesson 27:</p>
+  <p>• backlog after 3 min = <code>40,000 × 180 = 7,200,000 requests</code> queued.</p>
+  <p>• memory = <code>7,200,000 × 20 KB = 144 GB</code> — far past any server's RAM. Long before that, the box hits swap or the OOM killer and <b>dies</b>. <span class="key">An unbounded queue doesn't buy you time — it converts a latency problem into a crash, and a crash sheds 100% of load, including the requests you could have served.</span></p>
+</div>
+
+<div class="card calc">
+  <p><b>Worked (way 2): goodput collapses to zero while throughput looks fine.</b> Suppose clients wait <b>1 s</b> then give up (Lesson 07's timeout). With an unbounded queue in front of a 40,000/s consumer, the wait time is <code>W = queue_length ÷ 40,000</code> (Little's Law again, Lesson 13). The queue crosses <b>40,000 items</b> after just <code>40,000 ÷ 40,000/s = 1 second</code> of overload — and from that instant every request waits <b>more than 1 s</b>, so every client is already gone by the time its answer is ready.</p>
+  <p>• throughput stays a healthy-looking <code>40,000 responses/s</code> — the CPU is pegged, producing answers.</p>
+  <p>• goodput = <b>~0</b> — every one of those answers arrives after its client timed out. The server is at 100% utilization doing work <i>nobody is waiting for anymore</i>, while fresh requests rot behind them. <span class="key">This is the goodput cliff: past capacity, an uncontrolled system's useful output doesn't plateau, it falls toward zero — because it spends its capacity finishing requests that have already been abandoned.</span></p>
+</div>
+
+<p>So the two "do nothing" outcomes are a crash (way 1) and a system that's busy but useless (way 2). Both are worse than simply <i>refusing</i> the 40,000 req/s you can't serve. That refusal, done well, is this entire lesson.</p>
+
+<p class="note why"><b>Name the trade-off — throughput vs goodput under overload.</b> Chasing maximum throughput ("accept everything, keep every core busy") is exactly what destroys goodput once you're past capacity, because the busywork is stale-on-arrival and it starves the requests that could still be served in time. The counter-intuitive move is to accept <i>less</i> so that what you accept actually completes before its deadline. <span class="key">Under overload, the goal is not to do the most work — it's to do the most work that still matters.</span></p>
+
+<h2>Move 2 — Model: bound the queue, then choose how it says no</h2>
+<p>The fix has two parts. First, <b>every queue in the path gets a hard maximum length.</b> Second, when a bounded queue is full, it must do <i>something</i> — and there are exactly two somethings: push back on the producer (block) or throw the request away (drop). Which one depends on whether you control the producer.</p>
+
+<h3>Sizing the bound: derive it from the timeout</h3>
+<div class="card calc">
+  <p>A bounded queue is only useful if the wait it allows is shorter than the client's patience. Max wait = <code>depth ÷ service_rate</code>. We want that under the <b>1 s</b> timeout at a <b>40,000/s</b> consumer, so:</p>
+  <p>• <code>depth &lt; 1 s × 40,000/s = 40,000</code>. Pick <b>depth = 20,000</b> for margin → max wait <code>20,000 ÷ 40,000 = 0.5 s</code>, comfortably under the timeout.</p>
+  <p>• memory is now <i>fixed</i>: <code>20,000 × 20 KB = 400 MB</code>, not 144 GB. And every served response is <b>≤ 0.5 s old</b>, so it beats the timeout — goodput returns to the full <b>40,000/s</b>. The other 40,000/s gets a fast <code>429</code> instead of a slow death. <span class="key">A bounded queue turns "how much do I buffer?" into "how much latency am I willing to add before I say no?" — and you answer it with the client's deadline, not with available RAM.</span></p>
+</div>
+
+<h3>The two ways to say no when full</h3>
+<div class="diagram"><pre>
+  A FULL BOUNDED QUEUE HAS TWO MOVES
+
+  (a) BLOCK  — push back on the producer          (b) DROP — shed the request
+      producer must wait for a free slot               queue is full -> reject now
+      the "slow down" travels UPSTREAM                 return 429 instantly (honest no)
+
+      use when you CONTROL the producer:               use when you DON'T control it:
+        one internal service calling another             the public internet, users, UDP
+        a worker reading a Kafka partition (L09)         (you can't make strangers wait)
+        a thread pulling from an in-process queue
+
+  CREDIT-BASED FLOW CONTROL = block, made explicit and continuous:
+      consumer advertises free slots ...... credit = 12,000
+      producer sends at most 12,000, then STOPS until credit refreshes
+      credit shrinking toward 0  ==  backpressure, expressed as a number
+      (this is TCP's receive window / HTTP-2's flow window / Reactive Streams request(n))
+</pre></div>
+
+<p>Blocking is the cleaner tool when you own both ends: the consumer simply stops accepting, the producer's <code>send()</code> stalls, and — if every hop back to the edge is <i>also</i> bounded — that stall propagates all the way up until the edge itself is the thing that's blocked, at which point it must convert the block into a drop, because it <i>cannot</i> block a stranger on the internet. That's the key structural rule: <b>backpressure propagates inward as blocking and terminates at the edge as shedding.</b> Credit-based flow control is just blocking made into an explicit, continuously-updated number so the producer never even sends the byte that would be dropped — cheaper than send-then-reject, because the "no" arrives before the work does.</p>
+
+<p class="note why"><b>Name the trade-off — block vs drop is "who can wait?"</b> Blocking preserves every request (nothing is lost) but only works when the producer is something you can legitimately stall; stall the wrong producer and the block travels upstream until it freezes a user-facing thread pool (Lesson 07's exhaustion) — you've moved the outage, not fixed it. Dropping loses requests but is the only truthful answer to a producer you can't slow down, and a fast <code>429</code> lets the client back off (Lesson 07) instead of hanging. <span class="key">Block inside the graph where you control both ends; shed at the boundary where you don't.</span></p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Three responses to the same 80,000-vs-40,000 overload. Watch one thing: how much <i>wasted work</i> each request costs before the system says no.</p>
+
+<h3>Path A — unbounded buffer (the naive "queue everything")</h3>
+<div class="diagram"><pre>
+  t=0     overload begins, queue unbounded
+  t=1 s   queue = 40,000 -> wait crosses the 1 s timeout -> goodput starts dying
+  t~10 s  clients time out AND retry (L07) -> offered load climbs above 80,000
+          server still finishing abandoned requests at 40,000/s -> goodput ~ 0
+  t~60 s  queue in the millions, memory climbing toward 144 GB
+  t~??    OOM / swap death -> the box falls over -> 100% of load shed the ugly way
+</pre></div>
+<p>No bound, no signal, no survivors. The queue absorbs the overflow exactly long enough to guarantee a crash, and the retry storm (Lesson 07) piles on more load while goodput is already zero — the textbook <b>metastable failure</b>: even after the spike passes, the retry backlog can keep the system down. <span class="key">"Buffer it and hope" is not flow control; it's a delayed, worse outage.</span></p>
+
+<h3>Path B — bounded queue, but shed at the slow end</h3>
+<div class="diagram"><pre>
+  edge --> API tier --> [bounded queue @ downstream, depth 20,000] --> ledger DB
+     accept 80,000 ......... all 80,000 traverse edge + API tier (auth, parse, TLS) ...
+        |                                                                    |
+        v                                                                    v
+   downstream queue full at 20,000 -> DROP the excess 40,000/s here (429)   40,000/s served
+
+  survives (no OOM, goodput = 40,000/s) BUT:
+     the 40,000/s it drops already PAID for edge + API-tier CPU before being rejected
+     -> that wasted work is capacity stolen from requests that could have completed
+</pre></div>
+<p>Bounding the queue stops the crash and restores goodput to the full 40,000/s — a huge win over Path A. But the rejection happens at the <i>far</i> end, so every one of the 40,000 dropped requests/second first consumed the edge and the API tier: connection setup, TLS, auth, JSON parsing, a hop across the network. That work produces a <code>429</code> and nothing else. Worse, it competes for the same CPU the survivors need. Better than a crash, but leaky: <span class="key">a request you were always going to reject should be rejected before you spend anything on it.</span></p>
+
+<h3>Path C — bounded queue + backpressure propagated to admission control at the edge</h3>
+<div class="diagram"><pre>
+  downstream queue depth -> credit signal -> API tier -> credit signal -> EDGE
+     "I have room for 40,000/s"  ..... travels upstream as shrinking credit .....
+        |                                                                    |
+        v                                                                    v
+   EDGE admits only ~40,000/s (admission control), 429s the other 40,000/s INSTANTLY
+     rejected requests cost ~nothing: no auth, no parse, no downstream hop
+        |
+        v
+   API tier + downstream run at a healthy ~70% (L27's knee), every admitted request completes
+</pre></div>
+<p>Same bounded queue, but now its fullness is <i>reported upstream</i> as a credit/health signal, and the edge acts on it: it admits only what the chain can finish and returns an immediate <code>429</code> to the rest — before spending a cent of downstream work on them. The rejected requests are cheap, the admitted requests all complete within the deadline, and the whole graph runs at a healthy utilization instead of thrashing. This is the same "honest 429" from Lesson 07, now placed <i>where it's cheapest</i>. <span class="key">The best place to say no is the first place that can — the entrance.</span></p>
+
+<p class="note why"><b>Name the trade-off — where you shed is goodput vs simplicity.</b> Shedding deep (Path B) is trivial to add — one bounded queue in front of the bottleneck — but every drop wastes the upstream work already spent, so your usable goodput sags under heavy overload. Shedding at the edge (Path C) preserves nearly all goodput because rejects are cheap, but it needs the downstream's health to travel upstream — a real signal to build and trust. <span class="key">Cheap-but-leaky vs efficient-but-wired-up: the deeper you can afford to push the "no" toward the door, the more of your capacity survives the overload.</span></p>
+
+<h2>Move 4 — Find the first bottleneck: where the "no" goes, and the traps around it</h2>
+<p>Path C names the principle — reject at the edge, informed by the whole chain. But "put admission control at the door" hides three traps that turn a good idea into a new outage. Here they are, each a familiar tool aimed at the flow.</p>
+
+<div class="card calc">
+  <p><b>Worked: wasted work is stolen capacity.</b> Say the edge + API tier cost <b>5 ms</b> of CPU per request before the downstream is even called. Under Path B, the 40,000 req/s you reject still burn <code>40,000 × 5 ms = 200 core-seconds/second</code> = <b>200 cores</b> doing nothing but producing 429s — CPU that the 40,000 <i>survivors</i> now have to fight for. Push the reject to the edge (Path C) and those 200 cores come back to real work. <span class="key">Every unit of work spent on a request you will reject is subtracted twice: once wasted, once stolen from a request you could have served.</span></p>
+</div>
+
+<ul>
+  <li><b>Trap 1 — an unbounded queue hiding anywhere in the graph.</b> Bounding the front door is worthless if some <i>internal</i> hop (a thread pool's task queue, a client library's send buffer, a Kafka producer's in-memory batch) is still unbounded — the pile just moves there and OOMs there instead. The rule is total: <b>every</b> queue, at <b>every</b> hop, gets a bound. Backpressure only propagates if there's an unbroken chain of bounded buffers from the bottleneck back to the edge; one unbounded link in the middle silently swallows the signal.</li>
+  <li><b>Trap 2 — blocking the wrong thing (head-of-line blocking &amp; thread-pool freeze).</b> Blocking is the right push-back <i>inside</i> the graph, but if the block lands on a shared, user-facing thread pool, one slow downstream can freeze threads that were serving <i>unrelated</i> fast requests — Lesson 07's exhaustion, now triggered on purpose by your own backpressure. Keep the bounded queue's "full" behavior non-blocking at the edge (drop, don't hang), and isolate pools (a bulkhead) so backpressure from one dependency can't stall the rest.</li>
+  <li><b>Trap 3 — shedding blindly (all requests are not equal).</b> When you must drop, <i>which</i> 40,000/s you drop is a design choice with big goodput consequences. Shed the cheapest to lose and the least valuable first: drop retries before first-tries (a retry means the original may still complete), drop low tier before paying customers, and never shed health checks (killing those makes the load balancer think the box is dead — the shed becomes an outage). A neat overload trick: switch the queue from <b>FIFO to LIFO</b> so you serve the <i>freshest</i> requests (whose clients are most likely still waiting) and drop the stale head that's already near its timeout — raising goodput without adding a single server.</li>
+</ul>
+
+<p class="note why"><b>Name the core trade-off — throughput vs tail latency &amp; stability.</b> Every lever here spends potential throughput to buy a bounded tail and a system that stays up. A bounded queue <i>refuses</i> work it could nominally have queued (lower peak throughput) so that admitted work completes within the deadline (bounded p99) and memory stays flat (stability). Admission control <i>rejects</i> requests a greedier system would accept, trading raw acceptance for the guarantee that acceptance means completion. <span class="key">Backpressure is the system choosing a smaller amount of work it can actually finish over a larger amount it can only pretend to — and the whole skill is placing the "no" where it costs the least and protects the most: bound every queue, block where you own both ends, shed at the edge, and when you shed, shed the least valuable first.</span></p>
+
+<table>
+  <tr><th>Strategy</th><th>What happens under 2× overload</th><th>Goodput</th><th>Cost / risk</th></tr>
+  <tr><td>Unbounded queue (do nothing)</td><td>144 GB in 3 min → OOM crash</td><td>→ 0, then total</td><td>worst of all — a delayed, bigger outage</td></tr>
+  <tr><td>Bounded queue, shed deep (B)</td><td>survives; drops at the bottleneck</td><td>~40,000/s</td><td>wasted upstream work (200 cores of 429s)</td></tr>
+  <tr><td>Bounded + edge admission (C)</td><td>survives; rejects cheaply at the door</td><td>~40,000/s, more of it usable</td><td>needs a health/credit signal upstream</td></tr>
+  <tr><td>Block (credit-based) inside graph</td><td>producer stalls to consumer's rate</td><td>full, no loss</td><td>only if you control the producer; watch pools</td></tr>
+  <tr><td>Priority shed + LIFO under load</td><td>drops retries/low-tier/stale first</td><td>highest usable</td><td>needs request classification</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We took Lesson 27's unwinnable spike — <b>80,000 req/s</b> offered, <b>40,000</b> servable, for the ~3 minutes before new servers boot — and made it survivable. <b>Estimate</b> killed the naive "buffer it" plan twice: an unbounded queue fills <b>~144 GB in 3 minutes</b> (<code>40,000/s × 180 s × 20 KB</code>) and crashes, and even before that <b>goodput collapses to ~0</b> while throughput stays a deceptive 40,000/s — the server pegged, finishing requests whose clients already timed out. <b>Model</b> gave the one fix that matters: <b>bound every queue</b>, sized from the timeout (<code>depth &lt; timeout × rate = 40,000</code> → pick 20,000 → max wait 0.5 s, memory a fixed 400 MB, goodput back to 40,000/s), and when a bounded queue is full, choose its "no" — <b>block</b> the producer (credit-based flow control: TCP window, HTTP/2, <code>request(n)</code>) when you control it, or <b>drop</b> (an honest 429, Lesson 07) when you don't. <b>Tracing</b> three responses to the same overload showed the axis that matters — how much work you waste before saying no: the unbounded buffer (crash + retry-storm metastability), the bounded-but-shed-deep queue (survives, but every reject already burned edge + API-tier CPU — ~200 stolen cores), and bounded-plus-edge-admission (the downstream's fullness travels upstream as a credit signal, the edge 429s the excess for near-free, goodput preserved and the graph runs at Lesson 27's healthy knee). The <b>first bottleneck</b> was <i>where the "no" goes</i>, guarded by three traps: one unbounded queue hiding at any hop reopens the OOM; blocking a shared user-facing pool re-creates Lesson 07's thread-pool freeze (bulkhead + non-blocking edge); and blind shedding wastes goodput (drop retries, low tier, and the stale head — FIFO→LIFO — first, never health checks). The real lesson: <span class="key">you cannot make a slow consumer fast in the moment, so the only honest options are to slow the producer or refuse the work — and a system that gracefully does less it can finish beats one that greedily accepts more it can only crash trying to do. The trade is throughput vs tail latency &amp; stability.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson changes gears — from the write path to the read path:</b></p>
+  <p style="margin:.2rem 0">• <b>Data warehousing &amp; OLAP (batch + streaming):</b> for 28 lessons we've protected the <i>serving</i> path — accept a request, do a little work, answer fast. But every one of those systems emits a firehose of events (the 25-trillion-object stream of Lesson 21), and someone wants to ask "what were revenue-by-region-by-hour trends last quarter?" over all of it. That's a different machine entirely: <b>columnar storage</b>, <b>partition pruning</b>, the <b>OLTP-vs-OLAP</b> split, and the <b>lambda/kappa</b> (batch vs streaming) reconciliation. The trade shifts from <b>throughput vs stability</b> to <b>query freshness vs cost &amp; complexity.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">backpressure</span>
+    <span class="pill">flow control</span>
+    <span class="pill">producer / consumer</span>
+    <span class="pill">bounded vs unbounded queue</span>
+    <span class="pill">throughput</span>
+    <span class="pill">goodput</span>
+    <span class="pill">goodput cliff</span>
+    <span class="pill">load shedding</span>
+    <span class="pill">admission control</span>
+    <span class="pill">credit-based flow control</span>
+    <span class="pill">receive window</span>
+    <span class="pill">block vs drop</span>
+    <span class="pill">head-of-line blocking</span>
+    <span class="pill">bulkhead</span>
+    <span class="pill">honest 429</span>
+    <span class="pill">FIFO vs LIFO under overload</span>
+    <span class="pill">metastable failure</span>
+    <span class="pill">throughput vs stability</span>
+  </p>
+  <p>That's Lesson 28, built directly on Lesson 27's teaser (scaling can't beat a spike faster than boot time, so something has to give) and reusing Lesson 13's Little's Law to size the bounded queue, Lesson 07's timeout / honest-429 / retry-storm / metastable collapse as what overload does without flow control, and Lessons 05 &amp; 09's consumer-lag and partition queues as where backpressure lives. <b>Ask me follow-ups</b> — e.g. "how does TCP's receive window actually implement credit-based backpressure at the byte level?", "what's the difference between a circuit breaker (L07) and backpressure — when do I want each?", "how do I add admission control to an existing service that has no upstream health signal?", "why is LIFO under overload not just unfair — when does it backfire?", or "how does backpressure work across an async message queue (L09) where there's no synchronous caller to push back on?" When you're ready, say <b>next</b> and we'll go deeper on <i>Data warehousing &amp; OLAP — asking big questions of the whole firehose.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "During the spike your fleet is offered 80,000 req/s but can finish only 40,000. A teammate says 'just put a big queue in front of the slow service so we don't drop anything until the new servers boot.' Why does an unbounded queue make things worse, not better?",
+    options: [
+      {t:"Two ways at once: the queue grows at 40,000 req/s and, at ~20 KB of in-flight state each, hits ~144 GB in the ~3-minute boot window → OOM and a total crash; and long before that, once the wait crosses the client's timeout (~1 s in), every response arrives after its client gave up, so throughput stays ~40,000/s but goodput collapses to ~0. Buffering the overflow just converts a slowdown into a bigger, delayed outage.",
+       ok:true,
+       fb:"Right. An unbounded queue absorbs overflow only long enough to guarantee a crash, and even before that it spends 100% of capacity finishing abandoned requests. The fix is a bounded queue sized from the timeout, plus an honest 429 for the rest — do less, but finish it."},
+      {t:"A big queue is actually correct — it smooths the spike, and since the new servers arrive in 3 minutes, the queue drains completely once they're up. The only real cost is a few minutes of higher latency.",
+       ok:false,
+       fb:"This is the trap the lesson is built around. The queue grows at 40,000/s; in 3 minutes that's 7.2M requests holding ~144 GB — the box OOMs long before the servers arrive. And even if memory were infinite, every request past the first second waits longer than the client timeout, so nothing in the queue is still wanted. It doesn't smooth the spike; it detonates on it."},
+      {t:"The queue is fine as long as it's on fast SSD instead of RAM, so the 144 GB backlog spills to disk and nothing crashes.",
+       ok:false,
+       fb:"Spilling to disk changes where the pile lives, not the fundamental problem: the backlog still grows without bound (disk fills next), and every queued request still ages past the client's timeout, so goodput is still ~0. You'd be durably storing millions of answers nobody is waiting for. The problem is the unbounded growth and the stale-on-arrival latency, not the storage medium."}
+    ]
+  },
+  {
+    stem: "You bound the queue in front of the slow downstream at depth 20,000 and return a 429 when it's full. This survives (goodput back to 40,000/s) — but the lesson calls it 'leaky.' Why, and what's the better placement?",
+    options: [
+      {t:"Every one of the 40,000 req/s you reject at the downstream first traversed the edge and API tier — auth, TLS, parsing, a network hop — so that wasted work (e.g. ~200 cores' worth) both burns CPU and competes with the survivors. Better: propagate the downstream's fullness upstream as a health/credit signal so the EDGE admits only what the chain can finish and 429s the rest before spending anything on them.",
+       ok:true,
+       fb:"Exactly. A request you were always going to reject should be rejected at the first place that can — the entrance. Shedding deep is simple but wastes the upstream work already spent; edge admission control preserves that capacity for requests that actually complete."},
+      {t:"It's leaky because a bounded queue can still lose messages if the process restarts, so you should make the queue durable (write it to disk) before rejecting anything.",
+       ok:false,
+       fb:"Durability is a different concern. The 'leak' the lesson means is wasted work: the 40,000/s you drop at the far end already consumed edge + API-tier CPU before being rejected. Making the queue durable doesn't recover that wasted upstream work — and durably persisting overflow you can't serve in time just recreates the unbounded-storage problem."},
+      {t:"It's leaky because 20,000 is too shallow — bump the bound to 20 million so almost nothing gets a 429, and the leak goes away.",
+       ok:false,
+       fb:"Backwards. A depth of 20 million means a max wait of 20M/40,000 = 500 seconds — every served response is wildly past the 1 s timeout, so goodput collapses exactly like the unbounded case, plus you're back toward the 144 GB memory problem. The bound is sized DOWN from the timeout, not up to avoid 429s. The leak is about WHERE you reject, not how rarely."}
+    ]
+  },
+  {
+    stem: "'Backpressure' can mean blocking the producer or dropping the request. When is blocking (push-back / credit-based flow control) the right move, and when must you drop instead?",
+    options: [
+      {t:"Block when you control the producer — one internal service calling another, a worker pulling from a Kafka partition, a thread reading an in-process queue — so stalling it is legitimate and the 'slow down' can propagate upstream. Drop (shed, return a 429) when you don't control the producer — the public internet, end users — because you can't make strangers wait, and a fast rejection lets them back off. As a rule, backpressure propagates inward as blocking and terminates at the edge as shedding.",
+       ok:true,
+       fb:"Right. Block where you own both ends; shed at the boundary where you don't. Credit-based flow control is just blocking made explicit — the consumer advertises free slots and the producer never even sends what would be dropped. The edge is where the chain of blocks must convert into a drop, because you can't block the internet."},
+      {t:"Always block and never drop — dropping loses requests, which is data loss, so a correct system pushes back all the way to the client and makes it wait as long as necessary.",
+       ok:false,
+       fb:"Blocking a producer you don't control is exactly how you cause an outage: the block travels upstream until it freezes a user-facing thread pool (Lesson 07's exhaustion), and you can't legitimately make a stranger on the internet wait indefinitely anyway. When the producer can't be slowed, a fast honest 429 (which the client can back off from) is the correct answer — dropping the request is better than hanging every thread."},
+      {t:"Always drop and never block — blocking couples services together, and loose coupling is the goal, so every full queue should immediately 429 no matter who the producer is.",
+       ok:false,
+       fb:"Too absolute the other way. Inside a call graph you control, blocking (credit-based flow control) preserves every request with zero loss and is exactly how TCP, HTTP/2, and Reactive Streams work. Dropping a request you could have losslessly paced is throwing away good work. The right answer is conditional: block where you control the producer, drop where you don't."}
+    ]
+  },
+  {
+    stem: "You've bounded the front-door queue and added edge admission control. Which remaining trap can still turn this into a fresh outage?",
+    options: [
+      {t:"An unbounded queue hiding at any internal hop (a thread-pool task queue, a client library's send buffer, a Kafka producer's in-memory batch) — the pile just moves there and OOMs there, and it silently swallows the backpressure signal so the edge never learns to say no. Backpressure only works with an unbroken chain of bounded buffers from the bottleneck back to the edge; one unbounded link breaks it.",
+       ok:true,
+       fb:"Exactly. Bounding the front door is worthless if some hop in the middle is still unbounded. The rule is total: every queue, at every hop, gets a bound — otherwise the signal can't propagate and the crash just relocates."},
+      {t:"None — once you've bounded the front-door queue and added admission control, the system is provably safe under any overload and no further failure modes exist.",
+       ok:false,
+       fb:"Overconfident. The lesson names three live traps even after edge admission: an unbounded queue hiding at any internal hop (relocates the OOM and swallows the signal), blocking a shared user-facing thread pool (recreates Lesson 07's freeze), and blind shedding that drops health checks or first-tries. Bounding one queue is necessary, not sufficient — you need every queue bounded and the shedding prioritized."},
+      {t:"The risk is that admission control makes the system too fair — by treating all requests equally it can't prioritize, so you should remove it and let the downstream sort things out.",
+       ok:false,
+       fb:"Removing admission control sends you straight back to Path B or A. The real refinement is the opposite: keep admission control AND make its shedding prioritized — drop retries before first-tries, low tier before paying customers, the stale queue head before fresh requests (FIFO→LIFO), and never health checks. You add prioritization to the 'no', you don't delete the 'no'."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

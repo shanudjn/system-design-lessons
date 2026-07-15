@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0028-backpressure-flow-control.html">
+    <div class="num">LESSON 28</div>
+    <div class="title">Backpressure &amp; Flow Control: Saying No Gracefully When Scaling Can't Keep Up</div>
+    <div class="blurb">Lesson 27 proved a 2× spike outruns the 3-minute boot time, so for those ~3 minutes the fleet is offered <b>80,000 req/s</b> but can finish only <b>40,000</b> — something has to give. The tempting answer, "just queue the overflow," is exactly what turns a slowdown into a total outage: an unbounded queue grows at 40,000/s and hits <b>~144 GB in 3 minutes</b> (<code>40,000/s × 180 s × 20 KB</code>) → OOM crash, and even before that <b>goodput</b> collapses to ~0 while <b>throughput</b> stays a deceptive 40,000/s — the server pegged, finishing requests whose clients already timed out. The fix is one idea: <b>bound every queue</b>, sized from the client timeout (<code>depth &lt; timeout × rate = 40,000</code> → pick 20,000 → max wait 0.5 s, memory a fixed 400 MB, goodput back to full). Then choose how a full queue says no — <b>block</b> the producer (credit-based flow control: TCP window, HTTP/2, <code>request(n)</code>) when you control it, or <b>drop</b> (an honest 429, L07) when you don't. Trace three responses and watch the wasted work: unbounded (crash + retry-storm metastability), bounded-but-shed-deep (survives, but every reject already burned edge + API-tier CPU — ~200 stolen cores), and bounded-plus-<b>edge admission control</b> (downstream fullness travels upstream as a credit signal → 429 the excess for near-free → goodput preserved at L27's knee). First wall: <i>where</i> the "no" goes, guarded by three traps — an unbounded queue hiding at any hop, blocking a shared thread pool (L07 freeze), and blind shedding (drop retries/low-tier/stale head first — FIFO→LIFO — never health checks). Trade named throughout: throughput vs tail latency &amp; stability.</div>
+  </a>
   <a class="lesson" href="lessons/0027-autoscaling.html">
     <div class="num">LESSON 27</div>
     <div class="title">Autoscaling &amp; Capacity Planning: Sizing a Fleet Before the Spike Hits</div>
