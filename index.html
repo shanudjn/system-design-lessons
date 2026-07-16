@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0029-data-warehousing-olap.html">
+    <div class="num">LESSON 29</div>
+    <div class="title">Data Warehousing &amp; OLAP: Asking One Big Question of the Whole Firehose</div>
+    <div class="blurb">For 28 lessons we protected the <b>serving path</b>. Now the opposite question: not "what is order #12345?" but "<b>revenue by region by day for last quarter — across all 11 billion orders (~11 TB)?</b>" Run it on the row-oriented serving DB and it drags whole 1 KB rows to read 2 of 50 columns → <b>900 GB → ~30 minutes</b>, while also starving live customers (L07/L27). Store the same data <b>by column</b> instead and that query reads only the 2 columns it names, prunes to <b>90 of 1,095 day-partitions</b> (11 TB → 900 GB), projects (→ 9 GB), and compresses (→ ~2.5 GB) → a <b>5 s</b> scan, <b>~0.5 s</b> across 10 nodes — a 360× cut bought purely by <i>reading fewer bytes</i>, not a faster disk. Model the system: a <b>separate columnar warehouse</b> (analytics and serving have opposite shapes and failure modes — never share one DB), <b>partitioned</b> for pruning and <b>denormalized</b> into a <b>star schema</b> (precompute the join, L15 — normalize for writes, denormalize for reads), fed by an <b>ETL/ELT</b> pipeline that makes it a <i>copy</i>, and so <i>stale</i>. Trace the load (an order is queryable in ms but enters analytics only at the next batch) and the scan (<b>prune → project → scan → merge</b>, L21's partial-then-merge). First wall: the warehouse is stale, and "batch more often" loses (cost scales with history × frequency) → the <b>lambda</b> (two layers, duplicated logic) vs <b>kappa</b> (one replayable stream) reconciliation — guarded by three traps: point lookups on a scan engine (L12's selectivity trap reversed), over-partitioning into a small-file swamp (L20), and late events needing a <b>watermark</b> (L17). Trade named throughout: query freshness vs cost &amp; complexity.</div>
+  </a>
   <a class="lesson" href="lessons/0028-backpressure-flow-control.html">
     <div class="num">LESSON 28</div>
     <div class="title">Backpressure &amp; Flow Control: Saying No Gracefully When Scaling Can't Keep Up</div>

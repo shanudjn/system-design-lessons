@@ -380,10 +380,31 @@
     tier, stale head via FIFO→LIFO; NEVER health checks). Reuses L13 Little's Law (queue
     sizing), L07 timeout/429/retry-storm/metastable, L05/L09 consumer-lag & partition
     queues. Trade: throughput vs tail latency & stability. (Lesson 0028)
-29. Data warehousing & OLAP (batch + streaming) — the 25-trillion-event firehose
-    (L21) answered with columnar storage, partitioning/pruning, the OLTP-vs-OLAP split,
-    and the lambda/kappa (batch vs streaming) reconciliation. Trade: query freshness vs
-    cost & complexity.
+29. ✅ **Data warehousing & OLAP** — one analytics question ("revenue by region by day,
+    last quarter") over 11B order rows / 50 cols / ~11 TB (L12/L25 orders): the row store
+    drags whole 1 KB rows to read 2 of 50 columns → 900 GB → **30 min** for one tile (@ L12's
+    500 MB/s), so flip the physical layout. **Columnar** reads only the columns asked for and
+    compresses hard (a column = a billion similar values → dict/RLE/delta) — the funnel narrows
+    the bytes BEFORE computing (L14/L16): **partition pruning** by day skips 1,005 of 1,095
+    partitions (11 TB → 900 GB), **projection** reads 2 of 50 cols (→ 9 GB), compression ~3.6×
+    (→ ~2.5 GB), scan @ 500 MB/s across 10 nodes → **~0.5 s** (360× vs the row scan, all from
+    reading fewer bytes, not a faster disk). Model: a SEPARATE columnar **warehouse** (analytics
+    & serving have opposite shapes AND opposite failure modes — a 900 GB scan evicts serving's
+    hot cache & trips L27's knee → L07 retry storm; never share one DB), **partitioned** for
+    pruning + **denormalized** into a **star schema** (fact + dimensions; precompute the join =
+    L15's precompute-the-read; normalize for writes, denormalize for reads — normal form is a bet
+    on write:read ratio), fed by **ETL/ELT** so the warehouse is a *copy*, hence *stale*. Trace
+    the load (order queryable for ops in ms, enters analytics only at the next batch) and the scan
+    (prune → project → scan → aggregate-and-**merge** partials = L21). First wall = staleness:
+    "batch more often" loses (cost ∝ history × frequency; the 6.1 h full re-scan can't fit a 5-min
+    window) → freshness needs a layer whose cost scales with NEW data → **lambda** (batch +
+    speed/stream layers merged at read; pays in SAME logic maintained twice) vs **kappa** (one
+    streaming pipeline, reprocess history by **replaying** the L09 log; pays in expensive replay).
+    Three traps: point lookup on a scan engine (L12's selectivity trap REVERSED — send point reads
+    to OLTP, aggregates to the warehouse), over-partition by minute → 1.58M small files → pruning
+    dies (L20's small-file problem), late/out-of-order events break streaming windows → **watermark**
+    holds windows open for stragglers (L17's tail/late-arrival). Trade: query freshness vs cost &
+    complexity. (Lesson 0029)
 30. Secrets, keys & encryption at rest/in transit — protecting the payment data from
     L24/L25: envelope encryption, key rotation without re-encrypting everything, the
     KMS as a coordination point (recap L10), and TLS termination placement. Trade:

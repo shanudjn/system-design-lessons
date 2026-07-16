@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 29 — Data Warehousing &amp; OLAP: Asking One Big Question of the Whole Firehose</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 29 · Worked Example</div>
+  <h1>Data Warehousing &amp; OLAP: Asking One Big Question of the Whole Firehose</h1>
+  <p class="lead">For 28 lessons we protected the <b>serving path</b> — accept a request, do a little work, answer in milliseconds. Every one of those systems emits a firehose of events, and eventually someone asks a completely different kind of question: not "what is order #12345?" but "<i>what was revenue by region by day for the last quarter — across all 11 billion orders?</i>" Run that on the production database and you get a 30-minute table scan that also starves every live customer. This lesson takes that one query and traces why it needs a different machine. We'll <b>estimate</b> the scan two ways — the row-store's 30 minutes vs the column-store's 5 seconds — <b>model</b> the two ideas that buy that 360× (<b>columnar storage</b> + <b>partition pruning</b>) and the <b>OLTP-vs-OLAP</b> split that keeps analytics off the serving box, <b>trace</b> how events flow from the live system into a warehouse, and hit the wall that defines the whole domain: the warehouse is <i>stale</i>, and closing that gap forces the <b>lambda-vs-kappa</b> (batch vs streaming) reconciliation. The trade shifts from Lesson 28's throughput-vs-stability to the one every analytics system is really deciding: <b>query freshness vs cost &amp; complexity.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0029-data-warehousing-olap.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>Take the order events from earlier lessons — the ledger of Lesson 25, the orders table of Lesson 12. The business does <b>10 million orders/day</b> and keeps <b>3 years</b> of history: <code>10M × 1,095 days ≈ 11 billion rows</code>. Each order is a wide record — <b>~50 columns</b> (id, timestamp, customer, region, item, price, tax, shipping, status, …), about <b>1 KB</b> each — so the whole thing is <code>11B × 1 KB ≈ 11 TB</code>. Now an analyst asks one question: <b>total revenue by region, by day, for the last quarter (90 days).</b> That question touches just <b>2 columns</b> (region, amount) over <b>90 of the 1,095 days</b>. Here is the shape, and why the storage layout is the whole game.</p>
+
+<div class="diagram"><pre>
+  OLAP  —  asking ONE big aggregate question of the whole firehose
+
+  11 billion order rows · 50 columns · ~11 TB.   Question:
+  "revenue by region, by day, last quarter"  ->  touches 2 columns, 90 of 1,095 days.
+
+  ROW STORE  (OLTP, L12/L25)                 COLUMN STORE  (OLAP)
+  each row's 50 columns stored together      each COLUMN stored together
+   +--------------------------------+         id: [.....................]
+   | id | ts | region | amount |... |         ts: [.....................]
+   | id | ts | region | amount |... |         region: [us|eu|us|ap|...]  <- read this
+   | id | ts | region | amount |... |         amount: [ 50| 12| 88|...]  <- and this
+   +--------------------------------+         ...48 other columns untouched
+   want 2 cols -> must drag all 50            read ONLY the 2 you asked for
+   off disk row by row                        (and skip 48; skip 91.8% of days)
+   = ~900 GB read = ~30 min                   = ~2.5 GB read = ~5 s
+
+  THE FUNNEL — narrow the bytes BEFORE you compute (L14/L16 again):
+    11 TB  --prune to 90 of 1,095 day-partitions-->  900 GB   (12x less)
+           --project 2 of 50 columns------------->      9 GB   (100x less)
+           --columnar compression (~3.6x)-------->    ~2.5 GB
+           --scan @ 500 MB/s across 10 nodes----->    ~0.5 s
+</pre></div>
+
+<p class="note"><span class="key">The serving database (Lesson 12) stores each row's columns physically next to each other, because it answers "give me everything about order #12345" — one row, all its columns, one seek. An analytics query is the mirror image: it wants two columns across a billion rows. Store the table by column instead of by row and that same query reads only the two columns it asked for, leaves the other 48 on disk untouched, and compresses far better — because a column is a billion similar values, not a jumble of 50 different types. Same data, opposite physical layout, chosen for the opposite access pattern. That single flip is what "OLAP" is built on.</span></p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>OLTP</b> (Online Transaction Processing) — the serving workload of every prior lesson: many tiny reads and writes, each touching one row (place an order, read a balance), answered in milliseconds. Row-oriented, indexed by key, normalized.</li>
+  <li><b>OLAP</b> (Online Analytical Processing) — the analytics workload: a few huge queries, each scanning and aggregating <i>many</i> rows over <i>few</i> columns ("sum revenue by region"). Throughput and scan speed matter; per-query latency of seconds is fine.</li>
+  <li><b>Row store vs column store</b> — whether the bytes of one row sit together on disk (row store, good for "all columns of one row") or the bytes of one column sit together (column store / <b>columnar</b>, good for "one column of all rows").</li>
+  <li><b>Projection</b> — reading only the columns a query needs. Trivial to do cheaply in a column store; impossible in a row store, which must read whole rows.</li>
+  <li><b>Partition</b> — a table physically split into independent chunks by some key (here, by day). <b>Partition pruning</b> — the engine skipping entire partitions it can prove the query doesn't need (last quarter → read 90 day-partitions, ignore the other 1,005), reading nothing from them at all.</li>
+  <li><b>Data warehouse</b> — a separate database built for OLAP: columnar, partitioned, denormalized, fed a copy of the operational data. <b>Data lake</b> — the rawer cousin: files (often columnar, like Parquet) in cheap object storage (Lesson 20), queried in place.</li>
+  <li><b>ETL / ELT</b> — the pipeline that copies data from the serving systems into the warehouse: Extract, then Transform then Load (ETL) or Load then Transform (ELT). This is what makes the warehouse's data a <i>copy</i>, and therefore <i>behind</i>.</li>
+  <li><b>Batch layer vs speed (streaming) layer</b> — recomputing aggregates from all history on a schedule (batch: complete and correct, but hours stale) vs updating them event-by-event as data arrives (streaming: fresh to seconds, but only recent and harder to get exactly right).</li>
+  <li><b>Lambda vs kappa architecture</b> — run both a batch and a streaming layer and merge them (lambda), or run one streaming pipeline and reprocess history by replaying the log (kappa). The two standard answers to "I want fresh <i>and</i> correct."</li>
+</ul>
+
+<h2>Move 1 — Estimate: the same query, two storage layouts</h2>
+<p>Before choosing a design, price the query on the machine we already have (the row-oriented serving DB of Lesson 12) and on the one we're proposing. The disk reads only so fast — Lesson 12's <b>500 MB/s</b> — so the design that reads fewer bytes wins, and the gap is enormous.</p>
+
+<div class="card calc">
+  <p><b>Worked (way 1): the row store drags whole rows.</b> Even after limiting to the quarter, that's <code>10M/day × 90 = 900M rows</code>. In a row store, the 2 columns we want (<code>region</code>, <code>amount</code>) are physically interleaved with the other 48, so to read them the engine must pull each entire <b>1 KB</b> row off disk:</p>
+  <p>• bytes read = <code>900M × 1 KB = 900 GB</code> (98% of it columns we never use).</p>
+  <p>• time = <code>900,000 MB ÷ 500 MB/s = 1,800 s = 30 minutes</code> — for <i>one</i> dashboard tile. (And scanning the <i>whole</i> 11 TB table, if you couldn't prune, would be <code>22,000 s ≈ 6.1 hours</code>.) <span class="key">A row store makes you pay for every column of every row you touch, even the ones your query never mentions.</span></p>
+</div>
+
+<div class="card calc">
+  <p><b>Worked (way 2): the column store reads only what's asked, then compresses it.</b> Store each column separately. The query reads exactly two: <code>amount</code> (8 bytes) and <code>region</code> (dictionary-encoded to ~2 bytes — there are only a handful of regions). Day is the partition key, so filtering to 90 days is free (Move 2).</p>
+  <p>• projected bytes = <code>900M × (8 + 2) = 9 GB</code> — already <b>100× less</b> than 900 GB, purely from not reading 48 columns.</p>
+  <p>• compression: a column is a billion <i>similar</i> values, so it squeezes hard — <code>region</code> has ~5 distinct values → dictionary + run-length encoding; <code>amount</code> → delta/bit-packing. Call it a conservative <b>3.6×</b> → <code>9 GB ÷ 3.6 ≈ 2.5 GB</code>.</p>
+  <p>• time = <code>2,500 MB ÷ 500 MB/s = 5 s</code> on one disk, and because the 90 partitions are independent you can scan them on <b>10 nodes at once → ~0.5 s</b>. <span class="key">30 minutes to 5 seconds — a 360× cut — and not one byte of it came from a faster disk. It came from reading fewer bytes: prune the days, project the columns, compress what's left.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off — layout follows access pattern.</b> A row store is optimal for OLTP (fetch or update one whole row by key) and terrible for OLAP; a column store is optimal for OLAP (aggregate a few columns over many rows) and terrible at OLTP (assembling one full row means gathering 50 separate column reads, and single-row writes touch 50 files). There is no layout that is best at both — so you keep <i>two copies</i> of the data in two shapes. <span class="key">The cost of fast analytics is a second, differently-shaped copy of your data — and a pipeline to keep it fed.</span></p>
+
+<h2>Move 2 — Model: a separate columnar warehouse, fed by a pipeline</h2>
+<p>The estimate says: store it by column and partition it by day. Two more decisions turn that into a system — <i>where</i> it lives, and <i>how</i> the data gets there.</p>
+
+<h3>Why the query must not run on the serving database</h3>
+<p>You might be tempted to just run the 30-minute scan on the production OLTP database at night. Don't. That scan reads 900 GB, evicts the hot working set from the buffer cache (Lesson 02), holds resources, and competes with live customer traffic — one analyst's report can push the serving tier past its utilization knee (Lesson 27) and into timeouts and retry storms (Lesson 07/28). <span class="key">Analytics and serving have opposite shapes and opposite failure modes; sharing one database means each can take the other down.</span> So the warehouse is a <i>separate</i> system, and the operational data is <i>copied</i> into it.</p>
+
+<h3>The pipeline (ETL/ELT) and the star schema</h3>
+<div class="diagram"><pre>
+  HOW DATA REACHES THE WAREHOUSE  —  and why it's always a little behind
+
+   OLTP (serving, row store)          PIPELINE                 WAREHOUSE (columnar)
+   +---------------------+     extract changes (CDC / dump)    +------------------+
+   | orders  (L12/L25)   | ------------------------------->    |  fact_orders     |
+   | customers, items... |     transform (clean, join, denorm) |  (columnar,      |
+   +---------------------+     load into columnar partitions    |   partitioned    |
+        live, fresh              runs on a SCHEDULE (nightly)   |   by day)        |
+        millisecond writes       or continuously (streaming)   +------------------+
+                                                                    STALE by the
+                                                                    batch interval
+  STAR SCHEMA (denormalized for scans, the opposite of OLTP's normalized):
+     one big FACT table (one row per order: measures + foreign keys)
+     small DIMENSION tables (region, item, customer) joined in
+     -> the analyst scans the fact table; joins are few and small
+</pre></div>
+
+<p>Two design notes hide here. First, the pipeline runs on a <b>schedule</b> (say nightly) or <b>continuously</b>, and either way the warehouse holds a <i>copy</i> that is <b>as fresh as the last run</b> — the seed of this lesson's central problem. Second, the warehouse is <b>denormalized</b> into a <b>star schema</b>: instead of the OLTP world's many small normalized tables (which minimize duplication for cheap single-row writes), you pre-join into one wide <b>fact table</b> (one row per order, with the measures) surrounded by small <b>dimension tables</b>. Analytics almost never updates a row, so the storage duplication is harmless, and the pre-joining means a scan doesn't pay for a 10-way join every time. This is the same "precompute the read" move as the feed fan-out of Lesson 15 — spend storage and write-time work to make the read cheap.</p>
+
+<p class="note why"><b>Name the trade-off — normalize for writes, denormalize for reads.</b> OLTP normalizes (each fact stored once) because it writes constantly and duplication would mean updating the same fact in many places. OLAP denormalizes (facts pre-joined and duplicated) because it barely writes and wants every read to avoid the join. Same data, opposite normal form, because one system optimizes the write and the other optimizes the read. <span class="key">Normal form is not a virtue; it's a bet on your write-to-read ratio.</span></p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Follow one order from the live system to the dashboard, then follow the analyst's query back down.</p>
+
+<h3>Path A — an order becomes a warehouse row (the load)</h3>
+<div class="diagram"><pre>
+  t=0        customer places order #12345 -> OLTP commits the row (L25 ledger), ms
+  ...        order lives in the serving DB, powering "your order" pages all day
+  t=nightly  pipeline EXTRACTS the day's new/changed orders (change-data-capture)
+             TRANSFORMS: clean, join region/item dimensions, denormalize
+             LOADS into fact_orders, appended to TODAY'S day-partition (columnar)
+             columns get dictionary/RLE/delta encoded + compressed on write
+  t=morning  analyst's dashboard can now see order #12345 -- up to ~24 h after it happened
+</pre></div>
+<p>The order was queryable for operations in milliseconds, but it enters the <i>analytics</i> world only at the next batch. That lag — the batch interval — is not a bug; it's the price of keeping analytics off the serving box and letting it run on a big, cheap, columnar copy. Whether 24 hours of staleness is fine depends entirely on the question (last quarter's trend: fine; live revenue-per-minute: useless).</p>
+
+<h3>Path B — the analyst's query (the scan)</h3>
+<div class="diagram"><pre>
+  SELECT region, day, SUM(amount) FROM fact_orders
+  WHERE day BETWEEN '2026-04-01' AND '2026-06-30' GROUP BY region, day
+
+  1. PRUNE   day is the partition key -> engine reads 90 of 1,095 partitions,
+             touches ZERO bytes of the other 1,005            (11 TB -> 900 GB)
+  2. PROJECT reads only the `region` and `amount` column files (48 skipped) (-> 9 GB)
+  3. SCAN    decompress + sum, split across 10 nodes, each owns ~9 partitions (~2.5 GB)
+  4. AGGREGATE  each node sums its slice by (region,day); a final MERGE adds the
+             per-node partials  (same local-compute-then-merge shape as L21/L06)
+  -> answer in ~0.5 s, the serving DB never touched
+</pre></div>
+<p>Notice the funnel does its work <i>before</i> any arithmetic: pruning throws away 91.8% of the data by reading a partition-boundary catalog, projection throws away 96% of each surviving row by ignoring column files, and only the ~2.5 GB that survives both is ever decompressed and summed. The aggregation itself is the Lesson 21 pattern — each node computes a partial over its slice, and a small final step merges the partials — which is exactly why it parallelizes so cleanly. <span class="key">Fast OLAP is mostly the art of not reading data: prune, then project, then (only then) compute.</span></p>
+
+<h2>Move 4 — Find the first bottleneck: the warehouse is stale, and three traps around fixing it</h2>
+<p>Path A named the wall: the warehouse is a <i>copy</i>, fresh only as of the last batch. For "last quarter's trend" that's invisible. But the moment someone wants "revenue in the last 5 minutes" — a live ops dashboard, fraud alerting, an inventory feed — a nightly (or even hourly) batch simply cannot answer. Closing the freshness gap is the whole frontier of this domain, and it has a standard shape with three traps.</p>
+
+<div class="card calc">
+  <p><b>Worked: why you can't just "run the batch more often."</b> The batch recomputes aggregates over history. Recomputing the quarter every 5 minutes means re-scanning ~2.5 GB × (however many queries) every 5 minutes — and recomputing <i>all 3 years</i> to keep every rollup current is the 6.1-hour full scan, which cannot fit in a 5-minute window. Batch cost scales with <i>history size × frequency</i>; pushing frequency up runs headlong into history size. <span class="key">Freshness by "batch more often" is quadratic-flavored and loses — you need a layer whose cost scales with the <i>new</i> data, not all data.</span></p>
+</div>
+
+<h3>The two standard answers — lambda and kappa</h3>
+<div class="diagram"><pre>
+  LAMBDA — run BOTH layers, merge at read                KAPPA — one streaming pipeline
+  events (L09 log) --+--> BATCH layer                     events (L09 retained log)
+                     |    (recompute all history nightly;         |
+                     |     complete, correct, HOURS stale)        v
+                     |                                       STREAM job maintains
+                     +--> SPEED/STREAM layer                 running aggregates
+                          (event-by-event, last few hrs;     (fresh to seconds)
+                           fresh to seconds, approximate)          |
+        serving view = BATCH(old) + SPEED(recent)           reprocess history by
+        merged at query time                                REPLAYING the log through
+        cost: SAME logic maintained TWICE, reconciled       the SAME job. one codebase.
+</pre></div>
+<p><b>Lambda</b> accepts that batch is correct-but-slow and streaming is fresh-but-approximate, and runs both: the batch layer owns everything up to last night, the speed layer covers "since last batch," and the serving layer stitches them (batch answer for old days, streaming answer for today, until tonight's batch absorbs today and the speed layer resets). It works, but you now maintain the <i>same aggregation logic in two places</i> — a batch job and a stream job — and any discrepancy between them is a bug that shows up as a number that jumps when the batch catches up. <b>Kappa</b> collapses that to one streaming pipeline and treats "reprocess history" as "replay the retained log (Lesson 09) from offset 0 through the same stream code" — one codebase, no reconciliation, at the cost of a very expensive replay to backfill or fix a bug over trillions of events. <span class="key">Lambda pays in duplicated logic; kappa pays in replay cost. Both are buying freshness, and the bill is complexity.</span></p>
+
+<h3>The three traps</h3>
+<ul>
+  <li><b>Trap 1 — using OLAP for an OLTP job (the selectivity trap, mirrored).</b> The warehouse is superb at "sum 900M rows" and awful at "fetch the one row for order #12345" — a point lookup becomes a columnar scan of a whole partition because there's no OLTP-style primary-key index to seek with. This is Lesson 12's selectivity trap in reverse: a full scan wins for low-selectivity aggregates and loses badly for high-selectivity point queries. Send point lookups to the OLTP store; send aggregates to the warehouse. Using either for the other's job is the classic mistake.</li>
+  <li><b>Trap 2 — over-partitioning into a small-file swamp.</b> Partitioning by day is what makes pruning work — but partition by <i>minute</i> ("for freshness!") and 3 years becomes <code>1,095 × 1,440 ≈ 1.58M partitions</code>, each a tiny file. Now the engine spends all its time opening millions of files and reading their metadata instead of scanning data — Lesson 20's small-file problem, back again on the analytics side. Partition coarsely enough that each partition is a healthy chunk (hundreds of MB), not per-event. Freshness comes from the streaming layer, not from shredding the batch table.</li>
+  <li><b>Trap 3 — late and out-of-order events break streaming aggregates.</b> The speed layer sums "the last 5 minutes" as events arrive — but a phone that was offline delivers its 2:59 order at 3:04 (Lesson 26). If you already closed the 2:55–3:00 bucket, that revenue is silently lost. Streaming engines handle this with a <b>watermark</b> — a moving "I've probably seen everything up to time T" marker that holds windows open a little longer for stragglers, trading a bit more latency for correctness. This is the Lesson 17 tail/late-arrival problem wearing an analytics hat, and it's why streaming aggregates are "approximate" until the batch layer (which sees the complete, reordered history) reconciles them.</li>
+</ul>
+
+<p class="note why"><b>Name the core trade-off — query freshness vs cost &amp; complexity.</b> Every rung up the freshness ladder costs more moving parts. A nightly batch on a columnar warehouse is the cheapest, simplest, most correct thing you can build — and it's a day stale. Hourly batch, then micro-batch, then a full streaming speed layer each buy fresher answers with more infrastructure, more failure modes (late events, watermarks, dual-codebase drift), and more spend. Lambda buys freshness with duplicated logic; kappa buys it with replay cost; both are strictly more complex than "just run it at night." <span class="key">The whole skill is matching freshness to the question: don't build a streaming pipeline to answer "last quarter's trend," and don't run a nightly batch to drive a live fraud alert. Buy exactly as much freshness as the decision behind the query actually needs — no more, because you pay for every second of it.</span></p>
+
+<table>
+  <tr><th>Approach</th><th>Freshness</th><th>Correctness</th><th>Cost / complexity</th></tr>
+  <tr><td>Query the OLTP DB directly</td><td>live</td><td>correct</td><td>starves serving — don't (L07/L27)</td></tr>
+  <tr><td>Nightly batch → columnar warehouse</td><td>~24 h stale</td><td>complete &amp; correct</td><td>lowest — one pipeline, one codebase</td></tr>
+  <tr><td>Lambda (batch + speed layer)</td><td>seconds</td><td>correct once batch catches up</td><td>high — SAME logic maintained twice</td></tr>
+  <tr><td>Kappa (one streaming pipeline)</td><td>seconds</td><td>as good as your replay + watermarks</td><td>high — expensive history replay</td></tr>
+  <tr><td>Over-partition by minute</td><td>fresher batch</td><td>correct</td><td>trap — 1.58M small files, pruning dies (L20)</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We took one analytics question — <b>revenue by region by day for last quarter, over 11 billion orders (~11 TB)</b> — and traced why it needs a machine the previous 28 lessons never built. <b>Estimate</b> priced it twice: a row store drags whole 1 KB rows to read 2 of 50 columns → <code>900 GB → 30 minutes</code> for one tile, while a column store reads only the 2 columns, prunes to 90 of 1,095 day-partitions, and compresses → <code>~2.5 GB → 5 s → ~0.5 s across 10 nodes</code> — a 360× cut bought entirely by <i>reading fewer bytes</i>, not a faster disk. <b>Model</b> gave the system: a <b>separate columnar warehouse</b> (analytics and serving have opposite shapes and opposite failure modes, so never share one DB), <b>partitioned</b> for pruning and <b>denormalized</b> into a <b>star schema</b> (precompute the join, the Lesson 15 move — normalize for writes, denormalize for reads), fed by an <b>ETL/ELT</b> pipeline that makes the warehouse a <i>copy</i>, and therefore <i>behind</i>. <b>Tracing</b> the load (an order is queryable for ops in ms but enters analytics only at the next batch) and the scan (<b>prune → project → scan → aggregate-and-merge</b>, the Lesson 21 partial-then-merge shape) showed that fast OLAP is mostly the art of <i>not reading data</i>. The <b>first bottleneck</b> was the warehouse's staleness: "batch more often" loses because batch cost scales with history × frequency, so freshness forces the <b>lambda</b> (two layers merged, paid for in duplicated logic) vs <b>kappa</b> (one streaming pipeline, paid for in replay cost) choice — guarded by three traps: point lookups on a scan engine (Lesson 12's selectivity trap in reverse), over-partitioning into a small-file swamp (Lesson 20), and late/out-of-order events needing a watermark (Lesson 17). The real lesson: <span class="key">a serving system and an analytics system are two differently-shaped copies of the same data, and the entire discipline is buying exactly as much freshness as the question needs — because every second of freshness is paid for in cost and complexity. The trade is query freshness vs cost &amp; complexity.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson turns to protecting all this data — the security layer:</b></p>
+  <p style="margin:.2rem 0">• <b>Secrets, keys &amp; encryption (at rest and in transit):</b> the warehouse now holds a copy of every payment (Lesson 25) and every customer record — a single breach exposes 3 years of it at once. How do you encrypt 11 TB without the key becoming a single point of failure or a performance tax on every scan? We'll design <b>envelope encryption</b> (a key that encrypts keys), <b>key rotation</b> that doesn't require re-encrypting everything, the <b>KMS</b> as a coordination point (recap Lesson 10), and where <b>TLS termination</b> belongs. The trade shifts from <b>freshness vs cost</b> to <b>security blast-radius vs operational friction.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">OLTP</span>
+    <span class="pill">OLAP</span>
+    <span class="pill">row store</span>
+    <span class="pill">column store / columnar</span>
+    <span class="pill">projection</span>
+    <span class="pill">partition</span>
+    <span class="pill">partition pruning</span>
+    <span class="pill">data warehouse</span>
+    <span class="pill">data lake</span>
+    <span class="pill">ETL / ELT</span>
+    <span class="pill">star schema</span>
+    <span class="pill">denormalization</span>
+    <span class="pill">fact / dimension table</span>
+    <span class="pill">batch layer</span>
+    <span class="pill">speed / streaming layer</span>
+    <span class="pill">lambda architecture</span>
+    <span class="pill">kappa architecture</span>
+    <span class="pill">watermark</span>
+    <span class="pill">selectivity trap</span>
+    <span class="pill">small-file problem</span>
+    <span class="pill">query freshness vs cost</span>
+  </p>
+  <p>That's Lesson 29, built on Lesson 28's teaser (28 lessons protected the write/serving path; now pivot to the read/analytics path) and reusing Lesson 12's 500 MB/s scan math and selectivity trap, Lesson 15's precompute-the-read (denormalization), Lesson 21's local-compute-then-merge aggregation, Lesson 20's small-file problem, Lesson 17's late-arrival/tail, and Lesson 09's retained log as the source of truth for replay. <b>Ask me follow-ups</b> — e.g. "how does change-data-capture (CDC) actually extract changes without hammering the OLTP database?", "what exactly is a Parquet file and how does its columnar layout store min/max stats for pruning?", "when should I use a data lake vs a warehouse — what's the schema-on-read vs schema-on-write difference?", "how do watermarks decide how long to wait for late events without stalling the dashboard?", or "is lambda dead now that stream engines can replay — when is kappa actually the wrong choice?" When you're ready, say <b>next</b> and we'll go deeper on <i>Secrets, keys &amp; encryption — protecting the data without making the key the single point of failure.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "The analyst's query — 'revenue by region by day for last quarter' over 11 billion orders — runs in 30 minutes on the row-oriented serving database but ~5 seconds on a columnar warehouse. The disk reads at the same 500 MB/s in both cases. Where does the 360× come from?",
+    options: [
+      {t:"From reading far fewer bytes, in three compounding steps: partition pruning skips the 1,005 day-partitions outside the quarter (11 TB → 900 GB), projection reads only the 2 columns the query names instead of dragging all 50 off disk row-by-row (900 GB → 9 GB), and columnar compression squeezes those similar values ~3.6× (→ ~2.5 GB). A 2.5 GB scan at 500 MB/s is ~5 s; the 900 GB row scan is ~30 min. Same disk speed, ~360× fewer bytes.",
+       ok:true,
+       fb:"Right. Fast OLAP is mostly the art of NOT reading data. The row store must pull whole 1 KB rows to get 2 columns and can't prune or compress nearly as well; the column store reads only the columns asked for, over only the partitions that matter, compressed. None of it needed a faster disk."},
+      {t:"The columnar warehouse keeps the whole table in RAM, so it never touches disk, while the row store reads from disk — that memory-vs-disk gap is the 360×.",
+       ok:false,
+       fb:"No — the lesson computes both times against the same 500 MB/s disk, and even the columnar scan reads ~2.5 GB FROM disk (it just reads far less). An 11 TB table doesn't fit in RAM anyway. The speedup is fewer bytes read (prune + project + compress), not a different storage medium."},
+      {t:"The warehouse has a B-tree index on (region, day) that lets it seek straight to the answer in O(log n), the way Lesson 12's indexed lookup did.",
+       ok:false,
+       fb:"That's the OLTP tool, and it's the wrong one here. This query aggregates 900M rows — it's a low-selectivity scan, not a point lookup, so an index would be ignored (Lesson 12's selectivity trap). The warehouse wins by scanning FEWER BYTES of the many rows it must touch (columnar projection + pruning + compression), not by seeking to a few rows."}
+    ]
+  },
+  {
+    stem: "A teammate says: 'The warehouse is just a slower copy of production and it's always a day stale. Let's delete it and run the analytics queries directly against the OLTP serving database at night when traffic is low.' Why is this a bad idea?",
+    options: [
+      {t:"Because the analytics scan and the serving workload have opposite shapes and opposite failure modes: the 900 GB scan evicts the serving DB's hot working set from cache (L02), competes for the same resources, and can push the serving tier past its utilization knee into timeouts and retry storms (L27/L07). 'Low traffic at night' is exactly when a 30-minute scan does the most damage. The separate columnar copy exists so analytics can't take serving down — and so it can run on a layout serving could never use.",
+       ok:true,
+       fb:"Exactly. Sharing one database means each workload can take the other down, and the row layout that's optimal for serving is 360× worse for the scan anyway. The staleness is the deliberate price of that isolation and that better layout — not a defect to 'fix' by merging them back."},
+      {t:"It's fine, actually — running analytics at night is the standard approach, and the only real downside is that the queries take 30 minutes instead of 5 seconds.",
+       ok:false,
+       fb:"The 30-minute runtime is the smaller problem. The real one is that a 900 GB scan on the live serving DB evicts its hot cache and contends for resources, so even 'low' nighttime traffic can be tipped into timeouts and a retry storm. And you'd be running the query on the slow row layout instead of the columnar one built for it. Isolation is the point of the separate warehouse."},
+      {t:"Deleting the warehouse is correct because a stale copy is worse than no copy — analytics should always read live data, and the warehouse's staleness makes every report wrong.",
+       ok:false,
+       fb:"Staleness isn't wrongness — for 'last quarter's trend,' data that's complete as of last night is exactly right, and the batch layer is the most correct thing you can build. The staleness is a deliberate trade for isolation and a cheaper columnar layout. When you truly need live numbers, you add a streaming speed layer; you don't point analytics at the serving DB."}
+    ]
+  },
+  {
+    stem: "The warehouse is a day stale, but the fraud team needs 'revenue in the last 5 minutes.' A colleague proposes: 'Just run the nightly batch every 5 minutes instead.' Why doesn't that work, and what actually solves it?",
+    options: [
+      {t:"Batch cost scales with history size × frequency: recomputing aggregates over 3 years every 5 minutes means the ~6-hour full scan can't fit in a 5-minute window — pushing frequency up collides with history size. The fix is a layer whose cost scales with NEW data, not all data: a streaming/speed layer that updates running aggregates event-by-event (fresh to seconds), reconciled by the batch layer (lambda) or run as one replayable stream pipeline (kappa).",
+       ok:true,
+       fb:"Right. You can't out-frequency the history. Freshness comes from processing the increment (streaming), not from re-running the whole batch faster. Lambda pays for that freshness in duplicated batch+stream logic; kappa pays in expensive log replay — both are buying freshness with complexity."},
+      {t:"It works fine — just add more nodes so the full 3-year scan finishes in under 5 minutes, and run it on a loop. Freshness is purely a hardware-scaling problem.",
+       ok:false,
+       fb:"Throwing nodes at a full re-scan every 5 minutes is enormously wasteful — you'd re-read all 3 years of history hundreds of times a day to surface a few minutes of change, and it still races the growing history. The right shape processes only the NEW events incrementally (a streaming layer). Freshness is an architecture problem, not a node-count problem."},
+      {t:"It doesn't work because 5 minutes is too fresh to ever be correct — real-time analytics is fundamentally impossible, so the fraud team should accept the 24-hour batch delay.",
+       ok:false,
+       fb:"Real-time aggregates are very possible — that's exactly what a streaming speed layer does (fresh to seconds), which is why lambda and kappa exist. They're approximate until reconciled (late events need watermarks, L17), but 'impossible' is wrong. The batch can't answer a 5-minute question; a streaming layer can. You match the tool to the freshness the decision needs."}
+    ]
+  },
+  {
+    stem: "You're building the warehouse. Which of these is a genuine trap the lesson warns about?",
+    options: [
+      {t:"Partitioning by MINUTE 'for freshness' — 3 years becomes ~1.58M tiny partitions, so the engine spends its time opening millions of files and reading their metadata instead of scanning data (Lesson 20's small-file problem). Partition coarsely (day-sized, hundreds of MB per partition) so pruning still works; get freshness from a streaming layer, not by shredding the batch table.",
+       ok:true,
+       fb:"Exactly. Partitioning is what makes pruning fast, but over-partitioning inverts it into per-file metadata overhead — the small-file problem from Lesson 20, on the analytics side. Freshness is the streaming layer's job, not something you buy by fragmenting the batch table into millions of files."},
+      {t:"Denormalizing into a star schema — duplicating region and item data into the fact table violates normal form, which will cause update anomalies and corrupt the analytics.",
+       ok:false,
+       fb:"Backwards — denormalization is the RIGHT call for OLAP, not a trap. The warehouse barely updates rows, so the duplication is harmless, and pre-joining means scans skip a 10-way join every time (the precompute-the-read move of L15). Normal form is a bet on your write-to-read ratio; analytics has almost no writes, so you denormalize on purpose."},
+      {t:"Storing the table by column instead of by row — columnar layout makes single-row point lookups slow, so it's the wrong choice for a warehouse.",
+       ok:false,
+       fb:"Columnar is exactly right for the warehouse's job (aggregate few columns over many rows) — that's the whole 360× win. It IS slow at single-row point lookups, but that's the OLTP store's job, not the warehouse's. The real trap is using the warehouse FOR point lookups (the selectivity trap in reverse), not the columnar layout itself."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
