@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0030-secrets-encryption.html">
+    <div class="num">LESSON 30</div>
+    <div class="title">Secrets, Keys &amp; Encryption: Protecting the Data Without the Key Becoming the Single Point of Failure</div>
+    <div class="blurb">Lesson 29's warehouse concentrated <b>three years of payments and every customer record</b> into one ~11 TB vault — a gift to an attacker. The obvious defense, "encrypt it," hides two traps. Encrypt all 11 TB under <b>one key</b> and a single leak exposes <b>100%</b> of the vault, while rotating that key means moving <b>22 TB → ~12 hours</b> of churn. The fix is <b>envelope encryption</b>: bulk data under cheap per-file <b>DEKs</b> (AES-256-GCM, so confidentiality <i>and</i> tamper-detection), each DEK <b>wrapped</b> by a master <b>KEK</b> that lives only inside a <b>KMS</b> and never touches a host. Now a leaked DEK costs <b>one file</b> (<code>1/100,000</code>), and rotating the KEK re-wraps just <b>~10 MB</b> of DEKs while the terabytes never move (~2,000,000× less data touched). The KMS is Lesson 10's coordination point in a security hat — powerful, so it must be HA, access-controlled, audited — and <b>TLS/mTLS</b> guards the wire (terminate it <i>everywhere</i>, not just the edge). Trace a write (generate → encrypt → wrap → store the envelope → wipe the DEK) and a read (fetch → unwrap → decrypt-or-refuse-on-tamper), and the wall appears: the unwrap is a KMS round trip on <b>every</b> read (40,000/s = a hot, rate-limited SPOF) → fixed by <b>caching the unwrapped DEK</b> for a bounded TTL (a ~6,000× cut), where the TTL is a dial between KMS load and how long a stolen or un-revoked DEK stays live. Four traps: reusing a GCM nonce, encrypting without authenticating, secrets in code/config/logs (down to secret-zero), and terminating TLS too early. Trade named throughout: security blast-radius vs operational friction.</div>
+  </a>
   <a class="lesson" href="lessons/0029-data-warehousing-olap.html">
     <div class="num">LESSON 29</div>
     <div class="title">Data Warehousing &amp; OLAP: Asking One Big Question of the Whole Firehose</div>

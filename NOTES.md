@@ -405,10 +405,24 @@
     dies (L20's small-file problem), late/out-of-order events break streaming windows → **watermark**
     holds windows open for stragglers (L17's tail/late-arrival). Trade: query freshness vs cost &
     complexity. (Lesson 0029)
-30. Secrets, keys & encryption at rest/in transit — protecting the payment data from
-    L24/L25: envelope encryption, key rotation without re-encrypting everything, the
-    KMS as a coordination point (recap L10), and TLS termination placement. Trade:
-    security blast-radius vs operational friction.
+30. ✅ **Secrets, keys & encryption at rest/in transit** — L29's warehouse concentrates 3
+    years of payments (L25) + every customer record into one ~11 TB vault (~100k files).
+    Naive one-key design fails twice: a leak exposes 100% of the vault, and rotation =
+    decrypt+re-encrypt 22 TB @ 500 MB/s (L29) ≈ 12 h. Fix = **envelope encryption**: bulk
+    data under per-file **DEKs** (AES-256-**GCM** = AEAD, confidentiality + tamper-detect),
+    each DEK **wrapped** by a **KEK** that lives ONLY in a **KMS**/HSM and never touches a
+    host → leaked DEK = 1 file (1/100,000), rotate KEK = re-wrap ~10 MB of DEKs, data never
+    moves (~2,000,000× less touched). KMS = L10's coordination point in a security hat
+    (never releases the KEK → compromised host is scoped/revocable/audited; must be HA).
+    **TLS/mTLS** in transit, terminate everywhere not just the edge. Trace write (generate→
+    encrypt→wrap→store envelope→wipe DEK) + read (fetch→unwrap→decrypt-or-refuse-on-tamper).
+    First wall = KMS unwrap on EVERY read (40k/s = hot rate-limited SPOF, L26) → **cache the
+    unwrapped DEK** for a bounded TTL (~6,000× cut); TTL = dial between KMS load and how long
+    a stolen/un-revoked DEK stays live (L02 cache dial, but the cached thing is a key). Four
+    traps: reuse a GCM nonce (catastrophic), encrypt w/o authenticating (bit-flip, L25),
+    secrets in code/config/logs → secrets manager + short-lived creds → **secret-zero**
+    bootstrap (bind to workload identity), terminate TLS too early (plaintext internal hops).
+    Trade: security blast-radius vs operational friction. (Lesson 0030)
 31. Deployments & progressive rollout — ship new code to the L24 fleet safely:
     blue-green vs canary vs rolling, health-gated promotion, feature flags as the
     decouple-deploy-from-release lever, and instant rollback. Trade: release velocity
