@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0031-deployments-rollout.html">
+    <div class="num">LESSON 31</div>
+    <div class="title">Deployments &amp; Progressive Rollout: Shipping New Code to a Live Fleet Without Making Every User Your Test Subject</div>
+    <div class="blurb">Thirty lessons built a system; now we have to <i>change</i> it — push a new version to Lesson 27's live fleet (<b>286 servers, 40,000 req/s</b>) while users are mid-request. The simplest move, a <b>big-bang deploy</b>, is the release-form of the all-at-once blast radius Lesson 30 just shrank: a bug meets <code>40,000 × 300 s = 12,000,000</code> requests — 100% of users — before a ~5-min rollback lands. Ship the same bug as a <b>1% canary</b> and it meets ~24,000 (a <b>500×</b> cut) and never reaches the rest. Model the space as two dials — shrink the exposed slice or shrink the time to undo: <b>rolling</b> (cheap, gradual, slow rollback, capacity dip), <b>blue-green</b> (instant flip-back, 2× transient fleet, all-at-once at the flip), <b>canary + health-gated promotion</b> (smallest blast radius, at the cost of metrics + bake time), and the orthogonal <b>feature flag</b> that decouples <i>deploy</i> (code running) from <i>release</i> (behavior reaching users) so rollback is a millisecond flag flip. Trace a healthy ramp (1% → 5% → 25% → 100%, drain before retiring v1) against a poisoned one (spike at 1% → gate fires → auto-rollback, 99% untouched), and the wall appears: old and new run <i>simultaneously</i> over one shared database the load balancer's fast flip can't reverse → so rollback is only as fast as your slowest-to-reverse layer, and safety demands <b>backward/forward compatibility</b> (expand → deploy → bake → contract, L24). Four traps: coupling the migration to the deploy, a thin canary that proves nothing, dropping in-flight work instead of <b>draining</b> (L26), and feature flags left to rot into test debt. Trade named throughout: release velocity vs blast radius.</div>
+  </a>
   <a class="lesson" href="lessons/0030-secrets-encryption.html">
     <div class="num">LESSON 30</div>
     <div class="title">Secrets, Keys &amp; Encryption: Protecting the Data Without the Key Becoming the Single Point of Failure</div>

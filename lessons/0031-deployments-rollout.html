@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 31 — Deployments &amp; Progressive Rollout: Shipping New Code to a Live Fleet Without Making Every User Your Test Subject</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 31 · Worked Example</div>
+  <h1>Deployments &amp; Progressive Rollout: Shipping New Code to a Live Fleet Without Making Every User Your Test Subject</h1>
+  <p class="lead">For thirty lessons we built a system. Now we have to <i>change</i> it — ship a new version of the code to Lesson 27's live fleet (<b>286 servers, 40,000 req/s</b>) while real users are mid-request. The tempting move is the simplest one: swap every server to the new build at once. That is a <b>big-bang deploy</b>, and it hides the exact failure Lesson 30 spent its whole length shrinking — a blast radius of <i>everything</i>, now in <b>release</b> form. If the new build has a bug, 100% of traffic hits it the instant it lands, and you find out from users, not tests. This lesson takes that one fleet and traces how to push new code so a bad version burns a fraction of users for a few seconds, not all of them for minutes. We'll <b>estimate</b> the blast radius of big-bang versus a <b>canary</b>, <b>model</b> the three rollout strategies (<b>rolling</b>, <b>blue-green</b>, <b>canary</b>) plus the <b>feature flag</b> that decouples <i>deploy</i> from <i>release</i>, <b>trace</b> a healthy rollout and a poisoned one through <b>health-gated promotion</b>, and hit the wall that defines the domain: old and new versions run <i>at the same time</i> over one shared database that can't be rolled back in seconds — so a rollout is only as safe as the compatibility of the state underneath it. The trade shifts from Lesson 30's blast-radius-vs-friction to <b>release velocity vs blast radius.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0031-deployments-rollout.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>Take Lesson 27's API tier: <b>286 servers</b> behind a load balancer, serving <b>40,000 requests/second</b> at a target utilization safely below the knee. Version <code>v2</code> is built and passed its tests — but tests never cover the exact mix of live traffic, real data, and production load. The job: get every server running <code>v2</code> without an outage, and with a fast, safe way back to <code>v1</code> if <code>v2</code> misbehaves. First, one distinction the whole lesson rests on.</p>
+
+<div class="card">
+  <p style="margin:.3rem 0"><b>Deploy</b> = the new code is <i>present and running</i> on the servers. <b>Release</b> = the new behavior is <i>reaching users</i>. They sound identical and are usually done together — which is the mistake. Keeping them separate is the single most powerful lever in this lesson: you can deploy code that is switched <i>off</i> (safe — it's just sitting there), then turn it on for 1% of users, then 100%, then off again — all without touching a server. Hold that distinction; Move 2 turns it into <b>feature flags</b>.</p>
+</div>
+
+<div class="diagram"><pre>
+  THREE WAYS TO REPLACE v1 WITH v2 ON A 286-SERVER FLEET
+
+  BIG-BANG                ROLLING (batch 10%)        BLUE-GREEN
+   all 286 -> v2 at once   29 at a time, 10 waves     two full fleets, flip the LB
+   [v2 v2 v2 v2 v2]        [v2 v2 v1 v1 v1]  wave 3    BLUE(v1) 286   GREEN(v2) 286
+   100% exposed instantly  mixed versions live         LB ---> BLUE      (warm, 0%)
+   rollback = redeploy     rollback = roll back        flip: LB ---> GREEN  (instant)
+   (~minutes)              through the waves (slow)     rollback = flip back (~seconds)
+
+  CANARY (the small-blast-radius one)          FEATURE FLAG (deploy != release)
+   route a SLICE to v2, watch, then ramp        v2 shipped to 100% of fleet, code OFF
+     1%  -> watch health -> 5% -> 25% -> 100%    flag on for 1% of USERS -> 100%
+   a bug shows at 1%, never reaches the rest     rollback = flip the flag (no redeploy)
+
+  blast radius:  big-bang = 100%   >   rolling = grows per wave   >   canary/flag = the slice
+</pre></div>
+
+<p class="note"><span class="key">Every strategy here is one idea applied two ways: shrink how <i>many</i> users a bad version can reach (canary, feature flag → expose a slice), or shrink how <i>long</i> it takes to undo it (blue-green → instant flip back). Big-bang does neither: 100% exposed, and rollback means a full redeploy. The rest of this lesson is choosing which of those two dials you turn, and paying for it in fleet cost, deploy speed, or operational machinery.</span></p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Deploy vs release</b> — code <i>running</i> on servers vs behavior <i>reaching</i> users. Decoupling them is the core move.</li>
+  <li><b>Big-bang deploy</b> — replace the whole fleet at once. Simplest, largest blast radius.</li>
+  <li><b>Rolling deploy</b> — replace the fleet in batches, so old and new run side by side during the roll. No extra fleet, but slow rollback and mixed versions.</li>
+  <li><b>Blue-green</b> — run two full fleets (blue = old, green = new); shift the load balancer from one to the other. Instant rollback, but 2× fleet during the swap.</li>
+  <li><b>Canary</b> — route a small slice of traffic to the new version, watch its health, then ramp up in stages. Named for the canary in a coal mine: a small sacrifice that warns before the whole is harmed.</li>
+  <li><b>Feature flag</b> — a runtime switch that turns a code path on/off (per user, per %, per region) without a redeploy. The mechanism that decouples deploy from release. A <b>dark launch</b> ships the code with the flag off.</li>
+  <li><b>Health-gated promotion / automated canary analysis</b> — promote to the next stage only if the new version's error rate and latency (Lesson 17's p99) stay within a threshold of the old; otherwise auto-roll-back.</li>
+  <li><b>Bake time</b> — how long you hold a stage to gather enough signal before promoting.</li>
+  <li><b>Rollback</b> — return to the last known-good version. <b>TTR</b> (time to recover) = detect + decide + revert.</li>
+  <li><b>Blast radius</b> — how many users a bad release harms before you stop it. <b>Backward/forward compatibility</b> — whether a version works with the data and neighbors written by the <i>other</i> version.</li>
+</ul>
+
+<h2>Move 1 — Estimate: what a big-bang deploy actually costs</h2>
+<p>Before choosing a strategy, price the naive big-bang on the axis that matters for a release: how many requests hit the bug before you can stop it. That number is <b>rate × time-to-recover</b>, and both factors are large.</p>
+
+<div class="card calc">
+  <p><b>Worked: big-bang blast radius.</b> Say <code>v2</code> has a bug that breaks a request. You don't know instantly — an alarm needs a minute or so of sustained errors to fire (Lesson 17), then a human or automation decides and triggers a rollback, and re-deploying <code>v1</code> across 286 servers takes a few minutes. Call the whole <b>time-to-recover ≈ 5 minutes = 300 s</b> (optimistic). With the fleet at 100% on <code>v2</code>:</p>
+  <p>• failed requests = <code>40,000 req/s × 300 s = 12,000,000</code>. <span class="key">Twelve million requests hit the bug — every user at once — before the fix lands.</span></p>
+  <p>That is the release-form of Lesson 30's one-key blast radius: a single change, 100% exposed.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Worked: the same bug, shipped as a canary.</b> Route just <b>1%</b> of traffic to <code>v2</code> and hold there while you watch. Exposure = <code>1% × 40,000 = 400 req/s</code>. Over the same 300 s detection window that's <code>400 × 300 = 120,000</code> failed requests — a <b>100× smaller</b> blast radius — and because the canary is <i>explicitly watched</i>, its error spike is caught and the ramp is stopped, so the bug <b>never reaches the other 99%</b>. In practice automated canary analysis reacts in ~60 s, not 300 s: <code>400 × 60 = 24,000</code> — a <b>500×</b> cut. The bug still shipped; it just met 24,000 requests instead of 12,000,000.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — release velocity vs blast radius.</b> A big-bang deploy is the fastest and cheapest way to ship: one step, no extra fleet, done in minutes. Every safer strategy below <i>slows the release down</i> (stages, bake times, ramps) or <i>spends more</i> (a second fleet, a metrics-and-automation pipeline) to buy a smaller blast radius. <span class="key">You are not choosing between "safe" and "unsafe" — you're choosing how much deploy speed and machinery you'll trade to cap how many users a bad version can burn.</span> Every strategy in Move 2 sits somewhere on that one line.</p>
+
+<h2>Move 2 — Model: three strategies and the flag that changes the game</h2>
+<p>The estimate says: shrink the exposed slice, shrink the time to undo, or both. Three deployment strategies and one orthogonal technique cover the space.</p>
+
+<h3>Rolling — cheap, gradual, but slow to undo</h3>
+<p>Replace the fleet in <b>batches</b>: take 10% (≈ 29 servers) out, put <code>v2</code> on them, return them, repeat 10 times. No extra hardware — the same 286 boxes end up on <code>v2</code>. The costs: (1) while a batch is out, <code>257</code> servers carry <code>40,000</code> req/s, so per-server load rises <code>286/257 ≈ 1.11×</code> — you need Lesson 27's headroom (or add surge capacity <i>before</i> removing) or utilization creeps toward the knee. (2) Exposure <b>grows wave by wave</b> — after wave 3, 30% of traffic is on <code>v2</code> — with no explicit "hold and watch" gate. (3) Rollback means rolling the waves <i>backward</i>: minutes, not seconds. And throughout, <b>both versions serve live traffic</b> — remember that; it's the wall.</p>
+
+<h3>Blue-green — instant rollback, at the price of a second fleet</h3>
+<p>Stand up a whole second fleet of 286 servers running <code>v2</code> (green) next to the live one running <code>v1</code> (blue), warm it, then point the load balancer at green. If green is bad, point back at blue — <b>rollback in seconds</b>, because <code>v1</code> was never torn down. The cost is the transient double fleet: 286 extra servers for the deploy window. At Lesson 27's ~$4,384/server-year (≈ <b>$0.50/server-hour</b>), a one-hour cutover of doubled capacity is <code>286 × $0.50 ≈ $143</code> — modest. The subtler cost: the <b>flip itself is all-at-once</b>. Unless you shift the load balancer gradually (which is just canary by another name), blue-green optimizes <i>rollback speed</i>, not <i>blast radius</i> — at the flip, 100% moves to green together.</p>
+
+<h3>Canary — the smallest blast radius, at the price of machinery and time</h3>
+<p>Route a small, fixed slice (1%) to <code>v2</code>, <b>hold and watch</b> (the bake time), and promote through stages — <code>1% → 5% → 25% → 50% → 100%</code> — only while health holds. This is the strategy that directly buys the Move 1 estimate: a bug is caught at 1% and never promoted. The price is real: you need the metrics to judge health (Lesson 17), enough traffic and bake time at each stage to get a signal, and automation to promote or roll back — and the full ramp takes longer than any other strategy.</p>
+
+<h3>Feature flags — decouple deploy from release (the orthogonal lever)</h3>
+<p>All three above move <i>servers</i>. A <b>feature flag</b> moves the decision into the running code: deploy <code>v2</code> to 100% of the fleet with the new path <b>switched off</b> (a dark launch — low risk, the code is just present), then flip the flag on for 1% of <i>users</i>, ramp to 100%, and — critically — <b>roll back by flipping the flag off</b>, in milliseconds, no redeploy. Flags give canary-style exposure control at the <i>user</i> level and work for changes you can't route around (logic buried deep in shared code). They compose with the others: deploy via rolling, release via flag.</p>
+
+<p class="note why"><b>Name the trade-off — where the "undo" lives.</b> Blue-green puts undo in the <i>load balancer</i> (flip the fleet). A feature flag puts undo in a <i>config value</i> (flip the switch). A rolling deploy has no cheap undo at all — you must re-run the process backward. The faster and cheaper the undo, the less a bad release costs you, which is why the best real rollouts stack them: ship code dark (deploy), release behind a flag to a canary slice (small blast radius), keep the old fleet a flip away (fast undo). <span class="key">Each layer is buying down either the size of the blast or the time to stop it — the two dials from the diagram.</span></p>
+
+<div class="diagram"><pre>
+  HEALTH-GATED PROMOTION  —  the loop that makes canary automatic
+
+   deploy v2 to a 1% slice
+        |
+        v
+   +--> observe canary vs baseline  (error rate, p99 latency — Lesson 17)
+   |        |
+   |    within threshold? ---- NO ---> AUTO-ROLLBACK (drop v2 slice to 0%, page on-call)
+   |        |
+   |       YES (bake time elapsed)
+   |        |
+   |        v
+   +--- promote to next stage: 1% -> 5% -> 25% -> 50% -> 100%
+                                                      |
+                                                      v
+                                            v2 is now the baseline
+</pre></div>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Run one healthy version and one poisoned version through the same canary pipeline and watch the gate do its job.</p>
+
+<h3>Path A — a good version rides the ramp to 100%</h3>
+<div class="diagram"><pre>
+  1. DEPLOY    v2 to a canary slice; load balancer sends 1% (400 req/s) to it
+  2. BAKE      hold 10 min; compare canary error rate & p99 to the v1 baseline
+  3. GATE      within threshold -> PROMOTE
+  4. RAMP      5% -> bake -> 25% -> bake -> 50% -> bake -> 100%
+  5. RETIRE    v1 fleet drained and removed; v2 is the new baseline
+  -> users saw a gradual, watched, reversible change; at no point was 100% at risk
+</pre></div>
+<p>The slow part is the point. Each stage is a checkpoint where a problem is still cheap: the worst case at the 1% stage is 400 req/s, at 25% it's 10,000 req/s — but by 25% the version has already survived two earlier gates on real traffic. <b>Draining</b> in step 5 matters: an old instance is removed only after its in-flight requests finish and its connections close gracefully (Lesson 26), so retiring <code>v1</code> doesn't drop live work.</p>
+
+<h3>Path B — a poisoned version is caught at 1% (and where the wall appears)</h3>
+<div class="diagram"><pre>
+  1. DEPLOY    v2 (has a bug) to the 1% canary slice — 400 req/s
+  2. OBSERVE   canary error rate jumps 0.1% -> 4%; p99 doubles vs baseline
+  3. GATE      threshold breached -> AUTO-ROLLBACK: canary slice back to 0%, page on-call
+  4. RESULT    blast radius = the ~24,000 requests that hit the 1% before the gate fired
+                 (500x smaller than big-bang's 12,000,000) — the other 99% never saw v2
+  5. ...BUT    while v2 ran, it WROTE to the shared database in its new format.
+               Rolling the CODE back to v1 does NOT un-write those rows.  <-- the wall
+</pre></div>
+<p>Steps 1–4 are the whole promise of progressive delivery: a bug meets a fraction of users for a moment, the gate fires, and you're back on <code>v1</code>. Step 5 is the catch that Move 4 exists for. The load balancer flipped in seconds, but the <b>database did not flip with it</b> — any state <code>v2</code> wrote in its new shape is still there, and now <code>v1</code> has to read it. <span class="key">Rollback is only as fast as your slowest-to-reverse layer, and the database is never as fast as the load balancer.</span></p>
+
+<h2>Move 4 — Find the first bottleneck: two versions, one shared state</h2>
+<p>Every progressive strategy has the same structural fact at its core: <b>during the rollout, old and new run at the same time</b>, and they share things that are <i>not</i> versioned with the deploy — the database schema, cache entries, message formats on the queue (Lesson 9), the API contract (Lesson 18). The fast rollback you designed is an illusion if a version change underneath it can't be undone as fast. Two hazards make this concrete.</p>
+
+<div class="card calc">
+  <p><b>Hazard 1 — mixed versions must interoperate.</b> Canary and rolling both mean <code>v1</code> and <code>v2</code> serve simultaneously and touch the same rows and messages. If <code>v2</code> writes a new column or a new message field that <code>v1</code> can't parse, <code>v1</code> throws the instant it reads that row — so your "1% canary" just broke the 99% still on <code>v1</code>. This is Lesson 18's rule (additive changes safe; removals/renames break clients) and Lesson 24's expand/contract, now applied <i>between two live versions of your own service.</i></p>
+  <p><b>Hazard 2 — the database is not in the deploy.</b> You can flip code from <code>v2</code> to <code>v1</code> in seconds (blue-green, or a flag). You <i>cannot</i> un-migrate a schema or un-write data in seconds — a schema change is Lesson 24's careful, batched, throttled migration, and a <code>DROP</code> is a one-way door (Lesson 30's irreversible step). So a safe rollback requires that <code>v2</code>'s code <b>also works against the old schema</b>, and that <code>v1</code> <b>tolerates anything <code>v2</code> wrote</b> — i.e. every neighbor pair is backward- and forward-compatible.</p>
+</div>
+
+<p class="note why"><b>Name the core trade-off — a fast release needs a compatible past.</b> Progressive rollout hands you a fast <i>undo button</i> for code. But the button only works if the state changes underneath are themselves reversible or compatible. That's why you never ship a destructive migration <i>with</i> the code that needs it: you <b>expand</b> the schema first (add nullable columns, dual-write — Lesson 24), deploy code that works against both shapes, and only <b>contract</b> (drop the old shape) long after the new code has baked and rollback is no longer needed. <span class="key">The release can move fast precisely because the schema moved slow and compatibly — deploy velocity is bought by decoupling the code rollout from the data migration, never by fusing them.</span></p>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — coupling the migration to the deploy.</b> Ship a <code>RENAME</code>/<code>DROP</code> in the same release as the code that depends on it, and a code rollback leaves you stranded: the new code is gone but the schema already changed, so <code>v1</code> is now broken against a shape it never knew. Decouple them (expand → deploy → bake → contract, Lesson 24). The migration and the deploy are two separate, separately-reversible steps.</li>
+  <li><b>Trap 2 — a green canary that proves nothing.</b> 1% for two minutes may never exercise the bug — the broken path is rare, region-specific, or only fires on a cache-cold request. A canary needs <b>enough traffic × enough bake time × a representative slice</b> to give a real signal; a green light on a thin, brief, unrepresentative sample is weak evidence, not proof. Route real (not synthetic-only) traffic, and hold long enough for the p99 tail and the rare paths to show up.</li>
+  <li><b>Trap 3 — dropping in-flight work at cutover.</b> Killing an old instance the moment you promote severs its open connections (Lesson 26's sockets) and abandons requests mid-flight. Every safe rollout <b>drains</b>: stop sending new requests, let in-progress ones finish (or hand them off), close connections gracefully, <i>then</i> remove the instance. No graceful shutdown = a burst of user-visible errors on every otherwise-healthy deploy.</li>
+  <li><b>Trap 4 — feature flags as permanent debt.</b> A flag is powerful because it's config you can flip live — but every long-lived flag doubles the code paths you must test (N independent flags → up to <code>2^N</code> combinations), and a flag flip is itself a change with its own blast radius (a bad flip is an incident, with no deploy to point at). Treat flags as temporary: give each an owner and an expiry, and delete it once the rollout is done. A flag that outlives its rollout is untested config debt.</li>
+</ul>
+
+<table>
+  <tr><th>Strategy</th><th>Blast radius / rollback</th><th>Cost / friction</th></tr>
+  <tr><td>Big-bang</td><td>100% exposed; rollback = redeploy (~min)</td><td>cheapest, fastest to ship — unacceptable at scale</td></tr>
+  <tr><td>Rolling (batches)</td><td>grows per wave; rollback = roll waves back (slow)</td><td>no extra fleet, but capacity dip + mixed versions</td></tr>
+  <tr><td>Blue-green</td><td>all-at-once at flip; rollback = flip back (~sec)</td><td>2× fleet during cutover (~$143 for a 1 h flip)</td></tr>
+  <tr><td>Canary + health gate</td><td>the watched slice (1% → 100×–500× cut); auto-rollback</td><td>metrics + automation + longest ramp</td></tr>
+  <tr><td>Feature flag</td><td>the released user %; rollback = flip flag (~ms)</td><td>flag machinery + combinatorial test debt</td></tr>
+  <tr><td>The wall: shared DB</td><td>code rolls back fast; schema/data do NOT</td><td>forces expand/contract, dual-write, compatibility (L24)</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We took one live fleet — Lesson 27's <b>286 servers at 40,000 req/s</b> — and traced how to ship a new version without making every user its test subject. <b>Estimate</b> priced the naive big-bang: a bug meets <code>40,000 × 300 s = 12,000,000</code> requests — 100% of users at once — before a ~5-minute rollback lands, while the same bug shipped as a <b>1% canary</b> meets ~120,000 (100×) or ~24,000 (500×) with automated analysis, and never reaches the rest. <b>Model</b> laid out the space as two dials — shrink the exposed slice or shrink the time to undo: <b>rolling</b> (cheap, gradual, slow rollback, capacity dip), <b>blue-green</b> (instant flip-back, 2× transient fleet, all-at-once at the flip), <b>canary + health-gated promotion</b> (smallest blast radius, at the cost of metrics, bake time, and machinery), and the orthogonal <b>feature flag</b> that decouples <i>deploy</i> (code running) from <i>release</i> (behavior reaching users) so rollback is a millisecond config flip. <b>Tracing</b> a healthy ramp (1% → 5% → 25% → 100%, each stage a cheap checkpoint, drain before retiring <code>v1</code>) against a poisoned one (error spike at 1% → gate fires → auto-rollback, ~24,000 requests burned, 99% untouched) exposed the <b>first bottleneck</b>: old and new run <i>simultaneously</i> over one shared database that the load balancer's fast flip can't reverse. The fix isn't in the deploy tool — it's <b>compatibility</b>: expand the schema first, deploy code that works against both shapes, contract only after the new version has baked (Lesson 24), so every neighbor pair is backward- and forward-compatible. Four traps guard the build: coupling the migration to the deploy, a thin canary that proves nothing, dropping in-flight work instead of draining, and feature flags left to rot into test debt. The real lesson: <span class="key">a fast, safe release is bought by making the blast small and the undo cheap — but the undo is only as fast as your slowest-to-reverse layer, so the code can move fast precisely because the data underneath was changed slowly and compatibly. Release velocity vs blast radius, and the database is where that trade is really paid.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson climbs from one service's rollout to correctness across many:</b></p>
+  <p style="margin:.2rem 0">• <b>Distributed transactions &amp; sagas:</b> you can now ship one service safely — but a single user action often spans several ("book the flight <i>and</i> the hotel <i>and</i> the car, or none"). There's no shared database transaction across services, so how do you make many independent steps commit all-or-nothing? We'll pit the <b>two-phase commit</b> (a coordinator that can block the whole set, Lesson 10's coordinator with a darker failure mode) against the <b>saga</b> (do each step, undo with <b>compensating transactions</b> — Lesson 25 — when a later one fails), and lean hard on Lesson 13's idempotency to make the retries safe. The trade shifts from <b>release velocity vs blast radius</b> to <b>atomicity vs availability across service boundaries.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">deploy vs release</span>
+    <span class="pill">big-bang deploy</span>
+    <span class="pill">rolling deploy</span>
+    <span class="pill">blue-green</span>
+    <span class="pill">canary</span>
+    <span class="pill">health-gated promotion</span>
+    <span class="pill">automated canary analysis</span>
+    <span class="pill">bake time</span>
+    <span class="pill">feature flag</span>
+    <span class="pill">dark launch</span>
+    <span class="pill">rollback</span>
+    <span class="pill">time to recover (TTR)</span>
+    <span class="pill">blast radius</span>
+    <span class="pill">backward / forward compatibility</span>
+    <span class="pill">expand / contract</span>
+    <span class="pill">connection draining</span>
+    <span class="pill">graceful shutdown</span>
+    <span class="pill">release velocity vs blast radius</span>
+  </p>
+  <p>That's Lesson 31, built on Lesson 30's teaser (the all-at-once blast radius, now in release form) and reusing Lesson 27's 286-server / 40,000 req/s fleet and utilization knee, Lesson 24's expand/contract migrations for the compatibility wall, Lesson 18's additive-only API contract, Lesson 17's p99 / error-rate metrics for the health gate, Lesson 26's connection draining, and Lesson 25/13 (compensations, idempotency) as the bridge to what's next. <b>Ask me follow-ups</b> — e.g. "how does automated canary analysis actually decide 'healthy' — fixed thresholds vs a statistical comparison against the baseline?", "when is blue-green worth the 2× fleet over a weighted-routing canary that needs no second fleet?", "how do you canary a change to a stateful service or a database, where you can't just route a slice?", "what's the safe ordering to add <i>and</i> later remove a column across a rollout without a single failed read?", or "how do feature-flag systems keep the flag store itself from becoming a latency-adding SPOF on every request?" When you're ready, say <b>next</b> and we'll go deeper on <i>Distributed transactions &amp; sagas — making many services commit all-or-nothing without a shared transaction.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your fleet serves 40,000 req/s. A new version v2 has a bug. With a big-bang deploy, time-to-recover is ~5 minutes (detect + decide + redeploy v1). Ship the same v2 as a 1% canary with automated analysis that reacts in ~60 s. Why is the canary's blast radius so much smaller?",
+    options: [
+      {t:"Because the canary exposes only 1% of traffic (400 req/s) and is explicitly watched, so the gate fires in ~60 s: ~24,000 requests hit the bug versus 40,000 × 300 s = 12,000,000 for big-bang — a ~500× cut — and because the ramp stops on the error spike, v2 never reaches the other 99%. The canary shrinks BOTH how many users are exposed and how fast the bug is caught.",
+       ok:true,
+       fb:"Right. Blast radius = rate × time, and the canary shrinks both factors: 1% of the rate, and a much shorter detection window because the slice is watched. The bug still ships — it just meets 24,000 requests, not 12 million, and never gets promoted."},
+      {t:"Because the canary runs v2 in a separate test environment with synthetic traffic, so no real users are ever exposed to the bug at all.",
+       ok:false,
+       fb:"No — a canary serves REAL production traffic, just a small slice of it. That's the whole point: tests and synthetic traffic already passed; the canary exists to catch what only real load and real data reveal. Real users do hit v2 — about 400 req/s of them — which is exactly why the blast radius is small but not zero."},
+      {t:"Because 1% of traffic is too little to ever trigger the bug, so a canary guarantees the bug is never observed until it's fixed.",
+       ok:false,
+       fb:"Backwards, and dangerous. A thin canary NOT triggering the bug is a failure mode (Trap 2), not a feature — a green light on too-little traffic is weak evidence, not proof. The canary works when 1% is enough traffic, over enough bake time, on a representative slice, to actually surface the error and fire the gate."}
+    ]
+  },
+  {
+    stem: "Blue-green (two full fleets, flip the load balancer) and canary (route a small slice, ramp up) are both safer than big-bang. What is the essential difference in WHAT each one buys you?",
+    options: [
+      {t:"Blue-green optimizes rollback SPEED — the old fleet is never torn down, so you flip back in seconds — but the flip itself is all-at-once, so at the moment of cutover 100% moves to the new version. Canary optimizes BLAST RADIUS — only a watched slice (1%) is ever exposed, caught before it reaches the rest — but its rollback is only as fast as its automation. They turn different dials (time-to-undo vs size-of-blast), and the strongest rollouts compose them.",
+       ok:true,
+       fb:"Exactly. Blue-green's win is instant undo (flip the LB back); canary's win is a small, watched exposure. Neither subsumes the other — a plain blue-green flip still exposes everyone at once, and a canary without a warm old fleet still needs time to revert. Compose them (weighted routing between blue and green) to get both."},
+      {t:"Blue-green is always safer because two fleets means twice the redundancy, so canary is only used when you can't afford the second fleet.",
+       ok:false,
+       fb:"No — the second fleet in blue-green isn't extra redundancy, it's the OLD version kept warm for a fast flip-back, torn down after the deploy. And a plain blue-green flip has a big-bang-sized blast radius at the moment of cutover, which canary specifically avoids. They optimize different things (undo speed vs exposure size), not the same thing at different price points."},
+      {t:"Canary is just blue-green done slowly, so the only difference is how long the deploy takes — the blast radius and rollback behavior are identical.",
+       ok:false,
+       fb:"They're genuinely different. Blue-green exposes 100% at the flip and reverts in seconds; canary exposes a small watched slice and reverts as fast as its analysis fires. Weighted-routing blue-green can be MADE to behave like a canary, but a plain fleet-flip and a 1%-and-watch ramp have different blast radii, which is the whole point."}
+    ]
+  },
+  {
+    stem: "You canary v2, it goes bad, and you roll the CODE back to v1 in seconds by flipping the load balancer. Why can that still leave you broken, and what's the underlying rule?",
+    options: [
+      {t:"Because while v2 ran it WROTE to the shared database in its new shape, and flipping the load balancer doesn't un-write those rows — the database isn't part of the deploy and can't be reverted in seconds. The rule: a rollout runs old and new simultaneously over shared state, so rollback is only as fast as your slowest-to-reverse layer. Safe rollback requires v1 to tolerate what v2 wrote (backward/forward compatibility) — which is why you expand the schema first, deploy compatible code, and contract only after baking (L24).",
+       ok:true,
+       fb:"Right. Code flips fast; schema and data do not. The load balancer reverted, but any state v2 wrote in its new format is still there for v1 to read. That's why destructive migrations are decoupled from the deploy (expand → deploy → bake → contract) so every version pair stays compatible."},
+      {t:"Because rolling the load balancer back to v1 also automatically reverts every database write v2 made, and that automatic reversal is what takes so long and risks corruption.",
+       ok:false,
+       fb:"No — there's no automatic reversal. Reverting the CODE does nothing to the DATA v2 already wrote; those rows just sit there in the new shape. That's precisely the danger: the rollback feels complete (traffic is back on v1) but the state underneath silently isn't, so v1 may choke on rows it doesn't understand."},
+      {t:"It can't actually leave you broken — if the load balancer is back on v1, the system is by definition in its previous known-good state, database included.",
+       ok:false,
+       fb:"Not so. The load balancer only controls which CODE serves traffic, not the database's contents. v2 may have written new columns or message formats that v1 can't parse; those persist through the flip. 'Known-good code' over 'changed-by-v2 data' is a new, untested combination — which is why compatibility (L24's expand/contract) is the real safety net, not the LB flip."}
+    ]
+  },
+  {
+    stem: "You're setting up progressive rollout for the fleet. Which of these is a genuine trap the lesson warns about?",
+    options: [
+      {t:"Shipping a schema RENAME or DROP in the same release as the code that depends on it. If you then roll the code back, the new code is gone but the schema already changed, so v1 is now broken against a shape it never knew. Decouple them: expand the schema first (add nullable columns, dual-write), deploy code that works against both shapes, bake, and contract (drop the old shape) only after rollback is no longer needed — the migration and the deploy are two separately-reversible steps.",
+       ok:true,
+       fb:"Exactly. Coupling a destructive migration to the deploy destroys your ability to roll back — the code reverts but the schema can't. Expand/contract (L24) keeps every version compatible with the schema in flight, so a code rollback lands on a shape it still understands."},
+      {t:"Draining an old instance before removing it — letting its in-flight requests finish and its connections close before you take it out of rotation. This graceful shutdown wastes time on every deploy and should be skipped to speed up the rollout.",
+       ok:false,
+       fb:"Backwards — draining is the CORRECT practice, not a trap. Killing an instance mid-flight severs open connections (L26) and abandons in-progress requests, producing a burst of user-visible errors on every otherwise-healthy deploy. The few seconds spent draining are what make the deploy invisible to users; skipping it is the mistake."},
+      {t:"Using a feature flag to turn a new code path on for 1% of users while the code is deployed to 100% of the fleet. Deploying code that's switched off is pointless risk, since the code is present on every server anyway.",
+       ok:false,
+       fb:"The opposite — a dark launch (deploy the code switched off, release it via flag) is exactly the recommended decoupling of deploy from release. Code sitting present-but-off is low risk, and the flag then gives you user-level exposure control and a millisecond rollback with no redeploy. The real flag trap is letting flags become permanent, untested config debt — not shipping code dark."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

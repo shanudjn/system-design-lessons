@@ -423,10 +423,58 @@
     secrets in code/config/logs → secrets manager + short-lived creds → **secret-zero**
     bootstrap (bind to workload identity), terminate TLS too early (plaintext internal hops).
     Trade: security blast-radius vs operational friction. (Lesson 0030)
-31. Deployments & progressive rollout — ship new code to the L24 fleet safely:
-    blue-green vs canary vs rolling, health-gated promotion, feature flags as the
-    decouple-deploy-from-release lever, and instant rollback. Trade: release velocity
-    vs blast radius.
+31. ✅ **Deployments & progressive rollout** — push a new version to L27's live fleet
+    (286 servers, 40k req/s) without an outage. Big-bang = the all-at-once blast radius
+    in release form: a bug meets 40,000×300 s = 12M requests (100% of users) before a
+    ~5-min rollback; a 1% canary meets ~24,000 (500× cut) and never reaches the rest.
+    Two dials — shrink the exposed slice or the time-to-undo: **rolling** (batches, cheap,
+    slow rollback, capacity dip + mixed versions), **blue-green** (two full fleets, flip
+    the LB → instant rollback, 2× transient fleet ~$143/h, but all-at-once at the flip),
+    **canary + health-gated promotion** (1%→5%→25%→100% ramp gated on error-rate/p99 vs
+    baseline, L17; smallest blast radius, costs metrics+bake time+automation), and the
+    orthogonal **feature flag** = decouple **deploy** (code running) from **release**
+    (behavior reaching users): dark-launch code off, flip on for 1% of users, rollback =
+    a ms flag flip, no redeploy. Trace healthy ramp (each stage a cheap checkpoint,
+    **drain**/graceful-shutdown before retiring v1, L26) vs poisoned (spike at 1% → gate
+    fires → auto-rollback, 99% untouched). First wall = old+new run SIMULTANEOUSLY over
+    one shared DB the LB flip can't reverse → rollback is only as fast as the slowest-to-
+    reverse layer; safety demands backward/forward compatibility → expand→deploy→bake→
+    contract (L24), additive-only contract (L18). Four traps: coupling a destructive
+    migration to the deploy (code rolls back, schema doesn't), a thin/unrepresentative
+    canary that proves nothing, dropping in-flight work instead of draining, feature flags
+    as permanent 2^N test debt. Trade: release velocity vs blast radius. (Lesson 0031)
+
+### Advanced topics (next batch — queued so the course never runs dry)
+32. Distributed transactions & sagas — one user action spans several services ("book
+    flight + hotel + car, or none") with no shared DB transaction: **2PC** (a coordinator
+    that can BLOCK the whole set if it dies mid-commit, L10's coordinator with a darker
+    failure mode) vs the **saga** (do each step, undo with **compensating transactions**,
+    L25, when a later one fails), leaning on idempotency (L13) for safe retries and naming
+    the semantic gap (a compensation is a business undo, not a rollback). Trade: atomicity
+    vs availability across service boundaries.
+33. Change data capture & the outbox pattern — get data OUT of the L12/L25 DB into search
+    (L16), cache (L02), and the warehouse (L29) without the **dual-write** inconsistency
+    (write DB + publish event = two systems, one can fail): tail the DB's commit log (CDC)
+    or the transactional **outbox** so the event is a byproduct of the one atomic commit
+    (L13/L25), replayable from the log (L09). Trade: freshness/consistency vs pipeline
+    complexity.
+34. Service discovery & health checking — in L27's elastic fleet, instances come and go
+    every minute, so how does a caller find a live one? A **registry** (register on boot,
+    deregister/expire on death via TTL heartbeat, L26's connection registry generalized),
+    **health checks** (liveness vs readiness — the drain signal from L31), and where the
+    lookup lives (DNS vs client-side vs a service mesh sidecar). Trade: routing freshness
+    vs lookup cost & staleness.
+35. Logical clocks & causal ordering — order events across machines with NO trustworthy
+    global clock (L23's skew, L22's clock-fragile lease): **Lamport** timestamps give a
+    total order that respects causality (happened-before) but can't tell concurrent from
+    causal; **vector clocks** (L23 recap) can, at O(N) size; **hybrid logical clocks** bolt
+    physical time on so timestamps are both causal AND ~wall-clock. Trade: ordering
+    precision vs metadata size & coordination.
+36. Cell-based architecture — the ultimate blast-radius tool (L07 bulkhead, L28, L31 all
+    point here): partition the WHOLE stack (LB + app + data) into independent **cells**,
+    route each user to one cell, so a bad deploy, poison input, or hot tenant takes down
+    1/N of users, not all of them. Cell sizing, routing/placement, and the shuffle-sharding
+    refinement. Trade: blast-radius isolation vs cross-cell coordination & overhead.
 
 ## Lesson format conventions
 - Four reusable "moves" framing introduced in Lesson 01: estimate → model →
