@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0032-distributed-transactions-sagas.html">
+    <div class="num">LESSON 32</div>
+    <div class="title">Distributed Transactions &amp; Sagas: Making Many Services Commit All-or-Nothing Without a Shared Transaction</div>
+    <div class="blurb">Lesson 31 shipped <i>one</i> service safely; now one user action spans four — "book my trip" = reserve <b>flight + hotel + car + charge the card</b>, all-or-nothing. But each lives in its own database, and a transaction stops at the edge of its own database — so the atomicity you got free inside one box you now must <i>build</i>. Price the obvious "hold a lock across all four" (that's <b>two-phase commit</b>): every contended row is held <code>50/5 = 10×</code> longer than a local commit (a hot flight drops ~200 → ~20 bookings/sec), the commit is only as available as the <i>product</i> of its participants (<code>0.999⁴ ≈ 99.6%</code> ≈ 35 h/yr unbookable), and a coordinator crash between the two phases leaves participants <b>in-doubt — frozen holding locks</b> (Lesson 10's coordinator, darker). The <b>saga</b> is the AP answer: commit each step locally and immediately (no cross-service lock ever held), and on failure walk backward running <b>compensating transactions</b> — ordered so everything before the <b>pivot</b> (the charge) is undoable and everything after is retriable, driven by a central <b>orchestrator</b> or by <b>choreographed events</b> (L09). Trace a clean booking, a sold-out car (compensate the holds, no charge made), and a declined card (why the charge goes <i>last</i>), and the wall appears: a saga has <b>no isolation</b> — its half-done state is really visible, so a second saga can dirty-read a soon-to-be-cancelled hold or double-book the last seat → fixed not by re-adding the lock but by a <b>semantic lock</b> (<code>HELD</code>, not <code>SOLD</code>) + idempotent, retriable compensations (L13). Trade named throughout: atomicity vs availability across service boundaries.</div>
+  </a>
   <a class="lesson" href="lessons/0031-deployments-rollout.html">
     <div class="num">LESSON 31</div>
     <div class="title">Deployments &amp; Progressive Rollout: Shipping New Code to a Live Fleet Without Making Every User Your Test Subject</div>

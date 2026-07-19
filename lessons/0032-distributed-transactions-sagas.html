@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 32 — Distributed Transactions &amp; Sagas: Making Many Services Commit All-or-Nothing Without a Shared Transaction</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 32 · Worked Example</div>
+  <h1>Distributed Transactions &amp; Sagas: Making Many Services Commit All-or-Nothing Without a Shared Transaction</h1>
+  <p class="lead">Lesson 31 taught us to ship <i>one</i> service safely. But a single thing a user asks for often spans <i>several</i> services. "Book my trip" means <b>reserve a flight, reserve a hotel, reserve a car, and charge the card</b> — and the rule is <b>all or none</b>: a customer must never end up with a hotel but no flight, or a charge but no booking. Inside one database that's a solved problem — <code>BEGIN … COMMIT</code> gives you atomicity for free. But the flight, the hotel, the car, and the payment each live in their <i>own</i> database, owned by their own team, and <span class="key">a database transaction stops at the edge of its own database.</span> There is no <code>BEGIN</code> that wraps four separate databases. So the atomicity we got for free inside one box, we now have to <i>build</i> across four. This lesson takes one trip-booking and traces two ways to build it: the <b>two-phase commit</b> that tries to hold all four in lockstep (and can freeze them all), and the <b>saga</b> that commits each step for real and <i>undoes</i> the earlier ones when a later one fails. We'll <b>estimate</b> what holding a cross-service lock costs, <b>model</b> 2PC vs saga, <b>trace</b> a happy booking and a failed one through <b>compensating transactions</b>, and hit the wall that defines the domain: a saga has no <b>isolation</b> — its half-finished state is <i>really visible</i> to everyone else. The trade shifts from Lesson 31's release-velocity to <b>atomicity vs availability across service boundaries.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0032-distributed-transactions-sagas.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>A travel platform books <b>2,000 trips/second</b> at peak. One "trip" is four steps across four independent services, each with its own database:</p>
+<ul>
+  <li><b>Flight</b> service — reserve a seat (<b>$400</b>).</li>
+  <li><b>Hotel</b> service — reserve a room (<b>$600</b>).</li>
+  <li><b>Car</b> service — reserve a car (<b>$150</b>).</li>
+  <li><b>Payment</b> service — charge the card (<b>$1,150</b> total).</li>
+</ul>
+<p>The requirement is <b>atomicity</b>: the four steps commit <i>all-or-nothing</i>. If the car is sold out, the flight and hotel reservations must not stick, and the card must not be charged. Each service owns its data (the <b>database-per-service</b> rule — teams deploy and scale independently, Lesson 31), so no single transaction can span them. First, the words.</p>
+
+<div class="card">
+  <p style="margin:.3rem 0"><b>A transaction is a single-database feature.</b> <code>BEGIN … COMMIT</code> gives you <b>ACID</b>: <b>A</b>tomic (all-or-nothing), <b>C</b>onsistent, <b>I</b>solated (concurrent transactions don't see each other's half-done state), <b>D</b>urable. All four guarantees are enforced by <i>one</i> database's lock manager and log. The moment your data lives in four databases, there is no shared lock manager and no shared log — so atomicity across them is not something you <i>have</i>, it's something you <b>construct</b>. This whole lesson is two ways to construct it, and what each one gives up.</p>
+</div>
+
+<div class="diagram"><pre>
+  ONE USER ACTION, FOUR SERVICES, NO SHARED TRANSACTION
+
+     "Book my trip"  =  reserve FLIGHT + reserve HOTEL + reserve CAR + CHARGE card
+                         (own DB)       (own DB)        (own DB)      (own DB)
+
+  TWO WAYS TO MAKE IT ALL-OR-NONE
+  ------------------------------------------------------------------------------
+  TWO-PHASE COMMIT (2PC)                    SAGA
+   one COORDINATOR, lockstep                 do each step for real, undo on failure
+
+   Phase 1 PREPARE: everyone locks & votes    reserve flight  -> COMMIT (lock freed)
+     flight  YES   hotel  YES                 reserve hotel   -> COMMIT (lock freed)
+     car     YES   pay    YES                 reserve car     -> FAILS (sold out)
+   Phase 2 COMMIT: coordinator says "go"           |
+     all commit together                           v  run COMPENSATIONS backward
+                                                cancel hotel, cancel flight
+   locks HELD the whole time  --------------   locks held only per local step
+   coordinator dies mid-way = everyone         no global lock, stays available,
+   FROZEN holding locks (in-doubt)             but half-done state is VISIBLE
+</pre></div>
+
+<p class="note"><span class="key">The split is the same trade you've seen since Lesson 11. 2PC keeps everyone <i>consistent</i> by making them all wait together — and if the coordinator dies at the wrong instant, "wait together" becomes "freeze together." A saga keeps everyone <i>available</i> by letting each step finish on its own — and pays for it by exposing a window where the trip is half-booked. Atomicity vs availability, now across service boundaries.</span></p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Distributed transaction</b> — one logical all-or-nothing unit of work spanning more than one database/service.</li>
+  <li><b>Two-phase commit (2PC)</b> — a <b>coordinator</b> asks every <b>participant</b> to <i>prepare</i> (lock + vote), then, only if all vote yes, tells them all to <i>commit</i>. One "no" (or timeout) aborts everyone.</li>
+  <li><b>In-doubt / blocking</b> — a participant that voted yes but hasn't heard the final decision must <i>hold its locks and wait</i>; if the coordinator is gone, it waits indefinitely.</li>
+  <li><b>Saga</b> — a sequence of local transactions, each committing on its own; if step N fails, run a <b>compensating transaction</b> for every earlier step, in reverse.</li>
+  <li><b>Compensating transaction</b> — a <i>new</i> action that semantically undoes a committed step (cancel the reservation, refund the charge). It is a <b>business undo, not a rollback</b> — the original effect really happened.</li>
+  <li><b>Orchestration vs choreography</b> — a central saga <b>orchestrator</b> drives the steps, or each service <b>reacts to events</b> the previous one emitted (Lesson 9's pub/sub) with no central driver.</li>
+  <li><b>Pivot transaction</b> — the step after which the saga can only go <i>forward</i>. Steps before it are <b>compensatable</b> (undoable); steps after it must be <b>retriable</b> (they can't be undone, so you keep retrying until they succeed).</li>
+  <li><b>Semantic lock</b> — marking half-done state as "pending / in a saga" (seat = <code>HELD</code>, not <code>SOLD</code>) so other readers know it isn't a settled fact yet — the saga's substitute for the isolation it gave up.</li>
+</ul>
+
+<h2>Move 1 — Estimate: what a cross-service lock actually costs</h2>
+<p>The instinct is: "just take a lock across all four services until everything succeeds, then release." That <i>is</i> two-phase commit. Price it on two axes — throughput on a contended row, and availability of the whole commit — because both are worse than they look.</p>
+
+<div class="card calc">
+  <p><b>Worked: how long each service holds its lock.</b> In 2PC a participant locks its row at <i>prepare</i> and can't release until the coordinator's final <i>commit</i> arrives — that's a full extra network round trip plus the coordinator's durable logging away. Call the 2PC window <b>~50 ms</b> (prepare RTT + coordinator decision &amp; fsync + commit RTT). A plain <i>local</i> transaction on that same row commits in <b>~5 ms</b> and releases immediately. So under 2PC every contended row is held <code>50 / 5 = <b>10×</b></code> longer.</p>
+  <p>On a hot resource — say one popular flight everybody wants during a sale — that row is a serial gate (Lesson 22): 2PC lets it commit <code>1 / 0.050 s = <b>20 bookings/sec</b></code>; committing locally instead frees the lock after 5 ms → <code>1 / 0.005 s = <b>200/sec</b></code>. <span class="key">Reaching across the network while holding a lock costs 10× the throughput of the hottest row in the system.</span></p>
+</div>
+
+<div class="card calc">
+  <p><b>Worked: the availability of "all four at once."</b> A synchronous 2PC can only commit if <i>every</i> participant is up at the same instant. Suppose each of the four services is a healthy <b>99.9%</b> ("three nines"). The compound commit's availability is the <i>product</i>: <code>0.999⁴ ≈ 0.9960 = <b>99.6%</b></code> — worse than any single service, and <code>(1 − 0.996) × 8,760 h ≈ <b>35 h/yr</b></code> where a trip <i>cannot</i> be booked even though each service is individually fine. (Three participants alone already give <code>0.999³ ≈ 99.7%</code> ≈ 26 h/yr — the more services you rope into one synchronous commit, the lower the ceiling.)</p>
+  <p><b>And the darker failure:</b> if the coordinator crashes <i>after</i> everyone voted yes but <i>before</i> it sends "commit," every participant is <b>in-doubt</b> — holding its locks, unable to decide alone — until the coordinator comes back. If recovery takes 5 minutes (Lesson 31's TTR), those hot inventory rows are <b>frozen for 5 minutes from a single crash</b>. That's not slowness; it's Lesson 10's coordinator failure with a worse blast radius — the coordinator here holds <i>everyone's</i> locks.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — atomicity vs availability across service boundaries.</b> 2PC buys you real atomicity <i>and</i> isolation across services — genuinely all-or-nothing, and nobody sees the half-done state. You pay in exactly the CAP currency of Lesson 11: to stay consistent it must <i>block</i>, so its throughput ceiling on hot rows is 10× lower and its availability is the product of every participant's — and a coordinator crash freezes the lot. <span class="key">2PC is the CP choice wearing a transaction's clothes. The saga is the AP answer: never hold a cross-service lock, stay available, and repair the inconsistency afterward with a compensating action.</span></p>
+
+<h2>Move 2 — Model: 2PC vs the saga</h2>
+<p>The estimate says holding locks across the network is the whole cost. The saga's core idea is to never do it: <b>commit each step locally and immediately</b>, and if a later step fails, issue a <i>new</i> transaction that undoes the earlier ones.</p>
+
+<h3>Two-phase commit — real atomicity, at the price of blocking</h3>
+<p>A coordinator runs two rounds. <b>Prepare:</b> ask all four participants to lock their rows and promise they <i>can</i> commit; each votes yes/no and — crucially — stays locked and ready. <b>Commit:</b> if all voted yes, tell everyone to commit; a single no (or a timeout) makes everyone abort. It delivers true ACID across services: the customer never sees a half-booked trip. But every participant holds locks for the whole two-round window (the 10× tax), the commit needs everyone up at once (the availability product), and a coordinator failure in the gap between the rounds leaves participants <b>in-doubt and frozen</b>. 2PC is the right tool inside a small, trusted, low-contention boundary — say two databases you own, updated rarely. It is the wrong tool across autonomous, high-throughput services, which is exactly our trip booking.</p>
+
+<h3>Saga — stay available, undo instead of hold</h3>
+<p>Model the trip as an ordered list of <b>local</b> transactions, each paired with a <b>compensation</b>:</p>
+<table>
+  <tr><th>Step (forward)</th><th>Compensation (backward)</th><th>Kind</th></tr>
+  <tr><td><code>reserve flight seat</code></td><td><code>cancel flight seat</code></td><td>compensatable</td></tr>
+  <tr><td><code>reserve hotel room</code></td><td><code>cancel hotel room</code></td><td>compensatable</td></tr>
+  <tr><td><code>reserve car</code></td><td><code>cancel car</code></td><td>compensatable</td></tr>
+  <tr><td><code>charge card $1,150</code></td><td>— (this is the <b>pivot</b>) —</td><td>pivot</td></tr>
+  <tr><td><code>issue tickets / confirm</code></td><td>— (must succeed) —</td><td>retriable</td></tr>
+</table>
+<p>Each step commits for real the instant it runs, so no lock is ever held across the network — the 10× tax and the availability-product both vanish. If any <i>compensatable</i> step fails, the saga walks <i>backward</i>, running the compensation for each already-committed step. The order is deliberate: everything <b>before</b> the pivot must be undoable (cancel the reservation — the hold is released), and everything <b>after</b> the pivot must be retriable (once the card is charged we don't refund-and-abort; we push forward, retrying "issue tickets" until it works). <span class="key">You place the hard-to-undo step (the charge) as the pivot so you never have to un-charge a customer.</span></p>
+
+<h3>Who drives the saga — orchestration vs choreography</h3>
+<div class="grid2">
+  <div class="card">
+    <p style="margin:.2rem 0"><b>Orchestration.</b> A central <b>saga orchestrator</b> — a state machine — calls each service, waits for the reply, and on failure drives the compensations in reverse. The whole flow lives in one place you can read, log, and debug. It is a component you must build and run, but note what it is <i>not</i>: unlike a 2PC coordinator it holds <b>no participant locks</b> — it only holds <i>saga state</i>, so if it briefly dies, nobody freezes; it resumes from its log.</p>
+  </div>
+  <div class="card">
+    <p style="margin:.2rem 0"><b>Choreography.</b> No central driver: the flight service emits <code>flight-reserved</code>, the hotel service reacts and emits <code>hotel-reserved</code>, and so on (Lesson 9's events, delivered via a durable log). Loosely coupled and no orchestrator to run — but the flow is <i>smeared</i> across services, so "what does booking do?" has no single answer, cycles are easy to create by accident, and debugging a stuck saga means chasing events across teams.</p>
+  </div>
+</div>
+<p class="note why"><b>Name the trade-off — central clarity vs distributed coupling.</b> Orchestration concentrates the workflow logic (easy to see and change, one more service to operate); choreography spreads it out (no central piece, but no single place shows the whole story). For a saga with real branching and compensations — like this one — orchestration is usually worth its keep, because the thing you most need when a distributed workflow half-fails at 3 a.m. is <i>one place that knows where it got to.</i></p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Run one happy booking and one failed booking through an <b>orchestrated saga</b>, and watch where the locks live and where the compensations fire.</p>
+
+<h3>Path A — everything succeeds</h3>
+<div class="diagram"><pre>
+  1. reserve FLIGHT  -> local COMMIT (seat = HELD for this saga); lock freed in ~5 ms
+  2. reserve HOTEL   -> local COMMIT (room = HELD);                lock freed
+  3. reserve CAR     -> local COMMIT (car  = HELD);                lock freed
+  4. CHARGE card     -> local COMMIT  <-- PIVOT: past here, only go forward
+  5. CONFIRM         -> flip HELD -> SOLD on flight/hotel/car; issue tickets (retriable)
+  -> trip booked. No lock was ever held across a network hop; each step stood alone.
+</pre></div>
+<p>Contrast the lock story with 2PC: there, all four rows would sit locked from step 1's prepare until the final commit (~50 ms of held locks across the whole set). Here each lock is held only for its own ~5 ms local commit. That is the entire availability and throughput win, made concrete.</p>
+
+<h3>Path B — the car is sold out</h3>
+<div class="diagram"><pre>
+  1. reserve FLIGHT  -> COMMIT (seat HELD)      \
+  2. reserve HOTEL   -> COMMIT (room HELD)       |  these really happened
+  3. reserve CAR     -> FAILS (no cars left)     /
+        |
+        v  orchestrator runs COMPENSATIONS backward (before the pivot = all undoable)
+  3c. (nothing to undo for car — it never committed)
+  2c. cancel HOTEL   -> COMMIT (room HELD -> free)
+  1c. cancel FLIGHT  -> COMMIT (seat HELD -> free)
+  -> saga ends ABORTED. Card was never charged (charge is step 4, after the failure).
+     Customer sees "couldn't complete your trip" — and no money moved.
+</pre></div>
+<p>The ordering did the heavy lifting: because the charge sits <i>after</i> the reservations, a failure among the reservations means we only ever cancel <b>holds</b>, never refund a real charge. But look closely at steps 1–2: between committing the flight and discovering the car is gone, <span class="key">the flight seat was genuinely reserved in the flight database</span> — committed, visible, real. For a window of tens of milliseconds the world could see a trip that is about to be un-booked. That window is the wall.</p>
+
+<h3>Path C — the payment fails (why the pivot is placed where it is)</h3>
+<div class="diagram"><pre>
+  1-3. reserve flight, hotel, car -> all COMMIT (HELD)
+  4.   CHARGE card -> DECLINED
+        |
+        v  still before the pivot completes -> compensate backward
+  cancel car, cancel hotel, cancel flight  (all holds released)  -> saga ABORTED cleanly
+
+  BUT if we had ordered CHARGE first (step 1) and the HOTEL failed at step 3:
+  1. charge $1,150 -> COMMIT   <-- money really left the customer
+  3. hotel FAILS
+  -> compensation must now REFUND a real charge (a visible debit + a refund on the
+     statement) -- a business event, not an "undo".  Placing charge LAST avoids it.
+</pre></div>
+<p>Same steps, different order, very different customer experience. Charging last (as the pivot) keeps every pre-pivot step a cheap, invisible <i>hold</i> to release. Charging first forces a real refund on any later failure — money that visibly left and came back. <b>Ordering steps by how hard they are to undo is a core saga design decision, not a detail.</b></p>
+
+<h2>Move 4 — Find the first bottleneck: a saga has no isolation</h2>
+<p>2PC gave up availability. The saga gave up the <b>I</b> in ACID — <b>isolation</b>. Because each step commits immediately, the saga's half-finished state is <i>not hidden</i>: other transactions can read and act on it. This isn't a bug you can patch away; it's the price of not holding locks. Two concrete anomalies show what breaks.</p>
+
+<div class="card calc">
+  <p><b>Anomaly 1 — a dirty read across the saga.</b> Saga X reserves the last hotel room (committed, HELD), then its car step fails, so it will cancel the room. But in the gap, saga Y reads the hotel inventory, sees the room is taken, and tells its customer "sold out" — a decision based on a fact that is about to be un-made. Y read <i>dirty</i>, saga-intermediate state as if it were settled.</p>
+  <p><b>Anomaly 2 — a lost update across the saga.</b> Two sagas both read "1 seat left," both reserve it, both commit locally (no shared lock stopped them) → the seat is double-booked, and now <i>both</i> compensations and a human apology are in your future. This is Lesson 6's lost update, except no single database could have prevented it, because the two writes landed through two separate saga steps.</p>
+</div>
+
+<p>The fix is not to bolt real isolation back on (that would reintroduce the cross-service lock we fled from). It is to make the intermediate state <b>honest about being intermediate</b>:</p>
+<ul>
+  <li><b>Semantic lock.</b> Mark held state <code>PENDING</code>/<code>HELD</code>, not <code>SOLD</code>. Readers that care about settled facts treat <code>HELD</code> as "claimed but not final" — so saga Y waits or picks another room instead of trusting a soon-to-be-cancelled hold. The reservation row carries a flag that says "a saga owns me right now." <i>You give up automatic isolation and take on the job of representing it in your data model.</i></li>
+  <li><b>Commutative updates.</b> Design steps whose order doesn't matter where you can (increment/decrement a counter rather than set an absolute value, Lesson 6/21) — then two concurrent sagas don't clobber each other, they add up.</li>
+  <li><b>Reread &amp; revalidate at the pivot.</b> Before the point of no return, re-check the holds still exist and still say what you assumed (an optimistic check — Lesson 6's compare-and-set), and abort cheaply if the world moved.</li>
+</ul>
+
+<p class="note why"><b>Name the core trade-off — you traded blocking for a visible window.</b> 2PC hides the intermediate state by <i>holding locks</i> (and pays in availability). The saga refuses to hold locks (and stays available) — so the intermediate state <i>shows</i>, and you must design for a world that can see a half-done trip. <span class="key">The saga doesn't make the trip atomic; it makes it <i>eventually</i> atomic — all-or-nothing that is briefly "some" in the middle. That's Lesson 11's AP again: available now, consistent soon, and a compensation is exactly the reconciliation that "AP is only as good as your ability to reconcile" was pointing at.</span></p>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — 2PC across services that are hot or autonomous.</b> The 10× lock-hold tax and the availability product only bite under contention and scale; a coordinator crash freezes everyone in-doubt. 2PC is fine inside one trusted, low-throughput boundary (two DBs you own, XA, rarely-contended rows) and wrong across independent high-traffic services. Match the tool to the boundary.</li>
+  <li><b>Trap 2 — treating a compensation as a rollback.</b> A rollback makes it as if the step never happened; a compensation is a <i>new</i> business action layered on top — the charge occurred and the refund occurred (two statement lines), the confirmation email that already went out cannot be un-sent. Design compensations as forward-moving corrections, and put anything truly un-undoable (send email, hand off to a partner) <i>after</i> the pivot as a retriable step, never before it as a compensatable one.</li>
+  <li><b>Trap 3 — non-idempotent steps or compensations.</b> The messages driving a saga are delivered <i>at least once</i> (Lesson 9), so "cancel flight" or "charge card" can arrive twice. A non-idempotent charge double-charges; a non-idempotent cancel errors on the second try and stalls the saga. Every step and every compensation needs an idempotency key (Lesson 13) so a duplicate is a safe no-op. And compensations must be <b>retriable</b> — a compensation that can itself fail must be retried until it succeeds, or the saga leaks a half-undone booking.</li>
+  <li><b>Trap 4 — ignoring the isolation window.</b> Assuming "committed = settled" and letting other work read saga-intermediate state as fact is how you get double-bookings and dirty reads. Represent in-flight state explicitly (semantic lock / <code>PENDING</code> status), or accept the anomaly and reconcile it — but decide on purpose. Silence here is a customer-visible bug, not a theoretical one.</li>
+</ul>
+
+<table>
+  <tr><th>Approach</th><th>What it guarantees</th><th>What it costs</th></tr>
+  <tr><td>One DB transaction</td><td>full ACID, free atomicity + isolation</td><td>impossible across service boundaries</td></tr>
+  <tr><td>Two-phase commit</td><td>true cross-service atomicity + isolation</td><td>10× lock-hold on hot rows; availability = product; coordinator crash freezes participants in-doubt</td></tr>
+  <tr><td>Saga (orchestrated)</td><td>eventual all-or-nothing; stays available</td><td>no isolation (visible half-done window); must build compensations, ordering, idempotency, semantic locks</td></tr>
+  <tr><td>Saga (choreographed)</td><td>same, with no central driver</td><td>flow smeared across services; hard to see/debug; cycle risk</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We took one user action — <b>book a trip</b> = reserve flight + hotel + car + charge card — and faced the fact that a database transaction stops at the edge of its own database, so atomicity across four services must be <i>built</i>. <b>Estimate</b> priced the obvious "just hold a lock across all four" (that's <b>two-phase commit</b>): every contended row is held <code>50 / 5 = 10×</code> longer than a local commit (a hot flight drops from ~200 to ~20 bookings/sec), the whole commit is only as available as the <i>product</i> of its participants (<code>0.999⁴ ≈ 99.6%</code> ≈ 35 h/yr unbookable), and a coordinator crash between the two phases leaves participants <b>in-doubt — frozen holding locks</b> until it recovers. That's the CP price: consistency by blocking. <b>Model</b> laid out the <b>saga</b> as the AP answer: commit each step locally and immediately (no cross-service lock ever held), and on failure walk backward running <b>compensating transactions</b> — ordered so everything before the <b>pivot</b> (the charge) is undoable and everything after is retriable, driven by a central <b>orchestrator</b> (clear, debuggable, holds saga state but no participant locks) or by <b>choreographed events</b> (no central piece, but the flow is smeared across services). <b>Tracing</b> a clean booking (four standalone local commits, no held network locks), a sold-out car (compensate the holds backward, no charge ever made), and a declined card (why the charge is placed <i>last</i>, so failure cancels holds instead of refunding real money) exposed the <b>first bottleneck</b>: a saga has <b>no isolation</b> — its half-done state is really visible, so a second saga can dirty-read a soon-to-be-cancelled hold or double-book the last seat. The fix isn't to re-add the lock we fled; it's to make intermediate state honest — a <b>semantic lock</b> (<code>HELD</code>, not <code>SOLD</code>), commutative updates, and a revalidate-at-the-pivot check — plus idempotent, retriable steps and compensations because the driving messages are at-least-once. Four traps guard the build: 2PC across hot/autonomous services, treating a compensation as a rollback, non-idempotent steps, and ignoring the visible window. The real lesson: <span class="key">across services you can't <i>have</i> atomicity — you can only choose how to fake it. 2PC fakes it by making everyone wait (and freeze); the saga fakes it by letting everyone finish and then apologizing correctly. Atomicity vs availability across service boundaries — and a compensation is the shape that apology takes.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson closes a gap this one leaned on:</b></p>
+  <p style="margin:.2rem 0">• <b>Change data capture &amp; the outbox pattern:</b> our saga steps had to "commit locally <i>and</i> emit an event" (reserve the flight <i>and</i> tell the next step). Doing both is a <b>dual write</b> — two systems, and either can fail after the other succeeds, so an event goes out with no matching row, or a row exists with no event. We'll fix it by making the event a <i>byproduct of the one atomic commit</i>: write the event to a <b>transactional outbox</b> in the same local transaction (Lesson 13/25), then ship it by <b>tailing the database's commit log (CDC)</b> — the same trick that feeds search (L16), cache (L02), and the warehouse (L29) without inconsistency. The trade shifts from <b>atomicity vs availability</b> to <b>freshness/consistency vs pipeline complexity.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">distributed transaction</span>
+    <span class="pill">atomicity (all-or-nothing)</span>
+    <span class="pill">ACID</span>
+    <span class="pill">database-per-service</span>
+    <span class="pill">two-phase commit (2PC)</span>
+    <span class="pill">coordinator / participant</span>
+    <span class="pill">prepare / commit phase</span>
+    <span class="pill">in-doubt / blocking</span>
+    <span class="pill">saga</span>
+    <span class="pill">local transaction</span>
+    <span class="pill">compensating transaction</span>
+    <span class="pill">pivot transaction</span>
+    <span class="pill">compensatable / retriable step</span>
+    <span class="pill">orchestration</span>
+    <span class="pill">choreography</span>
+    <span class="pill">isolation</span>
+    <span class="pill">dirty read</span>
+    <span class="pill">semantic lock</span>
+    <span class="pill">idempotency</span>
+    <span class="pill">eventual consistency</span>
+    <span class="pill">atomicity vs availability</span>
+  </p>
+  <p>That's Lesson 32, built on Lesson 31's teaser (ship one service safely → now make many commit together) and reusing Lesson 11's CAP/consistency-vs-availability frame, Lesson 10's coordinator failure (2PC's darker version), Lesson 22's serial-gate lock throughput, Lesson 6's lost update &amp; compare-and-set, Lesson 9's at-least-once event delivery, Lesson 13's idempotency keys, and Lesson 25's compensations. <b>Ask me follow-ups</b> — e.g. "when is plain 2PC/XA actually the right call, and how do modern systems reduce its blocking?", "how does a saga orchestrator survive its own crash without freezing anyone?", "what's the safe way to order steps when two of them are both hard to undo?", "how do semantic locks avoid becoming the cross-service lock we were trying to escape?", or "how do TCC (Try-Confirm-Cancel) and the saga relate?" When you're ready, say <b>next</b> and we'll go deeper on <i>Change data capture &amp; the outbox pattern — getting data out of one service's database into everyone else's without the dual-write inconsistency.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "You book a trip across four services (flight, hotel, car, payment), each with its own database. You want all-or-nothing. Why can't you just wrap the four in one database transaction?",
+    options: [
+      {t:"Because a transaction's atomicity, isolation, and durability are enforced by ONE database's lock manager and log — there is no shared lock manager or shared log across four separate databases, so BEGIN…COMMIT stops at the edge of its own database. Atomicity across services isn't something you have; it's something you construct (with 2PC or a saga).",
+       ok:true,
+       fb:"Right. ACID is a single-database feature. The moment the data lives in four databases owned by four teams, there's nothing to coordinate the four commits for you, so cross-service atomicity has to be built on top — that's the whole reason 2PC and sagas exist."},
+      {t:"Because the four databases are probably different products (Postgres, MySQL, etc.), and a transaction only works if all participants run the identical database engine.",
+       ok:false,
+       fb:"No — the blocker isn't heterogeneity. Even four identical databases have four independent lock managers and four independent logs; a transaction in one cannot see or coordinate the others. Two-phase commit (via XA) can span different engines precisely because the problem is separateness, not product mismatch."},
+      {t:"You can — you just open a transaction on the flight database and the other three services automatically join it over the network.",
+       ok:false,
+       fb:"They don't. There's no automatic joining: a BEGIN on the flight DB governs only the flight DB. Making four databases commit together requires an explicit protocol (2PC's prepare/commit rounds) or an explicit saga with compensations — it never happens for free."}
+    ]
+  },
+  {
+    stem: "A colleague proposes two-phase commit for the trip booking: a coordinator has all four services PREPARE (lock + vote), then COMMIT together. On a popular flight during a sale, what's the concrete cost, and what's the worst failure?",
+    options: [
+      {t:"Each service must hold its lock from prepare until the final commit — a full extra round trip away — so a hot row is held ~10× longer than a local commit (≈20 bookings/sec instead of ≈200), and the commit needs all four services up at once (availability ≈ 0.999⁴ ≈ 99.6%). Worst case: the coordinator crashes after everyone votes yes but before 'commit', leaving participants IN-DOUBT — frozen holding locks until it recovers.",
+       ok:true,
+       fb:"Exactly. 2PC buys true atomicity + isolation by blocking: locks held across the network (10× throughput hit on contended rows), availability = the product of all participants, and a coordinator crash in the gap freezes everyone in-doubt. That's the CP price — consistency by waiting, and sometimes by freezing."},
+      {t:"2PC is strictly better here — holding the locks across all four services makes the commit faster, and because a coordinator is in charge, no failure can ever leave the system stuck.",
+       ok:false,
+       fb:"Both halves are wrong. Holding locks across network round trips makes contended rows ~10× SLOWER, not faster, and the coordinator is the failure mode: if it dies between the vote and the decision, participants are in-doubt and hold their locks indefinitely. That blocking-on-coordinator-failure is 2PC's defining weakness."},
+      {t:"The only cost is a little extra latency per booking; throughput and availability are unaffected because each service still commits independently.",
+       ok:false,
+       fb:"No — in 2PC the services do NOT commit independently; they lock at prepare and wait for a shared decision. That shared wait is the cost: contended rows are held ~10× longer (throughput ceiling), and the commit can only happen when every participant is simultaneously up (availability = product). It's structural, not just a latency nudge."}
+    ]
+  },
+  {
+    stem: "You build the booking as a saga: reserve flight, hotel, car (each committed immediately), then charge the card, then confirm. Why is the CHARGE deliberately placed near the end, as the 'pivot', rather than first?",
+    options: [
+      {t:"Because everything before the pivot must be cheaply UNDOABLE and everything after must be retriable. Reservations are just HELD holds you can cancel; a charge is a real money movement whose 'undo' is a visible refund, not a clean rollback. Putting the charge last means any failure among the reservations only cancels holds — you never have to refund a customer who was charged for a trip that then fell through.",
+       ok:true,
+       fb:"Right. The pivot is the point of no return: pre-pivot steps are compensatable (release the hold), post-pivot steps are retriable (push forward). Ordering the hard-to-undo step (the charge) last keeps every compensation a cheap hold-release instead of a real refund. Ordering by undo-difficulty is a core saga design decision."},
+      {t:"Because charging first would violate the database transaction that wraps all five saga steps, and the pivot marks where that transaction commits.",
+       ok:false,
+       fb:"There's no single transaction wrapping the saga — that's the whole premise (each step is its own local commit across a different service). The pivot isn't a commit point of a shared transaction; it's the step after which the saga can only go forward, chosen so the un-undoable action (the charge) never needs to be compensated."},
+      {t:"The order doesn't actually matter — a compensation perfectly reverses any step, so charging first and refunding on failure is identical to charging last.",
+       ok:false,
+       fb:"Not identical. A compensation is a business undo, not a rollback: charge-first-then-refund produces a real debit AND a real refund on the customer's statement (two visible events), whereas charge-last means a pre-charge failure only releases holds — nothing the customer ever sees. Ordering by how hard a step is to undo is exactly what makes the difference."}
+    ]
+  },
+  {
+    stem: "Your saga commits each reservation immediately. Saga X reserves the last hotel room, then its car step fails, so it will cancel the room — but in that gap, saga Y reads the inventory, sees the room taken, and tells its customer 'sold out'. What broke, and what's the fix?",
+    options: [
+      {t:"The saga has no ISOLATION — because each step commits immediately, its half-done state is really visible, so Y did a dirty read of a soon-to-be-cancelled hold. The fix isn't to re-add a cross-service lock (that's what we fled); it's to make intermediate state honest: a SEMANTIC LOCK (mark the room HELD/PENDING, not SOLD) so readers treat it as claimed-but-not-final, plus commutative updates and a revalidate-at-the-pivot check.",
+       ok:true,
+       fb:"Exactly. Dropping the cross-service lock is what buys availability, but it means giving up the 'I' in ACID — the intermediate state shows. You take on the job of representing it: HELD vs SOLD, so other sagas don't trust a hold that may vanish. The saga makes the trip EVENTUALLY atomic, and semantic locks manage the visible window."},
+      {t:"Nothing broke — Y correctly saw the room was taken, so telling its customer 'sold out' is the right answer even though X later cancels.",
+       ok:false,
+       fb:"That's the bug, not the correct behavior. Y made a customer-facing decision on state that was about to be un-made — a dirty read across the saga. If X cancels the room, Y turned a customer away from a room that became free. The point of a semantic lock (HELD, not SOLD) is to stop Y from treating an uncommitted-at-the-business-level hold as a settled fact."},
+      {t:"The fix is to wrap both sagas in a two-phase commit so the hotel row is locked until each saga fully finishes.",
+       ok:false,
+       fb:"That reintroduces exactly the cross-service lock the saga exists to avoid — the 10× lock-hold tax and the coordinator-freeze failure. The saga's answer to lost isolation is NOT to re-add distributed locks, but to represent in-flight state honestly (semantic locks / PENDING status) and/or reconcile, keeping the system available."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

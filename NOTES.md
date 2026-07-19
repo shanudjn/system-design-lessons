@@ -445,13 +445,28 @@
     as permanent 2^N test debt. Trade: release velocity vs blast radius. (Lesson 0031)
 
 ### Advanced topics (next batch — queued so the course never runs dry)
-32. Distributed transactions & sagas — one user action spans several services ("book
-    flight + hotel + car, or none") with no shared DB transaction: **2PC** (a coordinator
-    that can BLOCK the whole set if it dies mid-commit, L10's coordinator with a darker
-    failure mode) vs the **saga** (do each step, undo with **compensating transactions**,
-    L25, when a later one fails), leaning on idempotency (L13) for safe retries and naming
-    the semantic gap (a compensation is a business undo, not a rollback). Trade: atomicity
-    vs availability across service boundaries.
+32. ✅ **Distributed transactions & sagas** — book a trip = reserve flight ($400) + hotel
+    ($600) + car ($150) + charge ($1,150) across four DB-per-service boundaries, all-or-none;
+    a transaction stops at the edge of its own DB so atomicity must be BUILT. Estimate the
+    "hold a lock across all four" (= **2PC**): prepare→commit holds each row the whole ~50 ms
+    window vs ~5 ms local = **10×** lock-hold on a hot flight (200→20 bookings/s, L22 serial
+    gate); commit availability = the PRODUCT (0.999⁴ ≈ 99.6% ≈ 35 h/yr unbookable); coordinator
+    crash after all vote YES but before "commit" = participants **in-doubt, frozen holding
+    locks** (L10's coordinator, darker; CP = consistency by blocking, L11). The **saga** = AP
+    answer: each step a LOCAL commit (no cross-service lock ever held), on failure walk backward
+    running **compensating transactions** (L25) — ordered so pre-**pivot** steps are
+    compensatable (cancel a HELD hold) and post-pivot are retriable, so the charge goes LAST
+    and you never un-charge. Driven by an **orchestrator** (central, debuggable, holds saga
+    state but NO participant locks) or **choreography** (L09 events, no central piece but flow
+    smeared/cycle-risk). First wall = a saga has **no isolation** (I of ACID gone): committed-
+    immediately half-done state is VISIBLE → dirty read (Y sees a soon-to-be-cancelled hold as
+    SOLD) + lost update (two sagas both grab the last seat, L06) → fix NOT by re-adding the
+    cross-service lock but by a **semantic lock** (mark HELD/PENDING not SOLD), commutative
+    updates, revalidate-at-pivot (L06 CAS); steps + compensations must be idempotent (L13,
+    at-least-once L09) and retriable. Four traps: 2PC across hot/autonomous services;
+    compensation-as-rollback (it's a business undo, refund≠un-charge, can't un-send email →
+    put un-undoable steps after the pivot); non-idempotent steps double-charge; ignoring the
+    isolation window. Trade: atomicity vs availability across service boundaries. (Lesson 0032)
 33. Change data capture & the outbox pattern — get data OUT of the L12/L25 DB into search
     (L16), cache (L02), and the warehouse (L29) without the **dual-write** inconsistency
     (write DB + publish event = two systems, one can fail): tail the DB's commit log (CDC)
