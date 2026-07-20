@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 33 — Change Data Capture &amp; the Outbox: Getting Data Out of One Database Into Everyone Else's Without the Dual-Write Lie</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 33 · Worked Example</div>
+  <h1>Change Data Capture &amp; the Outbox: Getting Data Out of One Database Into Everyone Else's Without the Dual-Write Lie</h1>
+  <p class="lead">Lesson 32 ended on a small, poisonous sentence: each saga step had to "commit locally <i>and</i> emit an event." Look closely at that "and." Committing to your database is one system; publishing to a message broker is <i>another</i> system — and Lesson 32 just spent a whole lesson proving there is no shared transaction across two systems. So "write the row <b>and</b> publish the event" is a <b>dual write</b>: two independent writes to two independent systems, and either one can succeed while the other fails. Pick <i>write-then-publish</i> and a crash in the gap leaves a real order that <i>no one was ever told about</i>. Pick <i>publish-then-write</i> and a crash leaves an announcement of an order <i>that doesn't exist</i>. There is no safe order — the same wall as Lesson 32, in miniature, and it sits under every "when an order is placed, update search / cache / the warehouse / notify the customer." This lesson takes one <code>orders</code> table and traces how to get its changes out to everyone else <i>reliably</i>. We'll <b>estimate</b> how often the dual write silently lies, <b>model</b> the <b>transactional outbox</b> (make the event a byproduct of the one commit) and <b>change data capture</b> (read the database's own commit log), <b>trace</b> a crash that the outbox survives and a dual write does not, and hit the wall that defines the domain: the whole world now flows through one <b>relay</b>. The trade shifts from Lesson 32's atomicity-vs-availability to <b>freshness/consistency vs pipeline complexity.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0033-cdc-outbox.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>Our <code>orders</code> service (Lessons 12, 24, 25) owns the source of truth for orders in its own database. It does <b>5,000 order writes/second</b> at peak. But an order being placed is news that four other systems need:</p>
+<ul>
+  <li>the <b>search index</b> (Lesson 16) — so the order becomes findable;</li>
+  <li>the <b>cache</b> (Lesson 02) — so the read path serves it fast and stays fresh;</li>
+  <li>the <b>data warehouse</b> (Lesson 29) — so revenue dashboards count it;</li>
+  <li>the <b>notification / next-saga-step</b> (Lessons 26, 32) — so the customer hears "order confirmed."</li>
+</ul>
+<p>None of those systems shares the orders database (Lesson 32's database-per-service rule). So the orders service has to <i>tell</i> them, and the obvious way is: write the order row, then publish an <code>OrderPlaced</code> event to a broker (Lesson 9) that all four consume. That "write, then publish" is the dual write. First, the words, then why it's a lie.</p>
+
+<div class="card">
+  <p style="margin:.3rem 0"><b>A dual write is two writes to two systems that can't share a transaction.</b> Your database gives you <code>BEGIN … COMMIT</code> — atomic <i>inside itself</i>. The broker is a different system with its own success/failure. When you do "commit the row" and then "publish the event," you have two commits, no coordinator, and a gap between them where the process can crash, the broker can be down, or the network can drop. Whichever write lands second can fail after the first succeeded — and now two systems disagree about whether the order exists. This whole lesson is how to stop doing two writes and do <b>one</b>.</p>
+</div>
+
+<div class="diagram"><pre>
+  THE DUAL WRITE, AND WHY BOTH ORDERINGS LOSE
+
+  Order service must:  (1) save the order row     (in its own DB)
+                       (2) announce OrderPlaced    (to the broker, Lesson 9)
+
+  ORDER A: write DB first, then publish            ORDER B: publish first, then write DB
+    COMMIT order row ......... OK                     PUBLISH OrderPlaced ...... OK
+        x  <-- CRASH / broker down                        x  <-- CRASH / DB down
+    PUBLISH OrderPlaced ...... never happens          COMMIT order row ......... never happens
+    ------------------------------------------        ------------------------------------------
+    RESULT: order exists, NOBODY was told.            RESULT: everyone acts on an order
+      Not searchable, not in the warehouse,             that DOES NOT EXIST. Search indexes a
+      no confirmation sent. A silent ghost.             ghost, warehouse counts phantom revenue.
+
+  There is no safe order to do two writes in. The gap between them is the bug.
+  (This is Lesson 32's wall: atomicity across two systems must be BUILT, not assumed.)
+</pre></div>
+
+<p class="note"><span class="key">The fix is not to pick a better order for the two writes — there isn't one. The fix is to stop having two writes. Make the announcement a <i>byproduct</i> of the one database commit you already trust, then ship it out separately from a durable log.</span> That's the outbox, and change data capture is the same idea reading the database's own log instead of a table you add.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Dual write</b> — writing the same fact to two independent systems (a database <i>and</i> a broker, or two databases) in two separate steps that can't be one atomic commit.</li>
+  <li><b>Transactional outbox</b> — a plain table in the <i>same</i> database as your data. You insert the event row into it <b>in the same transaction</b> as the business row, so both commit together or neither does.</li>
+  <li><b>Relay / message relay</b> — a separate process that reads unpublished outbox rows and publishes them to the broker, then marks them done. The only thing that talks to the broker.</li>
+  <li><b>Change data capture (CDC)</b> — reading the database's own <b>commit log</b> (the write-ahead log / WAL in Postgres, the binlog in MySQL) and emitting an event for every committed row change — no outbox table, no app change.</li>
+  <li><b>Commit log / WAL</b> — the append-only log a database writes <i>before</i> it acknowledges a commit; it's how the database itself guarantees the <b>D</b> in ACID (durability). Every committed change is already in it.</li>
+  <li><b>At-least-once</b> — the relay may publish the same event more than once (it can crash after publishing but before recording that it did), so consumers see duplicates (Lesson 9).</li>
+  <li><b>Idempotent consumer</b> — a consumer for which processing the same event twice has the same effect as once (Lesson 13) — the thing that makes at-least-once safe.</li>
+  <li><b>Replay</b> — because every change is a durable, ordered log entry, you can re-read it from the start to rebuild a downstream system from scratch (Lesson 9's log, Lesson 29's kappa).</li>
+</ul>
+
+<h2>Move 1 — Estimate: how often does the dual write actually lie?</h2>
+<p>"It only breaks if we crash at the exact wrong instant" sounds rare. Price it and it isn't — at 5,000 writes/second even a tiny failure rate is a flood of silent divergence.</p>
+
+<div class="card calc">
+  <p><b>Worked: the steady drip.</b> Say the publish step succeeds <b>99.9%</b> of the time — a good broker on a good day. Then <code>0.1%</code> of orders commit to the DB but their event never lands: <code>5,000/s × 0.001 = <b>5 lost events/second</b></code>. Over a day that's <code>5 × 86,400 = <b>432,000 orders</b></code> that exist in your database but were never announced — not searchable, not counted in revenue, no confirmation sent. Not an edge case. <span class="key">A constant, compounding leak of ~432k silently-invisible orders per day.</span></p>
+  <p><b>Worked: the burst.</b> Now the broker has a brief blip — <b>30 seconds</b> unreachable, once a day. If you write-DB-then-publish, every order in that window commits but can't be announced: <code>30 s × 5,000/s = <b>150,000 orders</b></code> orphaned from one 30-second hiccup. If instead you publish-first, those same 150,000 announcements go out for orders that then <i>fail to save</i> — 150,000 phantoms. Either way one short blip = six figures of divergence.</p>
+</div>
+
+<p class="note why"><b>Why "just add a retry" doesn't save it.</b> Retrying the publish shrinks the drip but can't close it: the process can crash <i>between</i> the commit and <i>any</i> retry, and a retry loop that blocks the request holds the DB row's effects hostage to the broker's health (Lesson 7's cascade). The failure isn't "the publish was flaky"; it's "the commit and the publish are two separate facts, and something has to make them one." <span class="key">You cannot retry your way out of two systems disagreeing — you have to make there be only one write that matters.</span></p>
+
+<h2>Move 2 — Model: the outbox and change data capture</h2>
+<p>Both fixes share one move: <b>collapse the two writes into one commit, then propagate from a durable log.</b> They differ in <i>where</i> the log lives.</p>
+
+<h3>The transactional outbox — make the event part of the commit</h3>
+<p>Add an <code>outbox</code> table to the <i>same</i> database as <code>orders</code>. When an order is placed, insert the order row <b>and</b> an outbox row describing the event <b>in one transaction</b>:</p>
+<div class="diagram"><pre>
+  BEGIN                                    -- one local transaction, one database
+    INSERT INTO orders     (id, ...);      -- the business fact
+    INSERT INTO outbox     (event_id, type='OrderPlaced', payload, published=false);
+  COMMIT                                    -- both land, or neither does (Lesson 13/25)
+</pre></div>
+<p>Now there is <b>no dual write</b>: the event and the order are one atomic commit, guaranteed by the database you already trust. A separate <b>relay</b> then does the risky part — talking to the broker — <i>out of band</i>:</p>
+<div class="diagram"><pre>
+  RELAY loop (a separate process):
+    SELECT * FROM outbox WHERE published=false ORDER BY event_id LIMIT 500;  -- oldest first
+    for each row:  publish to broker (Lesson 9)
+    mark those rows published=true         -- (or delete them)
+</pre></div>
+<p>The relay is <b>at-least-once</b> (Lesson 9): if it crashes <i>after</i> publishing a batch but <i>before</i> marking those rows, it will re-read and republish them on restart → duplicates. That's fine, because we make consumers <b>idempotent</b> (Lesson 13) — the same <code>event_id</code> processed twice is a no-op. <span class="key">The outbox turns an unsolvable dual-write into two solved problems: one atomic local commit (the database's job) plus an at-least-once relay from a durable table (Lesson 9 + Lesson 13's job).</span></p>
+
+<h3>Change data capture — skip the table, read the database's own log</h3>
+<p>The outbox has you write the event down explicitly. But the database <i>already</i> writes down every committed change — that's the <b>commit log</b> (WAL / binlog), the append-only record it must fsync before acknowledging a commit (that's what makes commits durable). CDC puts a <b>connector</b> (e.g. Debezium) at the end of that log; it reads each committed change and emits an event. No outbox table, no application change at all — the event <i>is</i> the committed row change, read from the one log the database can't lie about.</p>
+<div class="diagram"><pre>
+  orders DB ──writes every commit──▶  COMMIT LOG (WAL / binlog)  ──tailed by──▶  CDC connector ──▶ broker
+   (durable by definition; the DB's own source of truth)                          emits row-change events
+
+  Outbox:  YOU write the event, the relay POLLS the table for it.
+  CDC:     the DB ALREADY wrote the change, the connector TAILS the log for it.
+</pre></div>
+
+<div class="card">
+  <p style="margin:.2rem 0"><b>Outbox vs CDC — the same idea, two costs.</b></p>
+  <table style="margin:.4rem 0 0">
+    <tr><th></th><th>Transactional outbox</th><th>Change data capture</th></tr>
+    <tr><td>App change</td><td>write an outbox row in the txn</td><td>none — reads the log</td></tr>
+    <tr><td>Event shape</td><td><b>clean domain event</b> you design (<code>OrderPlaced</code>, just the fields consumers want)</td><td><b>raw row change</b> — your physical table shape leaks to every consumer</td></tr>
+    <tr><td>Portability</td><td>any database</td><td>needs that DB's log format &amp; replication access</td></tr>
+    <tr><td>Latency</td><td>polling interval (tens of ms)</td><td>log-tail, near real-time (single-digit ms)</td></tr>
+    <tr><td>Extra moving parts</td><td>a table (must be cleaned up) + a relay</td><td>a log-reading connector + DB permissions</td></tr>
+  </table>
+</div>
+
+<p class="note why"><b>Name the trade-off — clean events &amp; portability vs zero app change &amp; lowest latency.</b> The outbox lets you emit exactly the event consumers should depend on, on any database, at the price of a table and a relay you build and clean. CDC gives you every change for free with the lowest lag, at the price of coupling consumers to your internal schema and needing privileged log access. <span class="key">And you can combine them: write to the outbox table in the transaction, then point CDC at <i>just the outbox table</i> — clean events, no polling load, log-driven propagation. Best of both.</span></p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Run three scenarios through the <b>outbox + relay</b> design and watch the gap that killed the dual write simply not exist.</p>
+
+<h3>Path A — everything works</h3>
+<div class="diagram"><pre>
+  1. BEGIN; INSERT order; INSERT outbox(OrderPlaced, published=false); COMMIT   -- one atomic commit
+  2. relay: SELECT ... WHERE published=false  -> finds the row
+  3. relay: publish OrderPlaced to broker      -> broker ACKs
+  4. relay: UPDATE outbox SET published=true    -> row retired
+  5. search / cache / warehouse / notify each consume OrderPlaced (Lessons 16/02/29/26)
+  -> One write of record (the COMMIT). The broker never saw a half-order.
+</pre></div>
+
+<h3>Path B — crash right after the commit (the dual write's death, survived)</h3>
+<div class="diagram"><pre>
+  1. BEGIN; INSERT order; INSERT outbox(published=false); COMMIT   -- OK, both rows durable
+        x  <-- CRASH here, or broker down for 30 s. The event was NOT published yet.
+  ... process restarts (or broker recovers) ...
+  2. relay: SELECT ... WHERE published=false   -> the outbox row is STILL THERE
+  3. relay: publish it now                       -> order announced, just later
+  -> No lost order. The dual write lost this event forever (nothing recorded the intent to
+     publish). The outbox recorded that intent INSIDE the commit, so the crash only DELAYED it.
+</pre></div>
+<p>This is the whole point in one picture. In the dual write, the intent to publish lived only in the running process's next line of code — a crash erased it. In the outbox, the intent to publish is a <i>committed row</i>, as durable as the order itself. A crash can only make it <b>late</b>, never <b>lost</b>. Freshness bends; consistency holds.</p>
+
+<h3>Path C — the relay double-publishes (why consumers must be idempotent)</h3>
+<div class="diagram"><pre>
+  2. relay: publish OrderPlaced (event_id=E) to broker  -> broker ACKs
+        x  <-- CRASH before step 4's UPDATE published=true
+  ... relay restarts ...
+  2'. relay: SELECT ... WHERE published=false  -> row E is STILL false, republishes E
+  -> broker now carries E TWICE. Consumers see a DUPLICATE.
+
+  Safe because every consumer is IDEMPOTENT (Lesson 13):
+    search:    upsert by order id        (indexing E twice = same document)
+    warehouse: dedup on event_id         (second E ignored, revenue counted once)
+    notify:    idempotency key on event_id (customer emailed once, not twice)
+</pre></div>
+<p>The relay guarantees <b>at-least-once</b>, not exactly-once — there is no exactly-once on the wire (Lessons 9, 13). You get exactly-once <i>effect</i> by making the receiving side idempotent, keyed on the stable <code>event_id</code> the outbox minted inside the commit. <span class="key">The same event id that made the commit atomic also makes the redelivery safe — one id doing double duty.</span></p>
+
+<h2>Move 4 — Find the first bottleneck: everything now flows through one relay</h2>
+<p>We removed the dual write, but we created a new load-bearing thing: a single pipe every downstream system depends on. Its health is now the freshness of search, cache, warehouse, and notifications all at once. Four pressures show up on it.</p>
+
+<div class="card calc">
+  <p><b>Pressure 1 — relay throughput &amp; lag.</b> The relay must keep up with 5,000 events/s. Poll every 100 ms in batches of 500 → <code>500 / 0.1 s = 5,000/s</code> — it exactly keeps pace, and the batch/interval pair is the same latency-vs-throughput dial as Lesson 28 (bigger batches = higher throughput, more lag). If it falls behind, the backlog is <b>consumer lag</b> (Lesson 9) — the one number to alarm on, because it <i>is</i> how stale every downstream system is. Fall an hour behind and search is an hour stale.</p>
+  <p><b>Pressure 2 — polling load on the primary DB.</b> A relay that <code>SELECT ... WHERE published=false</code> every 100 ms is 10 queries/second against your <i>production</i> orders database forever, plus the churn of updating/deleting retired rows. The fix is the combine-them move: <b>point CDC at the outbox table</b> so the log does the tailing — no polling query, lowest lag, and the primary is untouched.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Pressure 3 — the outbox table grows without bound.</b> At 5,000 rows/s × 200 bytes, that's <code>5,000 × 86,400 × 200 B ≈ <b>86 GB/day</b></code> of outbox rows if nothing removes published ones. Left alone it dwarfs the orders it describes and slows every relay scan. So published rows must be <b>deleted or compacted</b> — retire them after publish, or partition the outbox by time and drop old partitions (Lessons 20, 24). The outbox is a <i>conveyor belt</i>, not an archive: things ride it once and leave.</p>
+  <p><b>Pressure 4 — ordering.</b> Consumers often need per-key order (all events for <i>order 42</i> in the order they happened — placed before cancelled). One relay reading the outbox by <code>event_id</code> preserves global order but caps throughput; sharding the relay for scale means you must partition <b>by key</b> (Lesson 9) so a single order's events stay on one partition and stay ordered, even as different orders parallelize. Same partition-for-order-vs-parallelism trade as the log itself.</p>
+</div>
+
+<p class="note why"><b>Name the core trade-off — you traded a silent lie for an eventually-consistent pipeline.</b> The dual write was simple and <i>wrong</i>: it looked fine and silently diverged 432k times a day. The outbox/CDC pipeline is <i>correct</i> — nothing is ever lost — but it is <b>eventually consistent</b>: downstream systems lag the source by the relay's delay, you now run a relay/connector, size and clean an outbox, and make every consumer idempotent. <span class="key">You did not make the update instant everywhere; you made it <i>guaranteed to arrive</i> everywhere. Freshness/consistency vs pipeline complexity — and the log's hidden gift is <b>replay</b>: because every change is a durable ordered entry, a brand-new consumer (a fresh search cluster, a new warehouse) can be built by re-reading the log from the start (Lessons 9, 29). The propagation pipeline is also the rebuild button.</span></p>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — "just add a retry / a queue" to the dual write.</b> A retry shrinks the drip but never closes the crash-in-the-gap window, and a synchronous retry loop couples your commit's success to the broker's health (Lesson 7 cascade). The only fix is one commit — outbox or CDC. Retrying two writes is still two writes.</li>
+  <li><b>Trap 2 — a non-idempotent consumer.</b> The relay is at-least-once, so duplicates <i>will</i> arrive. A consumer that isn't idempotent double-counts revenue, double-charges, or double-emails on the very first relay restart. Key every consumer on the stable <code>event_id</code> (Lesson 13) — this is not optional, it's the price of at-least-once.</li>
+  <li><b>Trap 3 — never cleaning the outbox.</b> An outbox that only grows becomes a 30 TB table in a year, slows every scan, and eventually takes the primary down. Retire published rows (delete, or partition-and-drop, Lessons 20/24). A conveyor belt that never unloads is a landfill.</li>
+  <li><b>Trap 4 — CDC leaking your physical schema.</b> Raw row-change CDC ties every consumer to your exact table columns; a harmless rename or split (Lesson 24) then breaks four downstream systems at once. If consumers are external or many, emit a <i>designed</i> domain event (outbox, or an outbox-fed CDC) so your internal schema stays yours to change (Lesson 18's contract discipline).</li>
+</ul>
+
+<table>
+  <tr><th>Approach</th><th>What it guarantees</th><th>What it costs</th></tr>
+  <tr><td>Dual write (write DB, then publish)</td><td>nothing — silently diverges on any crash/blip in the gap</td><td>looks simple; ~432k silent losses/day at 5k/s + 99.9% publish</td></tr>
+  <tr><td>Transactional outbox + relay</td><td>no lost events (event is part of the commit); at-least-once delivery</td><td>an outbox table (must be cleaned), a relay, idempotent consumers, polling load (unless CDC-tailed)</td></tr>
+  <tr><td>Change data capture (log tailing)</td><td>every committed change emitted, lowest latency, no app change</td><td>raw row events couple consumers to your schema; DB-specific log access</td></tr>
+  <tr><td>Outbox + CDC (combined)</td><td>clean designed events, log-driven, no polling</td><td>both pieces to run; still eventually consistent + idempotent consumers</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We took one thing an <code>orders</code> service must do — <b>save the order and tell everyone else</b> (search, cache, warehouse, notify) — and named the trap hiding in the word "and": doing both is a <b>dual write</b> to two systems that can't share a transaction, so a crash in the gap loses the event (order exists, nobody told) or loses the row (everyone told about a ghost), with no safe order to do the two writes in — Lesson 32's wall, in miniature. <b>Estimate</b> showed it's not rare: at 5,000 writes/s a mere 99.9% publish rate drips <code>5/s = <b>432,000</b></code> silently-invisible orders a day, and one 30-second broker blip orphans <b>150,000</b> at once — and no retry closes the crash-in-the-gap window. <b>Model</b> gave the one move both fixes share — collapse two writes into one commit, propagate from a durable log: the <b>transactional outbox</b> writes an event row <i>in the same transaction</i> as the order (Lessons 13/25) so the announcement is a byproduct of the commit, shipped out-of-band by an at-least-once <b>relay</b>; and <b>change data capture</b> skips the table entirely by tailing the database's own <b>commit log</b>, emitting every committed change with no app change and the lowest lag — clean-events-and-portability vs zero-app-change-and-latency, and you can combine them by CDC-tailing the outbox. <b>Tracing</b> a clean run, a crash right after the commit (the outbox row survives → the event is only <i>late</i>, never <i>lost</i>, exactly where the dual write dies), and a relay that republishes (at-least-once → duplicate → made safe by <b>idempotent consumers</b> keyed on the same <code>event_id</code> the commit minted) showed the guarantee is real. The <b>first bottleneck</b>: everything now flows through one <b>relay</b>, whose lag is every downstream system's staleness (Lesson 9), whose polling loads the primary (→ CDC-tail it), whose outbox grows 86 GB/day unless cleaned (Lessons 20/24), and whose ordering needs partition-by-key to scale (Lesson 9). Four traps guard the build: retrying the dual write, a non-idempotent consumer, an un-cleaned outbox, and CDC leaking your schema. The real lesson: <span class="key">you can't atomically write to a database and a broker — so don't. Write once, to the log the database already keeps, and let a relay carry it everywhere at-least-once. Freshness/consistency vs pipeline complexity — and the log you built to propagate changes is the same log you replay to rebuild.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson closes a gap this one leaned on:</b></p>
+  <p style="margin:.2rem 0">• <b>Service discovery &amp; health checking:</b> our relay had to "publish to the broker" and our consumers had to "call the search service" — but in Lesson 27's elastic fleet, instances boot and die every minute, so <i>which</i> address do you actually connect to? We'll build a <b>registry</b> (register on boot, expire on death via a TTL heartbeat — Lesson 26's connection registry generalized), <b>health checks</b> that separate <b>liveness</b> (is it running?) from <b>readiness</b> (is it done draining / warmed up? — Lesson 31), and decide where the lookup lives — DNS vs client-side vs a service-mesh sidecar. The trade shifts from <b>freshness vs pipeline complexity</b> to <b>routing freshness vs lookup cost &amp; staleness.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">dual write</span>
+    <span class="pill">transactional outbox</span>
+    <span class="pill">message relay</span>
+    <span class="pill">change data capture (CDC)</span>
+    <span class="pill">commit log / WAL / binlog</span>
+    <span class="pill">durability (D of ACID)</span>
+    <span class="pill">atomic commit</span>
+    <span class="pill">at-least-once delivery</span>
+    <span class="pill">idempotent consumer</span>
+    <span class="pill">event id / idempotency key</span>
+    <span class="pill">exactly-once effect</span>
+    <span class="pill">consumer lag</span>
+    <span class="pill">partition-by-key ordering</span>
+    <span class="pill">log replay</span>
+    <span class="pill">eventual consistency</span>
+    <span class="pill">domain event vs row event</span>
+    <span class="pill">outbox compaction</span>
+    <span class="pill">freshness vs pipeline complexity</span>
+  </p>
+  <p>That's Lesson 33, built directly on Lesson 32's closing "commit locally <i>and</i> emit an event" (the dual write) and reusing Lesson 9's log / at-least-once / partition-order / replay, Lesson 13's idempotency keys &amp; exactly-once effect, Lesson 25's atomic commit, Lessons 02/16/29/26 as the downstream consumers, Lesson 24's expand/contract for schema-safe events, Lesson 20's compaction for the growing outbox, and Lesson 7's cascade for why retries don't save the dual write. <b>Ask me follow-ups</b> — e.g. "how does Debezium actually read the WAL without slowing the primary?", "when should I emit a designed domain event vs raw CDC?", "how do I make the outbox relay itself highly available without double-publishing storms?", "what does exactly-once look like end-to-end with Kafka transactions?", or "how do I bootstrap a brand-new consumer from history — snapshot then tail?" When you're ready, say <b>next</b> and we'll go deeper on <i>Service discovery &amp; health checking — finding a live instance in a fleet where they come and go every minute.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your order service does: (1) COMMIT the order row to its own DB, then (2) publish an OrderPlaced event to the broker. A teammate says 'that's fine, both usually succeed.' Why is this structurally broken, not just occasionally flaky?",
+    options: [
+      {t:"It's a DUAL WRITE — two writes to two independent systems (the DB and the broker) that can't share a transaction, with a gap between them where a crash or broker blip loses whichever write is second. Write-then-publish can leave a real order nobody was told about; publish-then-write can announce an order that never saved. There is no safe order — the gap itself is the bug.",
+       ok:true,
+       fb:"Right. Atomicity is a single-system feature (Lesson 32). Across a database and a broker there's no shared commit, so the two writes can disagree in either direction. At 5,000/s even a 99.9% publish rate drips ~432k silently-invisible orders a day — structural, not bad luck."},
+      {t:"It's broken only because the broker is unreliable; swap in a more durable broker and the two-step write becomes safe.",
+       ok:false,
+       fb:"No — the broker's durability isn't the issue. Even a perfect broker can't help when the process crashes AFTER the DB commit and BEFORE the publish call runs: the intent to publish lived only in the next line of code, and that's gone. The problem is having two separate writes at all, not which broker you use."},
+      {t:"It's fine as written — the database COMMIT automatically rolls back if the later publish fails, so the two stay consistent.",
+       ok:false,
+       fb:"There's no such automatic rollback. Once the DB COMMIT returns, the order is durable and the database has forgotten you intended to publish anything; a failed publish afterward cannot un-commit it. That asymmetry — one write already durable while the other fails — is exactly the dual-write inconsistency."}
+    ]
+  },
+  {
+    stem: "You replace the dual write with a transactional outbox: INSERT the order row AND an outbox event row in the SAME transaction, and a separate relay later publishes unpublished outbox rows. What has this actually fixed, and what has it NOT changed?",
+    options: [
+      {t:"Fixed: there's no dual write anymore — the event and the order are one atomic commit, so a crash can only make the event LATE (the outbox row survives and the relay publishes it later), never LOST. Not changed: the relay is still at-least-once (it can crash after publishing but before marking the row, and republish), so delivery is not exactly-once on the wire — consumers must be idempotent.",
+       ok:true,
+       fb:"Exactly. The outbox moves the 'intent to publish' from a fragile line of code into a committed row, as durable as the order. That kills the loss. It does NOT give exactly-once delivery — you still get duplicates on relay restart, made safe by idempotent consumers keyed on event_id (Lesson 13)."},
+      {t:"It makes delivery exactly-once end to end, so consumers no longer need any idempotency or deduplication.",
+       ok:false,
+       fb:"No. The outbox guarantees the event isn't LOST, but the relay is still at-least-once: crash after publishing a batch but before marking it published, and those events are republished. There is no exactly-once on the wire — you get exactly-once EFFECT only by making consumers idempotent on the event_id."},
+      {t:"It removes the need for a broker entirely — consumers can just read the outbox table directly whenever they want.",
+       ok:false,
+       fb:"That's not the design, and it reintroduces coupling: every downstream system would poll your production orders DB and depend on your table shape. The outbox holds the event only until the relay publishes it to the broker (then it's retired); consumers stay decoupled behind the broker, and the outbox is a conveyor belt, not a shared read store."}
+    ]
+  },
+  {
+    stem: "You're choosing between a transactional outbox and change data capture (CDC) that tails the database's write-ahead log. What's the real trade between them?",
+    options: [
+      {t:"CDC reads the DB's own commit log, so it needs no app change and has the lowest latency — but it emits RAW row changes, coupling every consumer to your physical table shape, and needs privileged log access. The outbox needs you to write an event row in the transaction and run a relay, but lets you emit a CLEAN designed domain event on any database. You can even combine them: CDC-tail the outbox table.",
+       ok:true,
+       fb:"Right. It's clean-events-and-portability (outbox) vs zero-app-change-and-lowest-latency (CDC), with schema-coupling as CDC's hidden cost — a harmless column rename can break four consumers. Pointing CDC at an outbox table gives designed events with no polling load: the common best-of-both."},
+      {t:"CDC is strictly better because reading the log guarantees exactly-once delivery, which the outbox can't provide.",
+       ok:false,
+       fb:"Neither gives exactly-once on the wire — both are at-least-once and both need idempotent consumers. And CDC isn't strictly better: it emits raw row events that leak your internal schema to every consumer and requires DB-specific log access. Its advantages are no app change and low latency, not delivery semantics."},
+      {t:"The outbox is always wrong because writing an extra row in the transaction doubles your write load and breaks atomicity.",
+       ok:false,
+       fb:"An extra INSERT in the same transaction is a small cost, and it's exactly what PRESERVES atomicity — both rows commit together or neither does. That's the whole point. The outbox's real costs are the table you must clean up and the relay you must run, not a broken commit."}
+    ]
+  },
+  {
+    stem: "The outbox works, but now every downstream system's freshness depends on one relay. Which of these is a REAL bottleneck you must design for — and its right fix?",
+    options: [
+      {t:"The outbox table grows ~86 GB/day at 5,000 rows/s if published rows are never removed, dwarfing the orders it describes and slowing every relay scan. Fix: retire published rows — delete them, or partition the outbox by time and drop old partitions (Lessons 20/24). The outbox is a conveyor belt, not an archive.",
+       ok:true,
+       fb:"Right. An outbox that only grows eventually takes the primary down. It must be continuously drained: delete-after-publish or partition-and-drop. Alongside this, the relay's lag IS every consumer's staleness (Lesson 9 consumer lag), polling load pushes you to CDC-tail the table, and ordering at scale needs partition-by-key — all real pressures on the single pipe."},
+      {t:"You must make the relay strongly consistent with the source DB so downstream systems are never even a millisecond stale; anything less is a correctness bug.",
+       ok:false,
+       fb:"That misunderstands the guarantee. The outbox promises the event is never LOST, not that it arrives instantly everywhere — the pipeline is eventually consistent by design. Demanding zero staleness would mean holding a synchronous cross-system lock again (Lesson 32's 2PC), which is exactly the availability cost you left behind."},
+      {t:"There's no bottleneck to design for — once the outbox guarantees no lost events, the relay, its lag, and the table size all take care of themselves.",
+       ok:false,
+       fb:"No — removing the dual write created a new load-bearing component. The relay's throughput and lag, its polling load on the primary, the unbounded growth of the outbox table, and per-key ordering are all things you must actively size, clean, and partition. Correctness is solved; operating the single pipe is the new work."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

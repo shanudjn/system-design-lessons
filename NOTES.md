@@ -467,12 +467,27 @@
     compensation-as-rollback (it's a business undo, refund≠un-charge, can't un-send email →
     put un-undoable steps after the pivot); non-idempotent steps double-charge; ignoring the
     isolation window. Trade: atomicity vs availability across service boundaries. (Lesson 0032)
-33. Change data capture & the outbox pattern — get data OUT of the L12/L25 DB into search
-    (L16), cache (L02), and the warehouse (L29) without the **dual-write** inconsistency
-    (write DB + publish event = two systems, one can fail): tail the DB's commit log (CDC)
-    or the transactional **outbox** so the event is a byproduct of the one atomic commit
-    (L13/L25), replayable from the log (L09). Trade: freshness/consistency vs pipeline
-    complexity.
+33. ✅ **Change data capture & the outbox pattern** — one `orders` service (L12/24/25,
+    5,000 writes/s) must save the order AND tell search (L16), cache (L02), warehouse (L29),
+    notify (L26/32); doing both is a **dual write** to two systems with no shared transaction
+    (L32's wall in miniature) — write-then-publish loses the event on a crash (real order,
+    nobody told → 432k silent losses/day at 99.9% publish; one 30 s broker blip orphans 150k),
+    publish-then-write announces a ghost; no safe order, and no retry closes the crash-in-the-gap
+    window. Fix = collapse two writes into one commit + propagate from a durable log: **transactional
+    outbox** inserts an event row IN THE SAME TRANSACTION as the order (L13/25) → a separate
+    **relay** publishes unpublished rows out-of-band, at-least-once (L09) → a crash makes the event
+    LATE not LOST (the outbox row survives). **CDC** skips the table, tails the DB's own **commit
+    log** (WAL/binlog — durable by definition) → every committed change emitted, no app change,
+    lowest lag, but RAW row events couple consumers to your physical schema (vs outbox's clean
+    designed domain events; combine by CDC-tailing the outbox). Trace clean / crash-after-commit
+    (survived) / relay-republish (at-least-once → duplicate → **idempotent consumer** keyed on the
+    same `event_id`, L13, exactly-once EFFECT not on-the-wire). First wall = everything flows through
+    one **relay**: its lag = every downstream's staleness (L09 consumer lag), polling loads the
+    primary (→ CDC-tail it), the outbox grows ~86 GB/day unless compacted (L20/24 partition-and-drop),
+    ordering at scale needs partition-by-key (L09); bonus = the log you propagate from is the log you
+    **replay** to rebuild a new consumer (L09/29 kappa). Four traps: retrying the dual write,
+    non-idempotent consumer, un-cleaned outbox, CDC leaking your schema (L18/24). Trade:
+    freshness/consistency vs pipeline complexity. (Lesson 0033)
 34. Service discovery & health checking — in L27's elastic fleet, instances come and go
     every minute, so how does a caller find a live one? A **registry** (register on boot,
     deregister/expire on death via TTL heartbeat, L26's connection registry generalized),
@@ -490,6 +505,33 @@
     route each user to one cell, so a bad deploy, poison input, or hot tenant takes down
     1/N of users, not all of them. Cell sizing, routing/placement, and the shuffle-sharding
     refinement. Trade: blast-radius isolation vs cross-cell coordination & overhead.
+
+### Advanced topics (next batch — queued so the course never runs dry)
+37. Read/write splitting & CQRS — the L33 pipeline naturally produces separate **read models**;
+    formalize it: one write side optimized for correctness/consistency (L06/25) feeds, via CDC/
+    events (L33), many purpose-built read sides (search L16, cache L02, denormalized views L15/29)
+    — commands vs queries as two shapes of the same data. When the split earns its keep vs when it's
+    accidental complexity. Trade: read/write optimization vs the eventual-consistency gap between them.
+38. Event sourcing — take L33/L25 to its limit: store the **stream of events** as the source of
+    truth and DERIVE current state by folding them (the ledger L25 generalized), so history is free,
+    replay (L09/33) rebuilds any view, and audit is total — paid for in snapshotting to avoid
+    re-folding millions of events, schema-evolving old events, and the "how do I query current state"
+    problem (→ CQRS L37). Trade: perfect auditability/replayability vs query complexity & storage.
+39. Tiered storage & data lifecycle — the L20/29/33 data piles grow forever; not all bytes are worth
+    the same. Move data hot→warm→cold→archive (RAM/SSD/HDD/object-store/glacier) by age &
+    access frequency (L02 skew again), with TTL/retention policies and the retrieval-latency cliff
+    of cold tiers. Compaction, tombstones (L20), and the cost-vs-latency dial per tier. Trade:
+    storage cost vs retrieval latency & operational policy.
+40. Multi-tenancy & noisy neighbors — one platform, many customers sharing a fleet (L27) and DBs
+    (L03): isolate them so one tenant's spike/abuse can't starve the rest — per-tenant rate limits
+    (L08), quotas, fair queuing, and the shared-vs-silo-vs-pool spectrum (row-level → schema →
+    database → cell L36 per tenant). Tenant routing, the hot-tenant problem (L03/19), and
+    shuffle-sharding (L36) as the blast-radius refinement. Trade: density/cost efficiency vs
+    isolation & fairness.
+41. Graph & relationship systems — "who are my friends' friends?" over a billion-edge social graph:
+    why a relational JOIN explodes at depth (L12 N+1 across hops), adjacency lists vs a native graph
+    store, partitioning a graph without cutting every edge (the hard part — supernodes/celebrities
+    recur, L15), and BFS/traversal at scale. Trade: traversal speed vs partitionability of connected data.
 
 ## Lesson format conventions
 - Four reusable "moves" framing introduced in Lesson 01: estimate → model →
