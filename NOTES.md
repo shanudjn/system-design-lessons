@@ -488,12 +488,31 @@
     **replay** to rebuild a new consumer (L09/29 kappa). Four traps: retrying the dual write,
     non-idempotent consumer, un-cleaned outbox, CDC leaking your schema (L18/24). Trade:
     freshness/consistency vs pipeline complexity. (Lesson 0033)
-34. Service discovery & health checking — in L27's elastic fleet, instances come and go
-    every minute, so how does a caller find a live one? A **registry** (register on boot,
-    deregister/expire on death via TTL heartbeat, L26's connection registry generalized),
-    **health checks** (liveness vs readiness — the drain signal from L31), and where the
-    lookup lives (DNS vs client-side vs a service mesh sidecar). Trade: routing freshness
-    vs lookup cost & staleness.
+34. ✅ **Service discovery & health checking** — one caller (order-svc) reaching one callee
+    (search-svc, 200 instances, 40k req/s → 200 req/s each) across L27's elastic / L31-deployed
+    fleet where the callee isn't at an address but at 200 that churn every few seconds (rolling
+    deploy alone = ~1 change/6s). The naive config file is stale BOTH ways: a crash black-holes
+    200×60=**12,000** requests in one 60s refresh window, AND new capacity is invisible till
+    redeploy. Fix = live self-maintaining membership: a **registry** where instances **register
+    on boot** + **heartbeat every 3s to renew a 9s TTL lease** (L10/22/26), so a crash is an entry
+    that **expires** (death detected in ≤3 missed beats, no reply needed — L10's failover in the
+    routing layer); TTL is a two-sided dial (too long→dead lingers, too short→a GC pause misses a
+    beat→false-evict→**flap**, L10). The outage-preventing distinction: **liveness** ("alive?"→
+    restart) vs **readiness** ("take traffic now?"→remove from pool, DON'T restart — the L31 drain
+    off-ramp); swap them → crash-loop a warming box, or traffic to a cold one. Three lookup homes:
+    DNS (cheap, stale caches, no health/load), client-side (freshest, LB logic in every language),
+    sidecar/mesh (fresh+uniform, a proxy per instance). Trace boot (register only when READY →
+    capacity appears when it can SERVE), crash (TTL expiry bounds the black hole + L7 retry to
+    another instance papers the gap), graceful shutdown (deregister FIRST→drain→die, the ordering
+    a crash gets wrong). First wall = the registry is everyone's single dependency → must
+    **fail-static** (cache last-good list, choose **AP** — L11 — OPPOSITE of L10's CP election,
+    because a stale route is cheap-to-be-wrong where a stale leader is split-brain), be a replicated
+    **consensus** cluster (etcd/Consul/ZK, L10), shed heartbeat load that scales platform-wide
+    (10k instances/3s ≈ 3,333 renews/s), and live with a propagation-lag window it bounds + retries
+    past. Four traps: conflate liveness/readiness; a health check probing a SHARED dep (one DB blip
+    fails ALL → registry ejects the whole fleet = correlated total outage, L7/26); a strongly-
+    consistent registry on the hot path; a mistuned TTL. Trade: routing freshness vs lookup cost &
+    staleness. (Lesson 0034)
 35. Logical clocks & causal ordering — order events across machines with NO trustworthy
     global clock (L23's skew, L22's clock-fragile lease): **Lamport** timestamps give a
     total order that respects causality (happened-before) but can't tell concurrent from

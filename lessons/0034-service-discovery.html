@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 34 — Service Discovery &amp; Health Checking: Finding a Live Instance in a Fleet That Comes and Goes Every Minute</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 34 · Worked Example</div>
+  <h1>Service Discovery &amp; Health Checking: Finding a Live Instance in a Fleet That Comes and Goes Every Minute</h1>
+  <p class="lead">Every lesson so far quietly assumed a step it never justified. Lesson 33's relay "publishes to the broker" and its consumers "call the search service." Lesson 32's orchestrator "calls the hotel service." Lesson 27 then told us the truth about that fleet: it <i>autoscales</i> — instances boot on a morning ramp, die on a scale-in, get replaced wholesale by a Lesson 31 rolling deploy, and crash at random. So the search service isn't at an address. It's at <b>200 addresses that change every few seconds.</b> When your order service needs to call search, <i>which</i> IP does it dial — and how does it avoid dialing one that died two seconds ago? That question is <b>service discovery</b>, and answering it wrong quietly routes real traffic into black holes. This lesson takes one caller (the order service) trying to reach one callee (the search service) across an elastic fleet. We'll <b>estimate</b> how fast a hardcoded address list rots and what that rot costs in failed requests, <b>model</b> the <b>registry</b> (register on boot, heartbeat to stay listed, expire on death) and the split between <b>liveness</b> and <b>readiness</b> health checks, <b>trace</b> a boot, a crash, and a graceful shutdown through it, and hit the wall that defines the domain: the registry is now the one thing everyone depends on to find everyone else. The trade shifts from Lesson 33's freshness-vs-pipeline-complexity to <b>routing freshness vs lookup cost &amp; staleness.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0034-service-discovery.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>The <b>order service</b> (the <b>caller</b>) needs to call the <b>search service</b> (the <b>callee</b>) — say, to index a new order (Lesson 33). The search service runs <b>200 instances</b> behind Lesson 27's autoscaler, serving <b>40,000 requests/second</b> in total, so each instance carries about <code>40,000 / 200 = <b>200 req/s</b></code>. The naive answer is a config file: write down the 200 IP addresses and read from it. The problem is motion. In an elastic fleet those addresses are not stable for even a minute:</p>
+<ul>
+  <li><b>Scale-out / scale-in</b> (Lesson 27): the autoscaler adds instances on a ramp and kills them when load falls — each is a brand-new address appearing or an old one vanishing.</li>
+  <li><b>Deploys</b> (Lesson 31): a rolling deploy replaces all 200 instances over ~20 minutes — that's 200 address changes in one deploy, several times a week.</li>
+  <li><b>Crashes</b> (Lesson 7): an instance dies unannounced; its address is now a black hole that still sits in every stale list.</li>
+</ul>
+<p>So the real question isn't "what's the address of search?" It's <span class="key">"who is alive and ready to take my request <i>right now</i>?"</span> — and the answer changes every few seconds. First the picture, then why the config file bleeds.</p>
+
+<div class="diagram"><pre>
+  SERVICE DISCOVERY: how a caller finds a LIVE, READY instance in a fleet that churns
+
+  order-svc (caller)                 REGISTRY   (service name -> healthy instances)
+     |                               +------------------------------------------+
+     |  1. "give me search-svc"      |  search-svc:                             |
+     |------------------------------>|    10.2.0.7:8080   ttl=8s   READY        |
+     |   <- [ .7, .8, .9 ]           |    10.2.0.8:8080   ttl=6s   READY        |
+     |      (only READY ones)        |    10.2.0.9:8080   ttl=9s   READY        |
+     |                               |    10.2.0.4:8080   EXPIRED (no heartbeat) x
+     |  2. pick one, send request    +------------------------------------------+
+     |----------------\                       ^              ^
+     v                 \                      | register     | heartbeat every 3s
+   search .7   search .8   search .9          | on boot      | (renews the TTL)
+     \___________ each instance: register on boot, heartbeat to renew its lease,
+                  deregister on graceful exit, and vanish (TTL expiry) on crash.
+
+  The registry is the live phone book. Instances keep their own entry warm with a
+  heartbeat; miss enough heartbeats and the entry expires -- death detected, no reply needed.
+</pre></div>
+
+<p class="note"><span class="key">A registry is a lease-based phone book: each instance keeps its own entry alive by heartbeating, and an entry that stops being renewed expires on its own.</span> That's Lesson 26's connection registry (which held <code>user&rarr;gateway</code>) and Lesson 10's leader lease, generalized to <code>service&rarr;instances</code>. The heartbeat is doing exactly Lesson 10's job: turning "is it dead?" — an unanswerable question over a network — into "has it stopped renewing its lease?", which you <i>can</i> answer locally.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Caller / callee</b> — the service making the request (order-svc) and the service receiving it (search-svc). Discovery is the caller's problem: find a live callee.</li>
+  <li><b>Service registry</b> — a store mapping a service <i>name</i> (<code>search-svc</code>) to its current set of live instance addresses plus per-instance health. The live phone book.</li>
+  <li><b>Register / deregister</b> — an instance adds itself to the registry on boot and removes itself on a graceful shutdown.</li>
+  <li><b>Heartbeat + TTL lease</b> — the instance periodically pings the registry to renew a short time-to-live on its entry (Lessons 10, 22, 26). Stop pinging and the entry <b>expires</b> — the registry's way of noticing death without being told.</li>
+  <li><b>Liveness check</b> — "is this process running at all?" A failed liveness check means <i>restart it</i>.</li>
+  <li><b>Readiness check</b> — "should this process receive traffic <i>right now</i>?" A failed readiness check means <i>take it out of the pool</i> — but do <b>not</b> restart it (it may just be warming up or draining, Lesson 31).</li>
+  <li><b>Client-side vs server-side discovery</b> — does the caller query the registry and load-balance itself, or does an intermediary (a load balancer, a DNS name, a sidecar proxy) do it for the caller?</li>
+  <li><b>Service mesh / sidecar</b> — a small proxy deployed next to every instance that handles discovery, load balancing, and health for the app, so the app just calls <code>localhost</code>.</li>
+  <li><b>Fail-static</b> — when the registry itself is unreachable, keep using the last known good instance list rather than failing all routing (a stale-but-alive list beats an empty one).</li>
+</ul>
+
+<h2>Move 1 — Estimate: how fast does a hardcoded list rot, and what does the rot cost?</h2>
+<p>"The addresses don't change <i>that</i> often" is the intuition that makes people hardcode them. Price the churn and the intuition dies.</p>
+
+<div class="card calc">
+  <p><b>Worked: the churn rate.</b> Take just one source of motion — a Lesson 31 rolling deploy that replaces all <b>200</b> search instances over <b>20 minutes</b> (1,200 s). That alone is <code>200 / 1,200 s ≈ <b>one address change every 6 seconds</b></code>, and deploys happen several times a week. Layer on autoscaling (Lesson 27's morning ramp adds ~86 instances) and random crashes, and the fleet's membership is changing on the order of <b>once every few seconds, all day.</b> A config file you edited this morning is wrong by lunch.</p>
+  <p><b>Worked: the cost of one stale entry.</b> Suppose a caller refreshes its address list every <b>60 s</b>, and an instance crashes right after a refresh. For up to <b>60 seconds</b> that dead address stays in the list, and the caller keeps sending it its share of traffic: <code>200 req/s × 60 s = <b>12,000 requests</b></code> fired into a black hole before the next refresh — each one a timeout (Lesson 7), each one needing a retry. <span class="key">One crash, one refresh window, twelve thousand failures.</span> Shrink the detection window to a <b>9 s</b> registry TTL and it's <code>200 × 9 = <b>1,800</b></code>; add active ejection (the caller drops an address the instant a connection is refused) and it's near zero.</p>
+</div>
+
+<p class="note why"><b>Why the config file loses on both freshness axes.</b> It's stale in <i>both</i> directions: a <b>dead</b> address lingers (black-hole traffic until you notice), and a <b>new, healthy</b> address is invisible until you re-deploy the config (your fresh capacity sits idle during the exact ramp you scaled up for). The only fix is to stop treating membership as static configuration and start treating it as <b>live, self-maintaining state</b> — something that adds itself when it's ready and removes itself when it's gone. That's the registry, and the detection window is the dial we'll keep turning.</p>
+
+<h2>Move 2 — Model: the registry, and the two questions health checks answer</h2>
+<p>The registry is a key-value store keyed by service name, each value a set of instance entries carrying an address, a lease TTL, and a health status. Three verbs keep it honest.</p>
+
+<h3>Register, heartbeat, expire — a lease, not a fact</h3>
+<p>When an instance boots and finishes warming up, it <b>registers</b>: "I'm <code>search-svc</code> at <code>10.2.0.7:8080</code>." Then it <b>heartbeats</b> — every 3 seconds it pings the registry to renew a short TTL on its entry. On a graceful shutdown it <b>deregisters</b> explicitly. And if it crashes? It simply stops heartbeating; the TTL runs out and the registry drops the entry on its own. Death you were never told about becomes an entry that quietly expired.</p>
+<div class="diagram"><pre>
+  registry state for one instance:   10.2.0.7 : { ready:true, ttl:9s }
+
+  t=0s  heartbeat -> ttl reset to 9s          (instance healthy, renewing)
+  t=3s  heartbeat -> ttl reset to 9s
+  t=6s  heartbeat -> ttl reset to 9s
+        x  <-- instance CRASHES here, heartbeats stop
+  t=9s  ttl now 3s ...
+  t=12s ttl now 0s -> ENTRY EXPIRES, removed from the pool. Death detected in <= 9s.
+
+  heartbeat 3s, TTL 9s  =  3 missed beats before eviction  (Lesson 10's 3-missed-heartbeat failover)
+</pre></div>
+
+<p class="note why"><b>Name the trade-off — the TTL is a liveness dial, and both ends bite.</b> Too <b>long</b> a TTL (say 60 s) and a dead instance lingers a full minute eating requests — Move 1's 12,000-failure window. Too <b>short</b> a TTL (say 4 s = one missed beat) and a live-but-briefly-slow instance — a GC pause (Lesson 22), a network hiccup — misses a single heartbeat, gets falsely evicted, re-registers a second later, and the pool <b>flaps</b> (Lesson 10's flapping leadership, in the routing layer). <span class="key">Detection speed vs false evictions: exactly Lesson 10's heartbeat-timeout sizing and Lesson 22's lease-length dial, now deciding how fast you notice a dead callee.</span> Three missed beats (9 s) is the usual compromise — long enough to survive a hiccup, short enough to bound the black-hole window.</p>
+
+<h3>Liveness vs readiness — one word that prevents an outage</h3>
+<p>"Healthy" is two different questions, and conflating them is one of the most common ways to turn a small problem into a big one.</p>
+<div class="grid2">
+  <div class="card">
+    <p style="margin:.2rem 0"><b>Liveness</b> — <i>is the process alive at all?</i> A cheap, shallow check (does it answer <code>/healthz</code> at all?). If it fails, the process is wedged and the right action is <b>restart it</b>.</p>
+  </div>
+  <div class="card">
+    <p style="margin:.2rem 0"><b>Readiness</b> — <i>should it get traffic right now?</i> It may be alive but <b>not ready</b>: still warming its caches (Lesson 2), still opening DB pools, or deliberately <b>draining</b> before shutdown (Lesson 31). If it fails, <b>remove it from the pool</b> — but do <b>not</b> restart it.</p>
+  </div>
+</div>
+<p>The registry advertises an instance only while it is <b>ready</b>. The distinction matters because the <i>action</i> on failure is opposite: liveness failure &rarr; kill and replace; readiness failure &rarr; pause traffic, leave running. Swap them and you get a disaster in either direction — a warming instance that gets killed for "failing" a readiness probe used as liveness will never finish warming (a <b>crash loop</b>), and a not-yet-warm instance treated as ready gets real traffic before it can serve it (errors at every deploy).</p>
+
+<div class="card">
+  <p style="margin:.2rem 0"><b>The three discovery models — who actually does the lookup?</b> The registry holds the truth; someone has to read it and pick an instance. That "someone" is the design choice.</p>
+  <table style="margin:.4rem 0 0">
+    <tr><th>Model</th><th>How the caller reaches a callee</th><th>Cost</th></tr>
+    <tr><td><b>DNS-based</b></td><td>registry updates a DNS name; caller resolves <code>search.svc</code> like any hostname</td><td>universal, zero client code — but DNS <b>caching</b> makes it stale, returns bare addresses (no per-instance health or load), and clients often ignore its TTL</td></tr>
+    <tr><td><b>Client-side</b></td><td>caller queries the registry directly, gets the healthy list, load-balances itself (Lesson 8's counter, Lesson 4's ring)</td><td>freshest &amp; smartest routing — but every client, in every language, must embed discovery + LB logic (library sprawl)</td></tr>
+    <tr><td><b>Sidecar / mesh</b></td><td>a proxy next to each instance does discovery + LB + health; the app just calls <code>localhost</code></td><td>language-agnostic, powerful, consistent — but a proxy per instance is real operational weight &amp; a hop of latency</td></tr>
+  </table>
+</div>
+
+<p class="note why"><b>Name the trade-off — routing freshness vs lookup cost &amp; staleness.</b> DNS is the cheapest to adopt and the stalest (its cache is the whole problem in miniature — the same freshness-vs-cost dial as Lesson 2 and Lesson 14). Client-side is the freshest and the most code to spread everywhere. The sidecar mesh buys freshness <i>and</i> language-independence by paying in operational weight. There is no free lookup: you pay in staleness, in client code, or in proxies.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Run three lifecycle events through the registry and watch each verb do its job.</p>
+
+<h3>Path A — an instance boots (register, but only when ready)</h3>
+<div class="diagram"><pre>
+  1. autoscaler starts search .7 (Lesson 27)         -> process alive, but caches cold
+  2. .7 fails its READINESS check while warming        -> NOT yet in the pool, gets no traffic
+  3. warm-up done: pools open, cache primed            -> readiness passes
+  4. .7 registers + starts heartbeating (ttl=9s)       -> now advertised as READY
+  5. next caller lookup returns [ ..., .7 ]             -> .7 begins taking its 200 req/s
+  -> New capacity appears the moment it can SERVE, not the moment it BOOTS. The config
+     file couldn't do this: it would send traffic to a cold instance, or leave it idle.
+</pre></div>
+
+<h3>Path B — an instance crashes (expiry + retry cover the gap)</h3>
+<div class="diagram"><pre>
+  1. search .4 crashes at t=6s (Lesson 7), heartbeats stop
+  2. callers with a cached list still hold .4 -> some requests hit a black hole
+  3. each such request fails fast (connection refused / timeout) -> caller RETRIES another
+        instance (Lesson 7 backoff+jitter; safe because indexing is idempotent, Lesson 13)
+  4. at t=12s .4's TTL expires -> registry drops it -> new lookups never see .4 again
+  -> Death is not instant to detect, but the damage is bounded: <=9s of TTL window, and the
+     RETRY papers over the gap so the user rarely sees the failure. Two layers, not one.
+</pre></div>
+<p>Notice discovery does not stand alone: the registry <i>eventually</i> removes the dead instance, and the caller's <b>retry to a different instance</b> (Lesson 7) covers the window before it does. Freshness and retries are partners — the registry shrinks the black-hole window, the retry survives whatever's left of it.</p>
+
+<h3>Path C — a graceful shutdown (deregister first, then drain)</h3>
+<div class="diagram"><pre>
+  1. deploy retires search .8 (Lesson 31)             -> .8 gets SIGTERM
+  2. .8 fails readiness ON PURPOSE + deregisters        -> registry stops advertising it
+  3. in-flight requests keep finishing (DRAIN, Lesson 31) -> no request cut off mid-flight
+  4. new lookups already exclude .8 -> zero new traffic arrives
+  5. drain done -> .8 exits cleanly
+  -> The ORDER is the whole point: leave the pool FIRST, then drain, then die. A crash does
+     these in the wrong order (dies first) -> that's why Path B loses requests and Path C doesn't.
+</pre></div>
+<p>Path B and Path C differ only in <i>ordering</i>. A crash dies before it leaves the pool, so callers discover the death the hard way (a failed request). A graceful shutdown leaves the pool <i>before</i> it dies, so no caller ever sends it a request it can't answer. <span class="key">The readiness check is the instance's off-ramp: it's how a healthy instance says "route around me" without dying.</span></p>
+
+<h2>Move 4 — Find the first bottleneck: the registry is now everyone's single dependency</h2>
+<p>We removed the stale config file, but we created a new load-bearing thing: a registry that <i>every</i> caller consults to reach <i>every</i> callee. Its health is now the routability of the whole system — the same shape as Lesson 33's relay, Lesson 26's connection registry, and Lesson 30's KMS. Four pressures land on it.</p>
+
+<div class="card calc">
+  <p><b>Pressure 1 — the registry must not fail closed.</b> If the registry is a hard dependency on every request's path and it blips, <i>no one can find anyone</i> — a small registry outage becomes a total outage. The fix is <b>fail-static</b>: callers <b>cache</b> the last known good instance list and keep using it if the registry is unreachable. A stale-but-mostly-alive list routes far better than an empty one. <span class="key">This is a deliberate CAP choice (Lesson 11): discovery prefers <b>availability over consistency</b> — route to a possibly-stale instance rather than fail all routing — the <i>opposite</i> of Lesson 10's leader election, which had to be CP.</span></p>
+  <p><b>Pressure 2 — the registry itself needs to survive failure.</b> A single-node registry is a SPOF for the entire platform. So it's replicated — and because instances registering/expiring is agreement about shared membership, this is exactly Lesson 10's job: a real registry (etcd, Consul, ZooKeeper) is a <b>consensus</b> cluster (Raft/Paxos), an odd number of nodes with a majority quorum. Discovery is built <i>on top of</i> the coordination service Lesson 10 built.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Pressure 3 — heartbeat load scales with the whole platform, not one service.</b> 200 search instances heartbeating every 3 s is a trivial <code>200 / 3 ≈ 67 renews/s</code>. But every instance of every service heartbeats. Ten thousand instances platform-wide is <code>10,000 / 3 ≈ <b>3,333 renews/s</b></code> hammering the registry forever, and a shorter TTL multiplies it. That's why registries push work to the edges — gossip between instances, or local agents that aggregate heartbeats — rather than making one cluster field every beat (Lesson 26's off-gateway truth, generalized).</p>
+  <p><b>Pressure 4 — propagation lag never fully closes.</b> A change in the registry still has to reach every caller's cache, so there is always a window where a caller's view is stale — the same eventual-consistency gap as Lesson 33's relay lag. You don't eliminate it; you bound it (short cache TTL) and survive it (retry to another instance, Lesson 7). <b>Routing freshness vs lookup cost</b> is this window: refresh more often for freshness, less often for load.</p>
+</div>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — conflating liveness and readiness.</b> Use a readiness probe as a liveness probe and a warming or draining instance gets <i>killed</i> for not being ready → a crash loop that never lets it warm. Use liveness as readiness and traffic hits an instance before it can serve → errors on every deploy. Two questions, two actions: restart vs remove-from-pool. Keep them separate.</li>
+  <li><b>Trap 2 — a health check that probes a shared dependency.</b> If every instance's health check calls the <i>same</i> database and the DB blips, <b>all</b> instances fail their check <i>at once</i> → the registry ejects the entire fleet → a minor DB hiccup becomes a total outage (a correlated failure, Lessons 7/26). Keep the liveness check <b>local and shallow</b> — "am I, this process, responsive?" — not "is the whole world healthy?"</li>
+  <li><b>Trap 3 — a strongly-consistent registry on the hot request path.</b> Insisting the registry be perfectly consistent and consulted live on every call means a registry partition blocks all routing (Lesson 11's CP cost, in the worst place). Cache + <b>fail-static</b> instead: prefer a slightly-stale route over no route. Discovery is a place to choose AP.</li>
+  <li><b>Trap 4 — a TTL that's mistuned in either direction.</b> Too long and dead instances linger and black-hole traffic (Move 1's 12,000 failures); too short and a single missed heartbeat false-evicts a live instance into a flap (Lesson 10). Size it like a lease: heartbeat interval × a few misses, tuned to your real hiccup duration.</li>
+</ul>
+
+<table>
+  <tr><th>Approach</th><th>What it gives</th><th>What it costs</th></tr>
+  <tr><td>Hardcoded / config address list</td><td>dead simple, no moving parts</td><td>stale in both directions — dead addresses linger (12k failed reqs/crash), new capacity invisible until redeploy</td></tr>
+  <tr><td>Registry + TTL heartbeat</td><td>self-maintaining live membership; death detected in ≤ (misses × interval)</td><td>a registry to run + heartbeat load; TTL is a flap-vs-lag dial</td></tr>
+  <tr><td>DNS-based discovery</td><td>universal, zero client code</td><td>stale caches, no health/load info, clients ignore TTLs</td></tr>
+  <tr><td>Client-side discovery</td><td>freshest routing, smartest load balancing</td><td>discovery + LB logic in every client &amp; language</td></tr>
+  <tr><td>Sidecar / service mesh</td><td>fresh, language-agnostic, uniform</td><td>a proxy per instance — real operational weight + a latency hop</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We took one thing every previous lesson silently assumed — <b>a caller reaching a callee</b> — and noticed that in Lesson 27's elastic, Lesson 31-deployed fleet the callee isn't at an address, it's at 200 addresses that change every few seconds. <b>Estimate</b> priced the naive config file: a rolling deploy alone changes an address <i>every 6 seconds</i>, and one crash inside a 60 s refresh window black-holes <code>200 × 60 = <b>12,000</b></code> requests — stale in both directions, dead addresses lingering while fresh capacity sits invisible. <b>Model</b> gave the fix: a <b>registry</b> that instances keep warm with a <b>heartbeat-renewed TTL lease</b> (Lessons 10/22/26), so a crash is just an entry that expires (death detected in ≤ 3 missed beats), plus the one distinction that prevents an outage — <b>liveness</b> ("is it alive?" → restart) vs <b>readiness</b> ("should it get traffic now?" → remove from pool, don't restart) — and the choice of <i>who</i> does the lookup: DNS (cheap, stale), client-side (fresh, code everywhere), or a sidecar mesh (fresh + uniform, operational weight). <b>Tracing</b> a boot (register only when <i>ready</i>, so new capacity appears when it can serve, not when it boots), a crash (TTL expiry bounds the black-hole window, and a Lesson 7 retry to another instance papers over the gap), and a graceful shutdown (deregister <i>first</i>, then drain, then die — the ordering a crash gets wrong) showed the three verbs at work. The <b>first bottleneck</b>: the registry is now everyone's single dependency, so it must <b>fail-static</b> (cache the last good list, choose AP — Lesson 11 — the opposite of Lesson 10's CP), be a replicated <b>consensus</b> cluster (Lesson 10), shed heartbeat load that scales with the whole platform (3,333 renews/s at 10k instances), and live with a propagation-lag window it bounds and retries past. Four traps guard the build: conflating liveness and readiness, a health check that probes a shared dependency (one DB blip ejects the whole fleet), a strongly-consistent registry on the hot path, and a mistuned TTL. The real lesson: <span class="key">in a fleet that churns every few seconds, membership is not configuration — it's live, self-maintaining state, kept honest by a heartbeat and made safe by choosing a stale-but-alive route over no route at all. Routing freshness vs lookup cost &amp; staleness — and the registry you built to find instances is the same coordination service (Lesson 10) that elects their leaders.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson closes a gap this one leaned on:</b></p>
+  <p style="margin:.2rem 0">• <b>Logical clocks &amp; causal ordering:</b> the registry's TTL, Lesson 22's lease, and Lesson 23's last-write-wins all quietly trusted a <i>wall clock</i> — but clocks on different machines disagree (Lesson 23's skew), so "which event happened first?" has no trustworthy global answer. We'll build ordering that needs no synchronized clock: <b>Lamport timestamps</b> (a total order that respects causality but can't tell concurrent from causal), <b>vector clocks</b> (which can, at O(N) size — Lesson 23's recap), and <b>hybrid logical clocks</b> (physical time bolted on so a timestamp is both causal <i>and</i> roughly wall-clock). The trade shifts from <b>routing freshness vs lookup cost</b> to <b>ordering precision vs metadata size &amp; coordination.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">service discovery</span>
+    <span class="pill">service registry</span>
+    <span class="pill">register / deregister</span>
+    <span class="pill">heartbeat + TTL lease</span>
+    <span class="pill">TTL expiry (death detection)</span>
+    <span class="pill">liveness check</span>
+    <span class="pill">readiness check</span>
+    <span class="pill">draining</span>
+    <span class="pill">DNS-based discovery</span>
+    <span class="pill">client-side discovery</span>
+    <span class="pill">service mesh / sidecar</span>
+    <span class="pill">fail-static</span>
+    <span class="pill">flapping</span>
+    <span class="pill">correlated failure</span>
+    <span class="pill">consensus registry (etcd/Consul/ZK)</span>
+    <span class="pill">propagation lag</span>
+    <span class="pill">routing freshness vs lookup cost</span>
+  </p>
+  <p>That's Lesson 34, built on Lesson 27's elastic fleet (the churn), Lesson 31's rolling deploy &amp; drain (readiness as an off-ramp), Lesson 26's connection registry and Lesson 10's leader lease (the heartbeat-TTL pattern &amp; the consensus store underneath), Lesson 7's retry/timeout (covering the detection window), Lesson 11's CAP (why discovery chooses AP/fail-static where election chose CP), and Lessons 2/14's freshness-vs-cost cache dial (DNS staleness). <b>Ask me follow-ups</b> — e.g. "how does Consul's gossip protocol cut the heartbeat load I described?", "when is DNS-based discovery actually good enough?", "what exactly does an Envoy sidecar do on each request?", "how do Kubernetes liveness/readiness/startup probes map onto this?", or "why is client-side load balancing better than a central LB for a big fleet?" When you're ready, say <b>next</b> and we'll go deeper on <i>Logical clocks &amp; causal ordering — putting events in order when no clock can be trusted.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your order service reaches the search service by reading a config file of 200 IP addresses, refreshed every 60 seconds. A search instance crashes right after a refresh. Why is this structurally bad, not just occasionally unlucky?",
+    options: [
+      {t:"For up to the full 60 s refresh window the dead address stays in the list, so the caller keeps sending it its share of traffic — 200 req/s × 60 s ≈ 12,000 requests fired into a black hole before the next refresh, each a timeout. And the reverse hurts too: a NEW healthy instance is invisible until the config is redeployed, so scaled-up capacity sits idle. The list is stale in both directions.",
+       ok:true,
+       fb:"Right. A static list can't track a fleet that changes an address every few seconds (a rolling deploy alone is ~1 change / 6 s). Dead addresses linger and black-hole traffic; fresh ones stay invisible. Membership has to be live self-maintaining state, not configuration."},
+      {t:"It's only a problem because 60 s is too long — refresh every second and a static config file becomes correct.",
+       ok:false,
+       fb:"Refreshing faster shrinks the window but doesn't fix the model: you'd hammer whatever produces the file, and you STILL learn about a death only on the next poll, and a brand-new instance is still invisible until it's written into the file and redeployed. The problem is treating live membership as static config, not the poll interval alone."},
+      {t:"It's fine — TCP automatically reroutes a request to a live instance when the addressed one is down, so the stale entry never actually costs anything.",
+       ok:false,
+       fb:"There's no such automatic reroute. A connection to a dead address fails (refused or times out); rerouting to a different instance is something the CALLER must do (a retry, Lesson 7), and it can only retry among the addresses it knows — which is exactly the stale list. Nothing papers over the black hole for free."}
+    ]
+  },
+  {
+    stem: "You replace the config file with a registry: instances register on boot and heartbeat every 3 s to renew a 9 s TTL; miss 3 beats and the entry expires. Why 9 s — why not make the TTL 2 s so you detect death almost instantly?",
+    options: [
+      {t:"The TTL is a two-sided dial. Too long and a dead instance lingers, black-holing traffic (the config-file problem again). Too short (say 2 s = under one missed beat) and a live-but-briefly-slow instance — one GC pause or network hiccup — misses a heartbeat, gets falsely evicted, re-registers a second later, and the pool FLAPS. 9 s (≈3 missed beats) survives a hiccup while still bounding the black-hole window.",
+       ok:true,
+       fb:"Exactly — this is Lesson 10's heartbeat-timeout sizing and Lesson 22's lease length, applied to routing. Detection speed vs false evictions: a too-eager timeout turns a momentary pause into churn (a live instance thrown out and readmitted repeatedly), which is often worse than a slightly-late eviction."},
+      {t:"Because a 2 s TTL would overload the registry — you'd have to heartbeat every 2 s instead of 3 s, and that extra load is the only downside.",
+       ok:false,
+       fb:"Heartbeat load matters at platform scale, but it's not the main reason. The decisive problem with a very short TTL is FALSE eviction: a healthy instance that misses one beat during a GC pause or network blip is wrongly dropped and then re-added — the pool flaps. Detection latency vs false-positive evictions is the real trade, not just renew traffic."},
+      {t:"There's no real trade-off — a shorter TTL is strictly better because it detects death faster, so 2 s (or even 1 s) is the right choice.",
+       ok:false,
+       fb:"Faster detection is real, but it's not free: below the duration of a normal hiccup (GC pause, brief network stall), a LIVE instance will routinely miss a beat and be evicted, then re-register — flapping (Lesson 10). You'd trade a bounded black-hole window for constant churn. The TTL is a balance, not a 'lower is always better' knob."}
+    ]
+  },
+  {
+    stem: "Your platform uses one health-check endpoint for everything: it returns 200 only if the instance can reach the shared primary database. One day the database has a 30-second blip. What happens, and what's the underlying mistake?",
+    options: [
+      {t:"Every instance's health check fails at the same instant, so the registry ejects the ENTIRE fleet at once — a 30 s DB blip becomes a total outage with zero live instances to route to. The mistake is a health check that probes a SHARED dependency: it turns one dependency's hiccup into a correlated, fleet-wide failure. Liveness checks should be local and shallow ('is this process responsive?').",
+       ok:true,
+       fb:"Right — this is the correlated-failure trap (Lessons 7/26). When every instance's 'health' depends on the same downstream, they all fail together and the discovery layer helpfully removes all of them. Keep liveness local; if the DB is down, an instance is still 'alive' and should stay routable so it can serve cached reads or fail gracefully — not vanish."},
+      {t:"Nothing bad — ejecting all the instances is correct, because if they can't reach the database they can't do useful work anyway, so removing them from the pool is the right call.",
+       ok:false,
+       fb:"Ejecting the whole fleet leaves NObody to route to, so every request now fails at discovery instead of failing (or degrading) at the instance — strictly worse. Many requests may not even need the DB (cached reads, health of other paths), and a 30 s blip shouldn't equal a total outage. A shared-dependency check converts a partial problem into a complete one."},
+      {t:"The registry should just ignore health checks during database incidents, so this is really an argument for removing health checks entirely.",
+       ok:false,
+       fb:"Removing health checks throws away the thing that ejects genuinely dead instances (Move 1's black-hole problem returns). The fix isn't 'no checks,' it's 'the right check': a shallow LIVENESS probe of the process itself, not a deep probe of a shared downstream. Scope the check so one instance failing means one instance, not the whole fleet."}
+    ]
+  },
+  {
+    stem: "The registry is now the one thing every caller consults to reach every callee. During a network partition the registry cluster becomes briefly unreachable from some callers. What's the right design stance, and how does it differ from Lesson 10's leader election?",
+    options: [
+      {t:"Discovery should FAIL-STATIC: callers cache the last known good instance list and keep routing with it when the registry is unreachable — a stale-but-mostly-alive list routes far better than no list. That's choosing AVAILABILITY over consistency (Lesson 11's AP), the OPPOSITE of leader election, which must be CP (a stale leader causes split-brain, so it's safer to stop).",
+       ok:true,
+       fb:"Exactly. Routing can tolerate a little staleness — worst case you try an instance that just died and retry another (Lesson 7). Election cannot tolerate staleness: two 'leaders' corrupt data, so it blocks under partition (Lesson 10/11 CP). Same CAP question, opposite right answer, because the cost of being stale differs."},
+      {t:"Discovery must be strongly consistent just like leader election — callers should refuse to route until they can confirm a fresh list from the registry, so they never use a stale entry.",
+       ok:false,
+       fb:"That makes a registry partition into a total routing outage: every caller stops routing rather than use a slightly-stale list that is almost entirely correct. Unlike a split-brain leader, a stale route is cheap to be wrong about — you retry another instance. Discovery should prefer availability (fail-static), not copy election's CP stance."},
+      {t:"It doesn't matter — since the registry is replicated with consensus (etcd/Consul), it can never be unreachable, so callers never need a fallback.",
+       ok:false,
+       fb:"Consensus makes the registry survive node failures, but a network PARTITION can still cut some callers off from the cluster (or the minority side stops serving to stay consistent, Lesson 10). So callers absolutely need a fallback — caching the last good list and failing static — precisely because 'always reachable' is not something any distributed system can promise."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
