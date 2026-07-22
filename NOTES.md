@@ -513,12 +513,28 @@
     fails ALL → registry ejects the whole fleet = correlated total outage, L7/26); a strongly-
     consistent registry on the hot path; a mistuned TTL. Trade: routing freshness vs lookup cost &
     staleness. (Lesson 0034)
-35. Logical clocks & causal ordering — order events across machines with NO trustworthy
-    global clock (L23's skew, L22's clock-fragile lease): **Lamport** timestamps give a
-    total order that respects causality (happened-before) but can't tell concurrent from
-    causal; **vector clocks** (L23 recap) can, at O(N) size; **hybrid logical clocks** bolt
-    physical time on so timestamps are both causal AND ~wall-clock. Trade: ordering
-    precision vs metadata size & coordination.
+35. ✅ **Logical clocks & causal ordering** — a group chat across two regions where a
+    REPLY prints ABOVE the question it answers: FR's clock runs 50 ms behind VA, Bob replies
+    20 ms after reading, so the reply's wall stamp lands 30 ms BEFORE the question → sorting
+    by timestamp inverts causal order. Estimate the one inequality that causes it: skew (tens
+    of ms; drift ~4.3 s/day unchecked, NTP pins to ~ms and can step BACKWARD) > gap between
+    causally linked events (µs–ms) → inversion is routine, not rare, and can't be zeroed (L14
+    speed-of-light residual). Fix = count CAUSALITY not seconds: define **happened-before (→)**
+    from info flow (same-process order, send-before-receive, transitivity); **Lamport** (one
+    counter, max+1 on receive) = O(1) TOTAL order that never sorts effect before cause, but
+    arrow runs one way so it CAN'T detect concurrency (L(a)<L(b) ⇏ a→b); **vector clocks** (one
+    counter per process, elementwise-max, L23's version vectors) DO detect concurrent vs causal
+    at O(N). Trace the reply ([1,0,0]<[1,2,0] causal, both clocks fix it) vs Carol's unrelated
+    msg ([0,0,1] neither ≤ → CONCURRENT, only vector refuses to invent an order → conflict
+    resolver MERGES not drops, closes L06/L23 lost update). First wall = O(N) fine when N=servers,
+    fatal when N=users (1M × 8 B = 8 MB metadata per keystroke, never shrinks) → **hybrid logical
+    clock (HLC)**: pack (physical pt, counter c) into 64 bits → O(1), causal like Lamport, AND
+    within clock-skew of real wall-clock (the honest repair for L22/23/34's trusted clocks; still
+    total-order-only so no concurrency detection alone → bounded/pruned vectors or dotted version
+    vectors for that; CockroachDB uses HLC). Four traps: wall-clock sort across machines; reading
+    Lamport/HLC order as causality (fake order → L23 lost update); per-client vector at scale;
+    thinking a logical clock removes the need for real time (L22 lease still needs physical
+    expiry). Trade: ordering precision vs metadata size & coordination. (Lesson 0035)
 36. Cell-based architecture — the ultimate blast-radius tool (L07 bulkhead, L28, L31 all
     point here): partition the WHOLE stack (LB + app + data) into independent **cells**,
     route each user to one cell, so a bad deploy, poison input, or hot tenant takes down

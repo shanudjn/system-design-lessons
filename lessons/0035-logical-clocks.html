@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 35 — Logical Clocks &amp; Causal Ordering: Putting Events in Order When No Clock Can Be Trusted</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 35 · Worked Example</div>
+  <h1>Logical Clocks &amp; Causal Ordering: Putting Events in Order When No Clock Can Be Trusted</h1>
+  <p class="lead">Three lessons quietly borrowed something they never earned: a <b>clock</b>. Lesson 22's lease expired when "the clock" passed the TTL. Lesson 23's last-write-wins picked a winner by "whose timestamp is bigger." Lesson 34's registry evicted an instance when "the clock" said its lease ran out. But every one of those clocks lives on a <i>different machine</i>, and machines' clocks disagree — Lesson 23 called it skew and moved on. Now we face it head-on with the simplest question a distributed system can ask: <b>which of two events happened first?</b> We'll take one concrete, painfully common bug — a group chat where a <b>reply appears above the question it answers</b> — and follow it to the root: sorting by wall-clock time is sorting by a number that different servers disagree about. We'll <b>estimate</b> how badly clocks disagree and show the skew is <i>larger</i> than the gap between two related events, so the inversion isn't rare — it's routine. We'll <b>model</b> the fix: stop counting seconds, start counting <b>causality</b> — <b>Lamport clocks</b> (one counter) and <b>vector clocks</b> (one counter per process). We'll <b>trace</b> the chat through both and watch order get restored. And we'll hit the wall that defines the domain: a vector clock's size grows with the number of participants, which at scale is unaffordable — pushing us to <b>hybrid logical clocks</b>. The trade shifts from Lesson 34's routing-freshness to <b>ordering precision vs metadata size &amp; coordination.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0035-logical-clocks.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>A <b>group chat</b> served from two regions (Lesson 23): Alice is on the Virginia server (<b>VA</b>), Bob is on the Frankfurt server (<b>FR</b>). Every message is written locally and replicated to the other region, and each client sorts the messages it has by a timestamp so everyone sees the same thread. Here's the whole bug in one exchange:</p>
+<ul>
+  <li>Alice posts <b>"Anyone free at 3pm?"</b> — call it the <b>question</b>.</li>
+  <li>Bob's phone shows it. Bob reads it, then types <b>"Yes!"</b> — call it the <b>reply</b>. The reply <i>happened after</i> the question in the only sense that matters: Bob wrote it <b>because</b> he saw the question.</li>
+  <li>Every client sorts by the wall-clock timestamp each server stamped on its message. And on some phones, <span class="key">the reply shows up <i>above</i> the question.</span></li>
+</ul>
+<p>Nobody's code is buggy in the ordinary sense. The servers just disagree about what time it is. First the picture, then why it's not a fluke.</p>
+
+<div class="diagram"><pre>
+  CAUSAL ORDER without a trusted clock: which message came first?
+
+  real time --> Alice@VA posts Q .............. Bob@FR reads Q, then replies "Yes!"
+                    |  (the question)                |  (the reply, happened AFTER)
+  wall stamp:  VA clock 10:00:00.000         FR clock is 50 ms SLOW -> 09:59:59.970
+                     \                             /
+                      \      sort by wall stamp    /
+                       v                          v
+              DISPLAY:  "Yes!"                 (09:59:59.970)   <- reply shown FIRST  (WRONG)
+                        "Anyone free at 3pm?"  (10:00:00.000)
+
+  The bug: clock skew (tens of ms) is LARGER than the gap between two causally
+  linked events (Bob replied ~20 ms after reading). So wall-clock order INVERTS
+  the real order. The clock is not a reliable "which came first?" oracle.
+
+  Fix: don't timestamp with a wall clock. COUNT causality instead of seconds.
+     Lamport clock : one counter, take max+1 on receive -> respects "happened-before"
+     Vector clock  : one counter PER process            -> also DETECTS "concurrent" (O(N))
+</pre></div>
+
+<p class="note"><span class="key">A wall clock answers "what time is it here?" — a genuinely local question. It does <i>not</i> answer "did this event happen before that one on another machine?"</span> Those are different questions, and we spent three lessons pretending the first answered the second. A <b>logical clock</b> answers the second directly: it's a counter that tracks the <i>order events depend on each other</i>, not the seconds that elapsed.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Wall-clock / physical time</b> — the "what time is it?" clock (10:00:00.000). Local and useful; untrustworthy as a cross-machine ordering key.</li>
+  <li><b>Clock skew</b> — how far apart two machines' wall clocks are at the same instant (Lesson 23). Tens of milliseconds is normal even with time sync.</li>
+  <li><b>Happened-before (written <code>a &rarr; b</code>)</b> — the only ordering we can actually justify: <code>a &rarr; b</code> if <i>a</i> could have <b>influenced</b> <i>b</i>. Three ways that happens (below).</li>
+  <li><b>Concurrent (written <code>a ∥ b</code>)</b> — neither <code>a &rarr; b</code> nor <code>b &rarr; a</code>. The two events couldn't have known about each other; <i>no real order exists between them.</i></li>
+  <li><b>Logical clock</b> — a counter attached to events so that comparing counters tells you something true about <code>&rarr;</code>, without any wall clock.</li>
+  <li><b>Lamport timestamp</b> — a single integer counter per process, bumped on every event and <code>max+1</code>'d on every receive. Gives a <b>total order</b> consistent with <code>&rarr;</code>.</li>
+  <li><b>Vector clock</b> — one counter <i>per process</i> (a vector). Can additionally tell <b>concurrent</b> from <b>causal</b> — at the cost of <code>O(N)</code> size.</li>
+  <li><b>Hybrid logical clock (HLC)</b> — a logical clock with physical time bolted on, so a timestamp is both causal <i>and</i> close to wall-clock, in <code>O(1)</code> space.</li>
+</ul>
+
+<h2>Move 1 — Estimate: how far apart are clocks, and how close together are related events?</h2>
+<p>The whole bug is one inequality: does clock <b>skew</b> exceed the <b>gap</b> between two causally linked events? If it does, wall-clock order will invert causal order. Put real numbers on both sides.</p>
+
+<div class="card calc">
+  <p><b>Worked: how far clocks drift.</b> A cheap quartz oscillator drifts by roughly <b>30&ndash;50 parts per million</b>. Take 50 ppm: <code>50 µs per second × 86,400 s/day ≈ <b>4.3 seconds/day</b></code> of drift <i>if left alone</i>. Time-sync (NTP) fights this by nudging the clock toward a reference, but over a real network it only pins you to within <b>a few to tens of milliseconds</b> — and worse, a correction can step the clock <b>backward</b>, so even "later on the same machine" isn't guaranteed a bigger number. Call the cross-machine disagreement <b>~50 ms</b>: unremarkable, and the FR server in our chat is exactly that far behind VA.</p>
+  <p><b>Worked: how close related events are.</b> Bob reads the question and fires back "Yes!" — that's a human at a phone, but the two <i>server writes</i> are milliseconds apart once the network is involved: a local write is ~1 ms (Lesson 12), a cross-region hop is ~90 ms (Lesson 23), and two events one process does back-to-back can be <b>microseconds</b> apart. The gap between causally linked events is routinely <b>smaller than the skew.</b></p>
+  <p><b>The inversion, exactly.</b> Alice's question is stamped at VA's clock: <code>10:00:00.000</code>. Bob replies <b>20 ms</b> later in real time, but FR's clock runs <b>50 ms behind</b>, so FR stamps the reply <code>(10:00:00.000 + 20 ms) − 50 ms = <b>09:59:59.970</b></code>. The reply's timestamp is <b>30 ms before</b> the question's. Sort ascending and <span class="key">the answer prints above the question — every time this pattern occurs, not occasionally.</span></p>
+</div>
+
+<p class="note why"><b>Why "just sync the clocks better" doesn't save you.</b> You can shrink skew (better NTP, or Google-style GPS/atomic "TrueTime"), but you can never drive it to zero — the speed of light alone (Lesson 14) means a reference signal takes real time to arrive, so a residual uncertainty always remains. As long as skew &gt; 0, <i>some</i> pair of events closer together than the skew will invert. Tightening the clock lowers the <i>rate</i> of the bug; it never removes the <i>possibility</i>. The only robust fix is to stop asking the wall clock a question it fundamentally cannot answer. <span class="key">Ordering is not a property of time — it's a property of information flow.</span></p>
+
+<h2>Move 2 — Model: count causality, not seconds</h2>
+<p>Define the one relation we can actually defend. <b>Happened-before (<code>&rarr;</code>)</b> holds in exactly three cases:</p>
+<div class="card">
+  <p style="margin:.2rem 0">1. <b>Same process, in order.</b> If <i>a</i> and <i>b</i> happen on the same process and <i>a</i> comes first, then <code>a &rarr; b</code>.</p>
+  <p style="margin:.2rem 0">2. <b>Send before receive.</b> If <i>a</i> is sending a message and <i>b</i> is receiving that same message, then <code>a &rarr; b</code> (the receive can't precede its own send).</p>
+  <p style="margin:.2rem 0">3. <b>Transitivity.</b> If <code>a &rarr; b</code> and <code>b &rarr; c</code>, then <code>a &rarr; c</code>.</p>
+  <p style="margin:.2rem 0; color:var(--muted)">If <i>none</i> of these link <i>a</i> and <i>b</i> in either direction, they are <b>concurrent</b> (<code>a ∥ b</code>) — they happened without knowledge of each other, and forcing an order between them would be inventing a fact.</p>
+</div>
+<p>Notice this needs no clock at all — only "who did what in what order, and who sent/received what." Our chat: Alice's question is a send, Bob's read is the matching receive, so <code>question &rarr; Bob-reads</code>; Bob's reply is later on Bob's process, so <code>Bob-reads &rarr; reply</code>; by transitivity <code>question &rarr; reply</code>. <b>The reply happened-after the question, provably, without trusting a single timestamp.</b> Now we need a number that captures this.</p>
+
+<h3>Lamport clock — one counter that never lies about <code>&rarr;</code></h3>
+<p>Each process keeps one integer <code>L</code>, starting at 0. Three rules:</p>
+<div class="diagram"><pre>
+  LAMPORT rules (one counter L per process):
+    local event   :  L = L + 1
+    send message  :  L = L + 1 ;  attach L to the message
+    receive msg m :  L = max(L, m.L) + 1      <-- the "+1 past the max" is the whole trick
+
+  Chat trace  (VA = Alice's server, FR = Bob's server):
+    VA: Alice posts Q      L_VA: 0 -> 1      Q carries L=1
+    (Q replicates to FR)
+    FR: receive Q          L_FR: max(0,1)+1 = 2
+    FR: Bob posts reply    L_FR: 2 -> 3      reply carries L=3
+
+  Sort by Lamport:  Q(1)  <  reply(3)   -> QUESTION first. Order RESTORED.
+  (Wall clocks said reply 09:59:59.970 < question 10:00:00.000 — Lamport ignores them.)
+</pre></div>
+<p>The guarantee is exactly what we need and no more: <span class="key">if <code>a &rarr; b</code> then <code>L(a) &lt; L(b)</code>.</span> Causally-later events always get bigger numbers, so sorting by Lamport time <i>never</i> puts an effect before its cause. To turn it into a <b>total order</b> (no ties, so every client sorts identically), break equal counters by a fixed tiebreaker like process id: <code>(L, process_id)</code>.</p>
+
+<p class="note why"><b>Name the trade-off — and Lamport's one blind spot.</b> The arrow only runs one way. <code>a &rarr; b</code> guarantees <code>L(a) &lt; L(b)</code>, but the converse is <b>false</b>: <code>L(a) &lt; L(b)</code> does <i>not</i> mean <code>a &rarr; b</code>. Two totally unrelated events on different processes can land on <code>1</code> and <code>3</code> just as our causal pair did — Lamport can't tell "caused" from "coincidentally smaller." So a Lamport clock gives you a safe <b>total order</b> (great for a chat, or a tiebreak) but it <b>cannot detect concurrency.</b> That matters the moment ordering feeds a <i>decision</i> — like Lesson 23's conflict resolution, which must know whether two cart writes were concurrent (merge them) or one saw the other (keep the later). For that you need more bits.</p>
+
+<h3>Vector clock — one counter per process, so you can see "concurrent"</h3>
+<p>Give each process its own slot in a vector <code>V</code> of length <code>N</code> (one entry per process), all starting at 0. Rules mirror Lamport, but you bump only <i>your own</i> slot and merge element-by-element on receive:</p>
+<div class="diagram"><pre>
+  VECTOR rules (vector V[1..N], here N=3: [A, B, C]):
+    local/send    :  V[self] = V[self] + 1 ;  attach the whole vector
+    receive msg m :  V = elementwise-max(V, m.V) ;  then V[self] = V[self] + 1
+
+  Trace with a THIRD person, Carol@C, who posts something unrelated:
+    A: Alice posts Q            V_A = [1,0,0]     Q carries [1,0,0]
+    B: receive Q, then reply    V_B = max([0,0,0],[1,0,0]) = [1,0,0], then B++ = [1,1,0]
+                                Bob posts reply -> B++ = [1,2,0]   reply carries [1,2,0]
+    C: Carol posts (saw neither)  V_C = [0,0,1]                    carol carries [0,0,1]
+
+  COMPARE (V < W means every slot <= and not all equal):
+    Q[1,0,0]  vs  reply[1,2,0]   : 1<=1, 0<=2, 0<=0, not equal  -> Q  ->  reply   (CAUSAL)
+    Q[1,0,0]  vs  carol[0,0,1]   : Q has A=1>0 but carol has C=1>0  -> NEITHER      (CONCURRENT)
+</pre></div>
+<p>Now the comparison carries real meaning. <code>V(a) &lt; V(b)</code> in every slot ⟹ <code>a &rarr; b</code>. If neither vector is <code>&le;</code> the other, the events are <b>concurrent</b> — and the system <i>knows</i> it. In our trace, the reply is correctly ordered after the question, and Carol's unrelated message is correctly flagged concurrent with both, so a client is free to place it anywhere without being "wrong." <span class="key">Lamport would have handed Carol's message some number and implied an order that doesn't exist; the vector clock refuses to invent one.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0"><b>The two logical clocks, side by side.</b></p>
+  <table style="margin:.4rem 0 0">
+    <tr><th>Property</th><th>Lamport</th><th>Vector</th></tr>
+    <tr><td>Size per event</td><td><code>O(1)</code> — one integer</td><td><code>O(N)</code> — one integer per process</td></tr>
+    <tr><td><code>a &rarr; b ⟹</code> smaller stamp?</td><td>yes</td><td>yes</td></tr>
+    <tr><td>smaller stamp <code>⟹ a &rarr; b</code>?</td><td><b>no</b> (can't tell)</td><td>yes</td></tr>
+    <tr><td>Detects <b>concurrent</b>?</td><td><b>no</b></td><td>yes</td></tr>
+    <tr><td>Good for</td><td>a total order / tiebreak (chat, logs)</td><td>conflict detection (Lesson 23 carts, Dynamo)</td></tr>
+  </table>
+</div>
+
+<p class="note why"><b>Name the trade-off — ordering precision vs metadata size.</b> The extra power of the vector clock — <i>detecting</i> concurrency, not just avoiding inversions — is bought with <code>N</code> counters on every event and every message instead of one. That's not free, and Move 4 is where it bites. This is the same shape as every lesson: you pay for more truth with more bytes.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Two runs settle what each clock is for.</p>
+
+<h3>Path A — the reply and the question (a genuine cause, must be ordered)</h3>
+<div class="diagram"><pre>
+  Wall clock:   Q = 10:00:00.000    reply = 09:59:59.970   -> sorts reply, Q   (INVERTED)
+  Lamport:      Q = 1               reply = 3              -> sorts Q, reply   (CORRECT)
+  Vector:       Q = [1,0,0]         reply = [1,2,0]        -> Q < reply, CAUSAL (CORRECT)
+  -> Both logical clocks fix the visible bug: an effect never sorts before its cause,
+     because the receive did max+1 PAST the question's stamp. The clock was the problem;
+     removing it from the ordering decision removes the inversion.
+</pre></div>
+
+<h3>Path B — Carol's unrelated message (truly concurrent, must NOT be forced)</h3>
+<div class="diagram"><pre>
+  Carol posted without seeing Alice's question. Real relation: CONCURRENT.
+  Lamport:  Q = 1,  carol = 1  (say) -> a tiebreak by process id INVENTS an order.
+            Harmless for a chat's display, DANGEROUS if a conflict resolver reads it as
+            "one happened before the other" (Lesson 23's lost-update, silently).
+  Vector:   Q = [1,0,0],  carol = [0,0,1] -> neither <= the other -> CONCURRENT, and the
+            system KNOWS. A cart resolver now MERGES (union) instead of dropping a write.
+  -> Same events, and only the vector clock tells the truth about whether an order exists.
+     Precision is exactly the ability to say "these two are concurrent — do not pick a winner."
+</pre></div>
+<p>Path B is the whole reason both clocks exist rather than one. If all you need is a stable display order, Lamport's single integer is plenty. If an <i>automated decision</i> hangs on whether two writes were concurrent — Lesson 23's add-vs-remove cart, a Dynamo-style store reconciling replicas — you must be able to <i>detect</i> concurrency, and only the vector clock can. <span class="key">Choosing between them is choosing how much you need to know: "a safe order" or "the actual causal structure."</span></p>
+
+<h2>Move 4 — Find the first bottleneck: the vector grows with the crowd</h2>
+<p>The vector clock's power is one counter <b>per process</b>. That word "process" is doing enormous work, and it's where the design breaks under scale.</p>
+
+<div class="card calc">
+  <p><b>Pressure 1 — <code>O(N)</code> becomes <code>O(everyone)</code>.</b> If the processes are your <b>servers</b>, <code>N</code> is small: our chat's <code>N=3</code> is a 24-byte vector, and even Lesson 23's handful of regions is fine. But causality often has to be tracked <b>per actor</b>, not per server — in a collaborative document, "did this edit see that edit?" is a question about <i>users</i>. With <b>1,000,000</b> users, a vector clock is <code>1,000,000 × 8 bytes = <b>8 MB</b></code> of metadata — attached to every single-character edit. <span class="key">You'd ship 8 MB to order one keystroke.</span> The thing you added to save order now dwarfs the data it orders.</p>
+  <p><b>Pressure 2 — the vector never shrinks.</b> Entries for departed actors don't leave on their own (they might still be causally referenced), so the vector accretes forever as membership churns (Lesson 34's fleet turnover, in metadata form). Real systems prune with schemes like <b>dotted version vectors</b>, or track only per-<i>replica</i> entries (<code>N</code> = a few servers) rather than per-client — trading some precision for a bounded size.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The escape — hybrid logical clocks (HLC), <code>O(1)</code> and wall-clock-close.</b> Lamport is <code>O(1)</code> but its numbers mean nothing to a human and drift away from real time. HLC keeps a pair <code>(pt, c)</code>: a <b>physical</b> component <code>pt</code> and a small logical <b>counter</b> <code>c</code>. On any event, <code>pt</code> jumps to <code>max(own pt, physical clock now, any received pt)</code>; if that max didn't advance <code>pt</code>, bump <code>c</code>, else reset <code>c=0</code>. Packed into 64 bits (say 48 bits of milliseconds + 16 bits of counter), it is <b>one machine word.</b></p>
+  <p>What you get: <span class="key">if <code>a &rarr; b</code> then <code>HLC(a) &lt; HLC(b)</code> (causality respected, like Lamport), <i>and</i> the timestamp stays within clock-skew of real wall-clock time</span> (so it's meaningful to humans and usable as a rough "when"). That directly repairs the clocks Lessons 22/23/34 leaned on: a lease or a version stamp that is monotonic under causality <i>and</i> readable as a time. The cost, paid honestly: HLC gives a <b>total order</b> like Lamport, so on its own it still <b>cannot detect concurrency</b> — for that you're back to a (bounded) vector. Real databases (e.g. CockroachDB) use HLC for exactly this reason: <code>O(1)</code>, causal, and close to real time.</p>
+</div>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — ordering by wall-clock timestamp across machines.</b> The original bug. Any "sort by <code>created_at</code>" or "bigger timestamp wins" (Lesson 23 LWW) across servers silently inverts causal order whenever two related events are closer together than the clock skew. If order must respect causality, order by a <i>logical</i> clock, not a physical one.</li>
+  <li><b>Trap 2 — reading a Lamport (or HLC) order as causality.</b> A total order tells you a <i>safe</i> sequence, not that <code>a</code> actually influenced <code>b</code>. Feeding <code>L(a) &lt; L(b)</code> into a conflict resolver as "a happened before b" re-creates Lesson 23's lost update: two concurrent writes get a fake order and one is dropped. Use a vector clock when the <i>decision</i> depends on concurrency.</li>
+  <li><b>Trap 3 — a per-client vector clock at scale.</b> <code>O(N)</code> is fine when <code>N</code> is your servers and fatal when <code>N</code> is your users (the 8 MB-per-keystroke wall). Track per-replica, prune with dotted version vectors, or drop to an <code>O(1)</code> clock (Lamport/HLC) if you don't truly need concurrency detection.</li>
+  <li><b>Trap 4 — thinking a logical clock removes the need for real time.</b> It orders events; it does not tell you the actual wall-clock moment, and it can't enforce a real-time deadline (a Lesson 22 lease still needs physical time to expire). HLC is the bridge precisely because it carries <i>both</i> — use it when you need an order that is also roughly "when."</li>
+</ul>
+
+<table>
+  <tr><th>Approach</th><th>What it gives</th><th>What it costs</th></tr>
+  <tr><td>Wall-clock timestamp</td><td>a real "when", zero new machinery</td><td>skew inverts causal order across machines; can even run backward</td></tr>
+  <tr><td>Lamport clock</td><td><code>O(1)</code> total order that never inverts <code>&rarr;</code></td><td>can't detect concurrency; number is meaningless as a time</td></tr>
+  <tr><td>Vector clock</td><td>detects concurrent vs causal — the full structure</td><td><code>O(N)</code> metadata; grows/accretes with participants</td></tr>
+  <tr><td>Hybrid logical clock</td><td><code>O(1)</code>, causal, <i>and</i> close to real wall-clock time</td><td>total order only — still no concurrency detection alone</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We took a bug every distributed system eventually ships — <b>a chat reply printed above the question it answers</b> — and found the cause was not a code defect but a category error: <b>sorting by a wall clock, which is a local "what time is it?" and not a cross-machine "what came first?".</b> <b>Estimate</b> priced the two sides of the one inequality that produces the bug: clocks disagree by <b>tens of milliseconds</b> (drift ~4.3 s/day unchecked, NTP pins only to ~ms and can step backward), while causally linked events are <b>microseconds to milliseconds</b> apart — so skew &gt; gap, and the inversion is routine, not rare (FR 50 ms slow + a 20 ms reply = a stamp 30 ms <i>before</i> the question). <b>Model</b> gave the fix: define <b>happened-before</b> from information flow alone (same-process order, send-before-receive, transitivity) and count it. <b>Lamport clocks</b> (<code>max+1</code> on receive) give an <code>O(1)</code> <b>total order</b> that never sorts an effect before its cause — but the arrow runs one way, so they <b>cannot detect concurrency</b>. <b>Vector clocks</b> (one counter per process, elementwise-max on receive) can tell <b>concurrent</b> from <b>causal</b> — at <code>O(N)</code> size. <b>Tracing</b> the reply (a real cause both clocks order correctly) and Carol's unrelated message (truly concurrent, which only the vector clock refuses to force into a fake order) showed the precise difference: precision <i>is</i> the ability to say "these two are concurrent — don't pick a winner," and it's exactly what Lesson 23's conflict resolution needs. The <b>first bottleneck</b>: the vector's <code>O(N)</code> is fine when <code>N</code> is servers and fatal when <code>N</code> is users — <code>1M × 8 B = <b>8 MB</b></code> of metadata to order one keystroke, and it never shrinks — pushing us to <b>hybrid logical clocks</b>: <code>O(1)</code>, causal like Lamport, <i>and</i> within clock-skew of real time, which is the honest repair for the wall clocks Lessons 22/23/34 trusted (though HLC alone, being a total order, still can't detect concurrency — bounded/pruned vectors do that). The real lesson: <span class="key">order is not a property of time, it's a property of who-knew-what; when you need "which came first?" across machines, count causality, and choose Lamport, a vector clock, or an HLC by exactly how much of the causal structure your decision depends on. Ordering precision vs metadata size &amp; coordination.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson zooms out from ordering to blast-radius — the tool every failure lesson has pointed at:</b></p>
+  <p style="margin:.2rem 0">• <b>Cell-based architecture:</b> Lesson 7's bulkhead, Lesson 28's bounded queues, and Lesson 31's canary all whispered the same idea — <i>contain the damage</i>. We'll make it structural: partition the <b>whole stack</b> (load balancer + app + data) into independent <b>cells</b>, route each user to exactly one cell, so a bad deploy, a poison input, or a hot tenant takes down <b>1/N of users, not all of them</b>. Cell sizing, routing and placement, and the <b>shuffle-sharding</b> refinement that shrinks the odds any two tenants share a fate. The trade shifts from <b>ordering precision vs metadata size</b> to <b>blast-radius isolation vs cross-cell coordination &amp; overhead.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">wall-clock / physical time</span>
+    <span class="pill">clock skew</span>
+    <span class="pill">clock drift</span>
+    <span class="pill">happened-before (→)</span>
+    <span class="pill">concurrent (∥)</span>
+    <span class="pill">logical clock</span>
+    <span class="pill">Lamport timestamp</span>
+    <span class="pill">total order</span>
+    <span class="pill">tiebreak by process id</span>
+    <span class="pill">vector clock</span>
+    <span class="pill">elementwise max</span>
+    <span class="pill">concurrency detection</span>
+    <span class="pill">hybrid logical clock (HLC)</span>
+    <span class="pill">dotted version vector</span>
+    <span class="pill">O(1) vs O(N) metadata</span>
+  </p>
+  <p>That's Lesson 35, built on Lesson 23's clock skew &amp; version vectors (the conflict-detection use of vector clocks), Lesson 22's clock-fragile lease and Lesson 34's TTL (the wall clocks this lesson stops trusting), Lesson 14's speed-of-light floor (why skew can't reach zero), Lesson 6's lost update (what a faked order silently causes), and Lesson 12's disk/latency numbers (how close related events really are). <b>Ask me follow-ups</b> — e.g. "how exactly do dotted version vectors prune dead entries?", "how does CockroachDB use HLC to serve consistent reads?", "what's the difference between a total order and a linearizable order?", "when is Lamport's inability to detect concurrency actually fine?", or "how does Google Spanner's TrueTime sidestep all of this with tight clocks instead of logical ones?" When you're ready, say <b>next</b> and we'll go deeper on <i>Cell-based architecture — containing a failure to 1/N of your users.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "In your two-region chat, Bob reads Alice's question and replies 20 ms later, but Frankfurt's clock runs 50 ms behind Virginia's — so clients sorting by wall-clock timestamp show the reply ABOVE the question. Why is this a structural inevitability, not bad luck?",
+    options: [
+      {t:"Because the clock skew (tens of ms) is larger than the gap between the two causally linked events (~20 ms), so the reply's wall stamp lands BEFORE the question's — and this happens whenever skew exceeds the inter-event gap, which for closely-related events is routine. A wall clock answers 'what time is it here?', not 'which event came first across machines', so it inverts causal order structurally.",
+       ok:true,
+       fb:"Right. The bug is the inequality skew > gap. Related events are often milliseconds or microseconds apart, while machine clocks disagree by tens of ms even with NTP — so the inversion isn't a fluke, it's the expected result of using a local time as a cross-machine ordering key."},
+      {t:"Because Frankfurt's clock is broken; a correctly configured NTP setup would make all servers agree to the exact same instant, and then wall-clock sorting is always correct.",
+       ok:false,
+       fb:"NTP shrinks skew but can't zero it — over a network you're pinned to a few-to-tens of ms, and the speed of light guarantees a residual uncertainty (Lesson 14). As long as skew > 0, any pair of events closer together than the skew still inverts. Better clocks lower the RATE of the bug, never remove the possibility."},
+      {t:"Because messages arrive out of order over the network, so the reply simply reaches the client before the question does.",
+       ok:false,
+       fb:"Network reordering is a real thing, but it's not what's happening here: the client can have BOTH messages in hand and still sort them wrong, because it's sorting by the timestamps the servers stamped — and those timestamps are inverted by clock skew. The problem is the ordering KEY, not delivery order."}
+    ]
+  },
+  {
+    stem: "You switch to Lamport clocks: each server keeps one counter, does max+1 on receive. The question ends up L=1 and the reply L=3, so the reply correctly sorts after the question. A teammate says 'great, so if L(x) < L(y) we now know x happened before y.' What's wrong with that claim?",
+    options: [
+      {t:"The guarantee only runs one way: a → b implies L(a) < L(b), but NOT the converse. Two completely unrelated (concurrent) events on different servers can also land on 1 and 3, so L(x) < L(y) does not mean x influenced y. Lamport gives a safe total order but cannot detect concurrency — reading its order as causality is a real trap.",
+       ok:true,
+       fb:"Exactly. Lamport never sorts an effect before its cause (that's the useful half), but a smaller number can also just be coincidence. If a decision depends on whether two events were concurrent — like merging vs dropping a conflicting write (Lesson 23) — Lamport can't tell you, and treating its order as causal silently re-creates the lost-update bug."},
+      {t:"Nothing is wrong — max+1 guarantees that smaller Lamport numbers always mean the event happened strictly earlier in real causal order, which is the entire point of the algorithm.",
+       ok:false,
+       fb:"That's the converse error. Lamport guarantees causally-later events get bigger numbers, but bigger-number events are NOT necessarily causally later — they might be concurrent. The relation a → b ⟹ L(a)<L(b) is one-directional; you can't read it backwards."},
+      {t:"The claim is wrong because Lamport counters overflow, so eventually L(x) < L(y) wraps around and becomes unreliable.",
+       ok:false,
+       fb:"Overflow is a non-issue at 64 bits and isn't the point. The real flaw is logical, not numerical: even with infinite-precision counters, a smaller Lamport value can't distinguish 'happened before' from 'concurrent'. That's an inherent limit of a single scalar, not an arithmetic artifact."}
+    ]
+  },
+  {
+    stem: "With vector clocks over processes [A, B, C], you observe Alice's question = [1,0,0] and Carol's message = [0,0,1] (Carol never saw the question). How should the system treat these two events, and how does it know?",
+    options: [
+      {t:"As CONCURRENT: neither vector is ≤ the other (the question has A=1>0, Carol's has C=1>0), so neither happened-before the other. The system knows there is no real order between them and must not invent one — e.g. a conflict resolver should merge, not pick a 'winner'.",
+       ok:true,
+       fb:"Correct. Vector comparison: V < W only if every slot ≤ and they differ. Here each has a slot the other beats, so neither dominates → concurrent. That's the extra power over Lamport — the system can SEE that no causal order exists and avoid fabricating one (which is exactly what prevents Lesson 23's silent lost update)."},
+      {t:"The question happened before Carol's message, because A's index (1) comes before C's index (3) in the vector, so process A's events are always ordered before process C's.",
+       ok:false,
+       fb:"Vector-clock ordering has nothing to do with the position of a process in the vector. You compare the vectors elementwise. Neither [1,0,0] nor [0,0,1] is ≤ the other, so they're concurrent — the index order of A vs C is irrelevant."},
+      {t:"They must be given an order anyway — pick the one with the larger sum of components (both sum to 1, so break the tie by process id), because every pair of events needs a definite order.",
+       ok:false,
+       fb:"That's Lamport-style thinking, and it throws away the vector clock's whole advantage. Not every pair NEEDS an order — concurrent events genuinely have none, and forcing one (by sum, or tiebreak) is inventing a fact. The vector clock exists precisely so you can leave concurrent events unordered and merge them instead."}
+    ]
+  },
+  {
+    stem: "Your collaborative editor tracks causality per USER with vector clocks. At 1,000,000 users, each 8-byte-per-slot vector is ~8 MB — attached to every single-character edit. What's the right way to think about this wall, and the fix?",
+    options: [
+      {t:"Vector clocks are O(N) in the number of tracked participants, so when N is your user base the metadata dwarfs the data it orders (8 MB to order one keystroke) and never shrinks as users churn. Drop to an O(1) clock when you don't need concurrency detection: a Lamport clock or, better, an HLC — causal AND close to real wall-clock time — and if you DO need concurrency detection, track per-replica (small N) or prune with dotted version vectors, trading some precision for bounded size.",
+       ok:true,
+       fb:"Right. The cost of vector clocks is O(N), and 'N = every actor' is the trap. The lever is precision-vs-size: if you only need a safe order, an O(1) HLC/Lamport is enough; if you need to detect concurrency, bound N (per-replica, not per-user) or prune. You buy exactly the causal structure your decision requires and no more."},
+      {t:"Just compress the vector — 8 MB of mostly-zero counters gzips to almost nothing, so there's no real problem and no need to change the clock choice.",
+       ok:false,
+       fb:"Compression helps the wire a little but not the model: you still allocate, update, merge, and store an entry per user, the vector still grows without bound as membership churns, and hot edits still carry huge structures. The fix is to reduce N (per-replica tracking, pruning) or switch to an O(1) clock — not to paper over an O(N) design with compression."},
+      {t:"Switch every event to a plain wall-clock timestamp — it's 8 bytes and O(1), which solves the size problem completely.",
+       ok:false,
+       fb:"That's O(1) but it walks straight back into the lesson's opening bug: wall clocks disagree across machines and invert causal order. HLC is the O(1) answer that KEEPS causal correctness (and stays near real time); a bare wall clock trades the size problem for the ordering-inversion problem you started with."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
