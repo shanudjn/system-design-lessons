@@ -535,11 +535,31 @@
     Lamport/HLC order as causality (fake order → L23 lost update); per-client vector at scale;
     thinking a logical clock removes the need for real time (L22 lease still needs physical
     expiry). Trade: ordering precision vs metadata size & coordination. (Lesson 0035)
-36. Cell-based architecture — the ultimate blast-radius tool (L07 bulkhead, L28, L31 all
-    point here): partition the WHOLE stack (LB + app + data) into independent **cells**,
-    route each user to one cell, so a bad deploy, poison input, or hot tenant takes down
-    1/N of users, not all of them. Cell sizing, routing/placement, and the shuffle-sharding
-    refinement. Trade: blast-radius isolation vs cross-cell coordination & overhead.
+36. ✅ **Cell-based architecture** — a multi-tenant SaaS on L27's fleet (286 servers, 40k
+    req/s, 8M tenants) as one shared stack: a single poison query / bad deploy / hot tenant is
+    EVERYONE's problem (8M × 5 min = 40M tenant-minutes, 100% blast radius, for every such
+    incident). Cut the WHOLE stack (LB + app + data) into N independent **cells** that no
+    request may leave → the same failure drops to **1/N** (8 cells = 12.5%, 8× less damage,
+    7/8 physically unreachable from the fault) — stronger than L7 bulkhead / L28 queue / L31
+    canary because the wall is PHYSICAL (no shared queue/pool/row), so it stops ALL failure
+    modes, not one. Model the hard rule (no cross-cell calls or you rebuilt the monolith) + the
+    one un-cellable part = the **router** (tenant→cell, must be dumb + HA + rarely-changed; a
+    router bug is the one bug with 100% blast radius; fixed hash L03/04 vs lookup table for
+    placement flexibility). Size against an overhead **FLOOR** (quorum L10 + headroom L27):
+    near the floor, halving blast radius ~doubles fixed cost (64 cells = 64×8 = 512 nodes ≈ 2×
+    the fleet). Trace a bad deploy (cell = L31 canary unit, deploy unit == blast unit) + a hot
+    tenant (cells cap the SYSTEM at 1/8, but the 1M innocent cell-mates still share its fate =
+    the wall). First wall → **shuffle sharding**: each tenant gets a random SUBSET of k cells,
+    fully co-victim only if whole subsets coincide → rides C(N,k): C(8,2)=28 shrinks the group
+    12.5%→3.6% (3.5×), C(100,5)≈75M → 1-in-75M (the AWS trick; shines on stateless/retriable
+    request plane, hard for stateful data). Four traps: hidden shared component (DB/cache/global
+    lock/config) = correlated failure back to 100%; fat/fragile router; cells sized wrong
+    (too big = no isolation, too small = re-paid floor × N + toil); a GLOBAL op (config push,
+    shared migration, deploy-all-at-once) that skips the cell boundary = 100% blast radius no
+    matter how many cells. Reuses L07 bulkhead, L28/L31 isolation+canary, L27 sizing, L10
+    quorum, L03/04 sharding+consistent-hashing routing, L24 tenant migration, L34 retry-to-
+    another-instance. Trade: blast-radius isolation vs cross-cell coordination & overhead.
+    (Lesson 0036)
 
 ### Advanced topics (next batch — queued so the course never runs dry)
 37. Read/write splitting & CQRS — the L33 pipeline naturally produces separate **read models**;

@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 36 — Cell-Based Architecture: Containing a Failure to 1/N of Your Users</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 36 · Worked Example</div>
+  <h1>Cell-Based Architecture: Containing a Failure to 1/N of Your Users</h1>
+  <p class="lead">Almost every failure lesson has pointed at the same escape hatch without naming it. Lesson 7's <b>bulkhead</b> kept one slow dependency from draining the whole thread pool. Lesson 28's <b>bounded queues</b> kept one overloaded hop from OOM-ing its neighbours. Lesson 31's <b>canary</b> kept a bad deploy off 99% of users. Each one is the same instinct — <i>contain the damage</i> — applied to one layer. This lesson makes it structural and total: cut the <b>whole stack</b> (load balancer + app tier + data store) into independent <b>cells</b>, send each user to exactly one cell, and now a bad deploy, a poison input, or a hot tenant can only take down <b>the users in that cell — 1/N of everyone — not all of them</b>. We'll take one concrete system — Lesson 27's fleet (286 servers, 40,000 req/s) serving <b>8 million tenants</b> — and watch a single poison query that would black out <i>everyone</i> get boxed into one-eighth of them. We'll <b>estimate</b> the blast radius a monolith exposes and how much a cell shrinks it; <b>model</b> the cell and the one shared part you can't cell — the router; <b>trace</b> a bad deploy and a hot tenant through the cells; and hit the wall that a plain cell still leaves — innocent cell-mates share one tenant's fate — which pushes us to the sharp refinement, <b>shuffle sharding</b>. The trade shifts from Lesson 35's ordering precision to <b>blast-radius isolation vs cross-cell coordination &amp; overhead.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0036-cell-based-architecture.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>A <b>multi-tenant SaaS</b> — think a shared analytics or ticketing product — on Lesson 27's tier: <b>286 servers</b>, <b>40,000 req/s</b> at peak, <b>8,000,000 tenants</b> (customer accounts). Today it's a <b>monolith</b> in the deployment sense: one big load-balanced pool of app servers in front of one big (sharded, Lesson 3) database. Every tenant's request can land on any server, and every server talks to the one shared data tier. That sharing is exactly what makes it cheap — and exactly what makes <i>one</i> problem everyone's problem. Here's the whole idea in one picture:</p>
+
+<div class="diagram"><pre>
+  MONOLITH (one shared stack)            CELLS (N independent stacks)
+
+      all 8M tenants                          thin cell router
+            |                          (user -> cell, dumb + HA)
+        [ one LB ]                        /     |     |      \
+            |                          cell 1  cell 2 ...   cell 8
+   [ 286 app servers ]                 [LB ]  [LB ]        [LB ]
+            |                          [app]  [app]        [app]   <- full stack
+     [ one data tier ]                 [ db]  [ db]        [ db]      per cell
+            |
+   one poison query / bad deploy       a poison query / bad deploy
+   /  hot tenant  =>  ALL 8M down      in cell 3  =>  only cell 3's
+        (blast radius 100%)            1M tenants down (blast radius 1/8 = 12.5%)
+
+  A cell is a COMPLETE, self-sufficient copy of the stack. No request crosses
+  a cell boundary. The only shared thing is the router -- kept as dumb and
+  stable as possible, because whatever is shared is the thing that CAN'T be
+  contained.
+</pre></div>
+
+<p class="note"><span class="key">A cell is a full, independent instance of your whole system that a fixed slice of users lives in.</span> The bulkhead in Lesson 7 isolated <i>failures inside one process</i>; a cell isolates <i>everything</i> — a bad deploy, a corrupt row, a runaway query, a memory leak, a config typo — because none of it can reach past the cell's own walls. The price is that everything the cells must <i>agree</i> on now costs coordination, and everything you provision <i>per cell</i> now costs overhead. That tension is the whole lesson.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Blast radius</b> — the fraction of users (or work) a single failure can affect. A monolith's blast radius is 100%; a cell's is <code>1/N</code>. Shrinking it is the entire point.</li>
+  <li><b>Cell</b> — a complete, self-contained copy of the full stack (LB + app + data) that serves a fixed subset of tenants and never depends on another cell to answer a request.</li>
+  <li><b>Cell router</b> — the one thin shared component that maps a user to their cell. Must stay simple and highly available, because it's the part you <i>can't</i> put inside a cell.</li>
+  <li><b>Placement</b> — the decision of which tenant lives in which cell (or which cells). Fixed hashing, or an explicit lookup table for flexibility.</li>
+  <li><b>Correlated failure</b> — a failure that ignores your cell boundaries (a shared dependency, a global config push) and hits many cells at once. The thing that <i>defeats</i> cells.</li>
+  <li><b>Shuffle sharding</b> — assigning each tenant a small <i>random subset</i> of cells instead of one, so that two tenants almost never share their <i>entire</i> set — shrinking the co-victim group far below <code>1/N</code>.</li>
+</ul>
+
+<h2>Move 1 — Estimate: how big is the blast radius, and how much does a cell shrink it?</h2>
+<p>Blast radius is the number that justifies the whole architecture, so price it first. Take one realistic, self-inflicted incident: a tenant sends a pathological query (a giant <code>IN</code> list, an un-indexed scan, Lesson 12's selectivity trap) that saturates the data tier and starves every other request behind it.</p>
+
+<div class="card calc">
+  <p><b>Worked: the monolith blast radius.</b> One shared data tier, so the saturated queue backs up under <i>all</i> 40,000 req/s and every one of the <b>8,000,000</b> tenants sees errors or timeouts. Time to notice, identify the culprit, and roll back or block it (Lesson 31): call it <b>5 minutes</b>. Impact = <code>8,000,000 tenants × 5 min = <b>40,000,000 tenant-minutes</b></code>, and the blast radius is <b>100%</b>. Worse, it's <i>every</i> such incident: a bad deploy, a poison row, a leaked memory bug — all 100%, because there's one stack to break.</p>
+  <p><b>Worked: the same incident, with 8 cells.</b> Split the 8M tenants into 8 cells of <b>1,000,000</b> each, <code>40,000 / 8 = 5,000</code> req/s per cell, <code>286 / 8 ≈ 36</code> servers per cell. The poison query can only reach the data tier of the <i>one cell its tenant lives in</i>. Impact = <code>1,000,000 × 5 min = <b>5,000,000 tenant-minutes</b></code> — exactly <b>1/8</b>, a blast radius of <b>12.5%</b>. Same bug, same 5-minute response, <b>8× less damage</b>, purely because 7/8 of the fleet was structurally unreachable from the fault.</p>
+  <p><b>The general law.</b> Split into <code>N</code> equal cells and any single-stack failure drops from <b>100%</b> to <b>1/N</b> of users. Want the worst incident to touch at most 5% of users? <code>1/N ≤ 0.05 ⇒ N ≥ 20</code> cells. The blast radius is a <i>dial</i>, and <code>N</code> is the knob.</p>
+</div>
+
+<p class="note why"><b>Why this is stronger than every earlier isolation.</b> Lesson 7's bulkhead, Lesson 28's bounded queue, and Lesson 31's canary each isolate <i>one kind</i> of failure at <i>one layer</i>. A cell isolates <i>every</i> kind at <i>every</i> layer at once, because the isolation is physical: there is no shared queue, no shared pool, no shared row for the fault to travel through. <span class="key">You don't have to anticipate the failure mode — the wall stops all of them.</span> That's why cells are called the ultimate blast-radius tool: they turn "what could go wrong?" (unbounded) into "and it'll hit at most <code>1/N</code>" (bounded, no matter what it was).</p>
+
+<h2>Move 2 — Model: the cell, and the one thing you can't cell</h2>
+<p>A cell has one hard rule that gives it all its power: <span class="key">no request may cross a cell boundary.</span> Everything a request needs — app logic, cache, database — lives inside its own cell. The moment cell 3 has to call cell 5 to answer, a failure in cell 5 can take down cell 3, and you've quietly rebuilt the monolith with extra steps. So a cell is a <i>complete</i> stack:</p>
+
+<div class="card">
+  <p style="margin:.2rem 0">1. <b>Its own load balancer</b> — spreads the cell's ~5,000 req/s across the cell's ~36 servers.</p>
+  <p style="margin:.2rem 0">2. <b>Its own app tier</b> — deployed, scaled (Lesson 27), and rolled (Lesson 31) independently of every other cell.</p>
+  <p style="margin:.2rem 0">3. <b>Its own data tier</b> — the tenants in this cell live <i>entirely</i> here (their rows, their cache). A minimum viable data tier still needs a quorum (Lesson 10: 3 nodes) and headroom (Lesson 27), so a cell has a <b>floor</b> — it can't be arbitrarily small.</p>
+  <p style="margin:.2rem 0; color:var(--muted)">The result: a cell can fail, be deployed to, be overloaded, or be taken down for maintenance <i>on its own</i>, and the other <code>N−1</code> cells don't notice.</p>
+</div>
+
+<p>But something has to decide <i>which</i> cell a user belongs to, and that decision can't itself live inside a cell (which cell would you ask?). That's the <b>cell router</b>: a thin shared layer that maps <code>tenant → cell</code>. It is the one component every request touches, which makes it the one place a failure is <i>not</i> contained — so the router earns exactly one job and no more.</p>
+
+<div class="diagram"><pre>
+  CELL ROUTER: keep it dumb, keep it up.
+
+  request(tenant=T)
+       |
+       v
+  cell = placement[T]          <- a lookup, nothing else. Cached, tiny, rarely changes.
+       |                          (or cell = hash(T) % N for fixed placement)
+       v
+  forward to cell's LB         <- from here on, the request never leaves the cell.
+
+  Rules the router must obey (because it is the shared fate):
+    * NO business logic, NO per-request DB calls -> stays fast and never a bottleneck.
+    * Highly available + replicated -> if the router dies, EVERYTHING dies (you moved the SPOF).
+    * Changes rarely (placement is stable) -> so it's the SAFEST thing to run, not the riskiest.
+    * Deployed on its own, most carefully -> a router bug is the one bug with 100% blast radius.
+</pre></div>
+
+<p class="note why"><b>Name the trade-off — placement: fixed hash vs lookup table.</b> Route by <code>hash(tenant) % N</code> and the router is stateless and trivial — but you've re-inherited Lesson 3's resharding pain: change <code>N</code> and ~everyone moves (Lesson 4's consistent hashing softens this, letting you add a cell while moving only <code>~1/N</code> of tenants). Route by an explicit <b>lookup table</b> (<code>tenant → cell</code>) and you gain freedom: place a whale tenant in a roomy cell, migrate a hot tenant out (Lesson 24), pin a customer to a cell near them (Lesson 19) — at the cost of a table you must keep consistent and available. Fixed hashing trades flexibility for simplicity; a lookup table trades simplicity for control. Most large cell systems choose the table, because <i>placement is where you fix hot cells</i>.</p>
+
+<h3>Cell sizing — the floor fights the blast radius</h3>
+<p>More cells means a smaller blast radius (<code>1/N</code>), so why not 1,000 tiny cells? Because each cell carries a <b>fixed overhead</b> that doesn't shrink with load.</p>
+
+<div class="card calc">
+  <p><b>Worked: the overhead floor.</b> Give every cell a minimum footprint regardless of traffic — say <b>8 nodes</b>: a 3-node data quorum (Lesson 10), a small app tier, an LB, plus <code>N−1</code> headroom (Lesson 27). Now spend the 286-server budget:</p>
+  <p style="margin:.3rem 0 .3rem 1rem"><code>N = 8</code>  → <code>286/8 ≈ 36</code> nodes/cell (well above the floor), blast radius <b>12.5%</b>.<br>
+  <code>N = 32</code> → <code>286/32 ≈ 9</code> nodes/cell (right at the floor), blast radius <b>3.1%</b>.<br>
+  <code>N = 64</code> → you'd need <code>64 × 8 = <b>512</b></code> nodes just to floor them — <b>nearly double</b> the fleet you had — to reach a <b>1.6%</b> blast radius.</p>
+  <p>So once cells approach the floor, <b>halving the blast radius roughly doubles the fixed overhead.</b> Bigger cells waste less but expose more; smaller cells expose less but waste more (and bloat the router table and the operational surface — 64 things to patch, monitor, and page on, instead of 8). <span class="key">Cell size is chosen against your incident budget, not picked at random.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off — blast-radius isolation vs overhead.</b> This is the core tension. Smaller cells buy tighter containment and pay in duplicated fixed cost (every cell re-pays for its quorum, its headroom, its control plane) and operational multiplication. The sweet spot is the largest cell whose failure you can still absorb — small enough that losing one is survivable, large enough that you're not paying the floor over and over.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Two runs show the cell doing its job — one for change, one for abuse.</p>
+
+<h3>Path A — a bad deploy (the cell is the canary unit)</h3>
+<div class="diagram"><pre>
+  Deploy v2 across cells, ONE cell at a time (this IS Lesson 31's canary, made physical):
+
+    deploy -> cell 1 ... bake, watch error-rate & p99 vs baseline (Lesson 17)
+        healthy? -> cell 2 -> cell 3 -> ...            poisoned? -> STOP, roll back cell 1
+                                                                    only 1/8 ever saw v2
+
+    Bug in v2 that crashes on a certain input:
+      monolith big-bang : hits 40,000 req/s x 300 s = 12,000,000 requests (Lesson 31)
+      cell-by-cell      : hits ONE cell = ~5,000 req/s, caught at the gate, 7/8 untouched
+  -> The blast unit and the deploy unit are the SAME cell. A deploy can't be more
+     dangerous than one cell, by construction. Cells make Lesson 31's canary the default.
+</pre></div>
+
+<h3>Path B — a hot tenant / poison query (the reason cells exist)</h3>
+<div class="diagram"><pre>
+  Tenant X fires a pathological query that saturates its data tier (Lesson 12 selectivity trap):
+
+    monolith : one shared data tier -> queue backs up under all 40k req/s -> ALL 8M down
+    cells    : X lives in cell 3 -> only cell 3's data tier saturates
+               cells 1,2,4..8 never share a queue, a pool, or a row with X -> untouched
+  -> Blast radius 100% -> 12.5%. But look who's still hurt: EVERY tenant in cell 3
+     (1,000,000 innocent cell-mates) goes down because of ONE abuser. That's the wall.
+</pre></div>
+
+<p>Path A is the happy story: cells make Lesson 31's careful rollout automatic, because the deploy can't outrun the cell boundary. Path B is the honest one: cells cap the damage at <code>1/8</code>, but <i>within</i> that cell, one bad tenant still drags down a million blameless neighbours who happened to be placed beside it. <span class="key">A plain cell isolates the rest of the system from a bad cell — it does not isolate cell-mates from each other.</span> That's the first bottleneck.</p>
+
+<h2>Move 4 — Find the first bottleneck: cell-mates share one tenant's fate → shuffle sharding</h2>
+<p>Plain cells give each tenant <b>one</b> cell, so a noisy tenant takes down <i>everyone</i> in that cell — <code>1/N = 12.5%</code> of users, all fully out. The refinement: give each tenant a small <b>random subset</b> of cells instead of one, and let its client retry across that subset (Lessons 7/34). Now a noisy tenant only degrades <i>its</i> cells, and another tenant is <b>fully</b> down only if <i>every</i> cell in its subset happens to be one the noisy tenant also uses. Combinatorics makes that fantastically unlikely.</p>
+
+<div class="card calc">
+  <p><b>Worked: shuffle sharding with 8 cells, subset size 2.</b> Each tenant is assigned a random pair of cells — a <b>shuffle shard</b>. The number of distinct pairs is <code>C(8,2) = <b>28</b></code>. Suppose abuser <b>X</b> holds cells <code>{A, B}</code> and degrades both. Another tenant <b>Y</b> is <b>totally</b> down only if <i>both</i> of Y's cells sit inside <code>{A, B}</code> — i.e. Y's pair <i>is</i> <code>{A, B}</code> exactly. Probability = <code>1 / 28 ≈ <b>3.6%</b></code>. Every other tenant shares <i>at most one</i> cell with X, keeps its <b>other</b> cell healthy, and its client just retries there — degraded, not down.</p>
+  <p><b>Compare.</b> Plain cells: X's single cell holds <code>1/8 = <b>12.5%</b></code> of tenants, <i>all fully down</i>. Shuffle sharding: only <code>1/28 ≈ <b>3.6%</b></code> fully down — a <b>3.5× smaller</b> co-victim group — and even those had a healthy second cell until it too was theirs-and-only-theirs.</p>
+  <p><b>Now scale it.</b> The isolation grows explosively with more cells and slightly bigger subsets, because it rides <code>C(N,k)</code>:</p>
+  <p style="margin:.3rem 0 .3rem 1rem"><code>N=26, k=5</code> → <code>C(26,5) = <b>65,780</b></code> distinct shards → two tenants fully overlap <b>1 in 65,780</b>.<br>
+  <code>N=100, k=5</code> → <code>C(100,5) = <b>75,287,520</b></code> → <b>1 in 75 million</b>.</p>
+  <p><span class="key">With enough cells, a single bad tenant is almost mathematically guaranteed to share a full fate with no one.</span> This is the same trick AWS uses to isolate customers on shared fleets.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — shuffle sharding vs statefulness &amp; placement.</b> Shuffle sharding is nearly free isolation for <i>stateless</i> work you can retry across a subset (routing a request to any of your <code>k</code> cells). It's much harder for <i>stateful</i> data, because a tenant's rows would have to live in all <code>k</code> cells (replication cost) or the "subset" applies only to the request layer over a shared store (weaker isolation). So shuffle sharding shines on the request/compute plane; the data plane usually keeps one home cell per tenant plus explicit migration. You buy combinatorial isolation with the bookkeeping of per-tenant subsets — <b>more isolation for more placement complexity.</b></p>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — a hidden shared component re-couples the cells.</b> One shared database, one shared cache, one global lock (Lesson 22), one shared config or feature-flag service that every cell reads live — any of these is a <b>correlated failure</b> waiting to happen: it blips, and all <code>N</code> cells go down together, blast radius back to 100%. The entire value of cells is <i>independence</i>; audit relentlessly for anything on the request path that lives outside the cells.</li>
+  <li><b>Trap 2 — a fat or fragile router.</b> The router is shared fate, so it must be the <i>dumbest, most stable</i> thing you run: a cached lookup, no per-request DB calls, no business logic, replicated and generously provisioned. Put logic in it and it becomes the bottleneck and the SPOF you built cells to escape. Deploy it on its own cadence, most carefully — a router bug is the one bug with 100% blast radius.</li>
+  <li><b>Trap 3 — cells sized wrong.</b> Too big and the blast radius barely shrinks (an 8M-user "cell" isn't isolation). Too small and the fixed floor (quorum + headroom) is re-paid <code>N</code> times, the router table bloats, and you have <code>N</code>× the operational toil. Size to the largest failure you can absorb, not to a round number.</li>
+  <li><b>Trap 4 — a global operation that skips the cell boundary.</b> A fleet-wide config push, a shared schema migration (Lesson 24), or a "deploy to all cells at once" throws away the cell-as-canary property and re-creates the correlated failure. If it touches all cells simultaneously, it has 100% blast radius no matter how many cells you have — roll <i>everything</i> cell by cell, including config and data changes.</li>
+</ul>
+
+<table>
+  <tr><th>Approach</th><th>Blast radius of one failure</th><th>What it costs</th></tr>
+  <tr><td>Monolith (one shared stack)</td><td><b>100%</b> — everyone</td><td>cheapest; no isolation, no independent deploy</td></tr>
+  <tr><td>Cells, one per tenant group</td><td><code>1/N</code> of users (all in that cell)</td><td>per-cell fixed overhead; cross-cell ops get expensive</td></tr>
+  <tr><td>Cells + shuffle sharding</td><td><code>1/C(N,k)</code> fully co-victim</td><td>per-tenant subset bookkeeping; hard for stateful data</td></tr>
+  <tr><td>The router (shared)</td><td><b>100%</b> if it fails</td><td>must be dumb + HA; the one thing you can't cell</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We took the instinct every failure lesson has circled — <b>contain the damage</b> — and made it structural and total. A <b>monolith</b> shares one stack, so a single poison query, bad deploy, or hot tenant is <i>everyone's</i> problem: <b>estimate</b> put that at <code>8,000,000 tenants × 5 min = 40,000,000 tenant-minutes</code>, a <b>100%</b> blast radius, for <i>every</i> such incident. Cutting the whole stack into <code>N</code> independent <b>cells</b> — each a complete, self-sufficient LB + app + data tier that no request may leave — drops that to <code>1/N</code>: eight cells turned the same incident into <b>12.5%</b>, <b>8× less damage</b>, because 7/8 of the fleet was physically unreachable from the fault. <b>Model</b> gave the one hard rule (no cross-cell calls, or you've rebuilt the monolith) and the one part you can't cell — the <b>router</b>, which must stay dumb, HA, and rarely-changed because it's the only shared fate — plus the sizing law: a per-cell overhead <b>floor</b> (quorum + headroom) means that near the floor, halving the blast radius roughly <b>doubles</b> the fixed cost, so cell size is chosen against your incident budget. <b>Tracing</b> a bad deploy showed the deploy unit and the blast unit are the same cell, making Lesson 31's canary automatic; tracing a hot tenant showed the wall — cells isolate the <i>rest of the system</i> from a bad cell, but the <b>1,000,000 cell-mates</b> still share that tenant's fate. The <b>first bottleneck</b> pushed us to <b>shuffle sharding</b>: give each tenant a random <i>subset</i> of cells, and a noisy neighbour fully knocks out another tenant only if their whole subsets coincide — <code>C(8,2)=28</code> pairs shrinks the co-victim group from <b>12.5%</b> to <b>3.6%</b>, and <code>C(100,5)≈75,000,000</code> shrinks it to <b>1 in 75 million</b>. The real lesson: <span class="key">every shared thing is a shared fate, so isolation is bought by <i>not sharing</i> — partition the whole stack into cells to bound any failure to 1/N, shuffle-shard to bound it far below that, and guard the few things you can't cell (the router, global operations) as the places 100% still lives. Blast-radius isolation vs cross-cell coordination &amp; overhead.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson turns a byproduct of isolation into a first-class pattern:</b></p>
+  <p style="margin:.2rem 0">• <b>Read/write splitting &amp; CQRS:</b> Lesson 33's pipeline (CDC + outbox) and Lesson 15's precomputed feeds already produced separate <b>read models</b> beside the write model — we'll formalize it. One write side optimized for correctness and consistency (Lessons 6/25) feeds, via events (Lesson 33), many purpose-built read sides — search (Lesson 16), cache (Lesson 2), denormalized views (Lessons 15/29) — so <b>commands</b> and <b>queries</b> become two shapes of the same data with independent scaling. When the split earns its keep, and when it's just accidental complexity. The trade shifts from <b>blast-radius isolation</b> to <b>read/write optimization vs the eventual-consistency gap between the two sides.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">blast radius</span>
+    <span class="pill">cell</span>
+    <span class="pill">cell-based architecture</span>
+    <span class="pill">cell router</span>
+    <span class="pill">placement</span>
+    <span class="pill">fixed hashing vs lookup table</span>
+    <span class="pill">cell sizing / overhead floor</span>
+    <span class="pill">cell as canary unit</span>
+    <span class="pill">hot tenant / noisy neighbour</span>
+    <span class="pill">correlated failure</span>
+    <span class="pill">shared fate</span>
+    <span class="pill">shuffle sharding</span>
+    <span class="pill">C(N,k) combinations</span>
+    <span class="pill">1/N isolation</span>
+  </p>
+  <p>That's Lesson 36, built on Lesson 7's bulkhead (the same instinct, one layer), Lesson 28's bounded queues and Lesson 31's canary (isolation the cell generalizes — and the deploy unit it becomes), Lesson 27's fleet sizing (cell sizing is fleet sizing per cell), Lesson 10's quorum (the per-cell floor), Lesson 3's sharding and Lesson 4's consistent hashing (placement and minimal-movement routing), Lesson 24's migrations (moving a hot tenant between cells), and Lesson 34's retry-to-another-instance (how a shuffle-shard client survives a degraded cell). <b>Ask me follow-ups</b> — e.g. "how do you migrate a tenant from one cell to another with zero downtime?", "what exactly makes a control plane a correlated failure across cells?", "how does AWS pick cell size in practice?", "when is shuffle sharding impossible because the data can't be replicated across the subset?", or "how do cells interact with multi-region — one cell per region, or cells within a region?" When you're ready, say <b>next</b> and we'll go deeper on <i>Read/write splitting &amp; CQRS — two shapes of the same data.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your monolith serves 8M tenants on one shared stack; a single tenant's pathological query saturates the shared data tier and everyone times out. You split into 8 equal cells. Why does this cap the damage, and at what?",
+    options: [
+      {t:"Each cell is a complete, independent stack (its own LB, app tier, and data tier) that no request may leave, so a saturating query can only reach its own cell's data tier — the other 7 cells share no queue, pool, or row with it. The blast radius drops from 100% to 1/8 ≈ 12.5% of tenants, for this failure and any other single-stack failure, because the isolation is physical rather than failure-specific.",
+       ok:true,
+       fb:"Right. The power of a cell is that the wall is structural: there's no shared component for the fault to travel through, so you don't have to anticipate the failure mode — a bad deploy, a poison row, or a hot tenant all get capped at 1/N. Eight cells means 8× less damage from the same incident."},
+      {t:"Because splitting into 8 cells makes each cell's data tier 8× faster, so the pathological query no longer saturates anything.",
+       ok:false,
+       fb:"Cells don't make anything faster — each cell has ~1/8 the servers (36 of 286) and ~1/8 the traffic. The pathological query still saturates ITS cell's data tier just as before. What changes is reach: the saturation is confined to one cell, so 7/8 of tenants are untouched. Isolation, not speed."},
+      {t:"It doesn't really help — the shared load balancer still sees all 40,000 req/s, so the failure still reaches everyone through the LB.",
+       ok:false,
+       fb:"There is no shared LB in a cell architecture — each cell has its own load balancer, and the only shared component is the thin router that maps tenant → cell (a fast lookup, no per-request DB work). The request never crosses a cell boundary after routing, so the failure can't reach other cells through any shared layer."}
+    ]
+  },
+  {
+    stem: "In a cell architecture, every request first hits a small shared 'cell router' that maps tenant → cell. A teammate wants to enrich the router with per-request permission checks and a live DB lookup to pick the 'best' cell dynamically. Why is this dangerous?",
+    options: [
+      {t:"The router is the one component every request touches and the one thing you can't put inside a cell, so it's shared fate: if it fails or slows, ALL cells are affected — 100% blast radius. Loading it with business logic and per-request DB calls makes it both a bottleneck and the SPOF you built cells to escape. It must stay dumb (a cached lookup), highly available, and rarely changed.",
+       ok:true,
+       fb:"Exactly. Whatever is shared is the thing that can't be contained, and the router is precisely that. Keep its job to a fast, cached tenant→cell lookup with no per-request dependencies, replicate it, and deploy it separately and most carefully — a router bug is the only bug with 100% blast radius."},
+      {t:"It's fine — the router already sees every request, so adding logic there is the cheapest place to put it and can't make things worse.",
+       ok:false,
+       fb:"That reasoning is backwards. Because the router sees every request and is un-cellable, it's the WORST place to add risk: every bit of logic or every dependency you add there gets 100% blast radius and can turn the shared component into the shared outage. Cheap to reach is not the same as safe to change."},
+      {t:"The danger is only that dynamic placement would change which cell a tenant uses, breaking their cached data — the added logic itself is harmless.",
+       ok:false,
+       fb:"Placement churn is a real secondary issue, but the primary danger is that the router is shared fate: per-request DB lookups make it slow and couple it to another system's health, and business logic makes it a source of bugs — any of which now affects all cells at once. The core problem is loading risk onto the one uncontainable component."}
+    ]
+  },
+  {
+    stem: "Plain cells cap a hot tenant's damage at 1/8 of users — but all 1,000,000 innocent cell-mates in that cell still go down. You switch to shuffle sharding: 8 cells, each tenant assigned a random PAIR of cells. How much does this shrink the group that's fully knocked out by one noisy tenant, and why?",
+    options: [
+      {t:"From 12.5% to about 3.6%. With C(8,2)=28 distinct pairs, another tenant is FULLY down only if its pair is exactly the noisy tenant's pair {A,B} — probability 1/28 ≈ 3.6%. Everyone else shares at most one of {A,B}, keeps their other cell healthy, and their client just retries there (degraded, not down). Bigger N and k make C(N,k) explode: C(100,5) ≈ 75M means 1-in-75-million full overlap.",
+       ok:true,
+       fb:"Right. Shuffle sharding rides C(N,k): a tenant is only fully co-victim if its entire subset sits inside the abuser's, and with two size-2 subsets that means they're identical — 1/28. The co-victim group shrinks 3.5× at N=8,k=2 and becomes astronomically small as cells grow. This is the trick AWS uses to isolate customers on shared fleets."},
+      {t:"It doesn't shrink the group at all — each tenant now uses 2 cells instead of 1, so a noisy tenant can take down twice as many cells and therefore twice as many victims.",
+       ok:false,
+       fb:"That inverts the effect. Yes the noisy tenant touches 2 cells, but a VICTIM is only fully down if BOTH of its cells are among the noisy tenant's 2 — which requires an exact match of pairs (1/28), far rarer than sharing the single cell (1/8) in plain cells. Retrying across the healthy second cell is exactly what saves the partial-overlap tenants."},
+      {t:"It shrinks it to zero — with shuffle sharding no two tenants ever share any cell, so a noisy tenant can never affect anyone else.",
+       ok:false,
+       fb:"Not zero. With only 8 cells and pairs, tenants frequently share ONE cell (partial overlap) and are degraded there; and 1/28 share BOTH and are fully down. Shuffle sharding makes full overlap rare, not impossible — it drives the co-victim probability down toward 1/C(N,k), which only approaches zero as the number of cells and subset size grow."}
+    ]
+  },
+  {
+    stem: "You want a tiny blast radius, so you propose 64 cells instead of 8, keeping the same 286-server fleet. Each cell needs a minimum footprint of ~8 nodes (3-node quorum + app tier + LB + headroom). What's the right way to think about this?",
+    options: [
+      {t:"There's a per-cell overhead FLOOR that doesn't shrink with load, so 64 cells would need 64×8 = 512 nodes just to meet it — nearly double the 286 you have — to reach a 1.6% blast radius. Near the floor, halving the blast radius roughly doubles the fixed cost (re-paid quorum + headroom per cell) plus N× the operational toil and a bigger router table. Cell size is chosen against your incident budget, not minimized blindly.",
+       ok:true,
+       fb:"Exactly. Blast radius is 1/N and overhead is ~N×(floor), pulling in opposite directions. Below the floor a cell can't even form a quorum. The sweet spot is the LARGEST cell whose failure you can still absorb — small enough to survive losing one, large enough that you're not re-paying the fixed floor over and over."},
+      {t:"64 cells is strictly better — a smaller blast radius is always worth it, and the fixed overhead is negligible compared to the isolation you gain.",
+       ok:false,
+       fb:"The overhead is not negligible: 64 cells at an 8-node floor need 512 nodes, ~2× your fleet, purely to stand the cells up — before serving a single extra request. Plus 64× the things to patch, monitor, and page on. Smaller cells buy tighter isolation and PAY in duplicated fixed cost; it's a trade, not a free win."},
+      {t:"Cell count doesn't affect cost at all — you're splitting the same 286 servers either way, so 64 cells cost exactly what 8 cells cost.",
+       ok:false,
+       fb:"It would be free only if cells had no fixed floor — but each cell must independently stand up a quorum, an app tier, an LB, and headroom regardless of its traffic. At 64 cells the 286 servers can't even meet 64×8 floors, so you must ADD servers. The floor is precisely why more, smaller cells cost more, not the same."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
