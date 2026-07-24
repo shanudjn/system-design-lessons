@@ -562,11 +562,33 @@
     (Lesson 0036)
 
 ### Advanced topics (next batch — queued so the course never runs dry)
-37. Read/write splitting & CQRS — the L33 pipeline naturally produces separate **read models**;
-    formalize it: one write side optimized for correctness/consistency (L06/25) feeds, via CDC/
-    events (L33), many purpose-built read sides (search L16, cache L02, denormalized views L15/29)
-    — commands vs queries as two shapes of the same data. When the split earns its keep vs when it's
-    accidental complexity. Trade: read/write optimization vs the eventual-consistency gap between them.
+37. ✅ **Read/write splitting & CQRS** — the orders service (L12/24/25/33, 5k writes/s, 50k reads/s,
+    10:1) where one normalized table fails four reads at once. It's SHAPE not just volume: the detail
+    page is a 6-way join ≈ 2.4 ms (six L12 seeks) = 48 cores @ 20k/s vs a denormalized read model's one
+    0.4 ms lookup = 8 cores (6× cut) — but the denormalization that makes the read cheap is exactly what
+    makes a write dangerous (a product-name change fans out to every doc, L15/24 → L06 lost-update), so
+    normalized wins writes, denormalized wins reads, no one table wins both (search wants an inverted
+    index L16, dashboards a columnar store L29, status a cache L02; "normal form is a bet on write:read
+    ratio", L29). **CQRS** = one **write model** owns the truth (normalized, ACID, correctness-first
+    L06/25) + many **read models** each shaped for one query (doc/search/columnar/cache) + a
+    **projection** connecting them by consuming L33's durable outbox/CDC stream **idempotently** (L13,
+    at-least-once L09). Distinct from a **read replica** (L06: byte-for-byte copy → scales VOLUME, SAME
+    shape, can't become an index/warehouse); CQRS changes the SHAPE. Trace a command (commit order +
+    outbox event in ONE txn, ack from write model, project async → each read model updated after its own
+    delay) + four queries (each on its own store, a dashboard scan can't starve checkout — L29/L36
+    isolation). First wall = the **eventual-consistency gap**: write acked before any read model
+    reflects it (tens–hundreds ms, seconds under L06/L09 lag) → **read-your-writes** looks like data
+    loss → fix selectively (serve the user's own fresh data from the write side / return it in the
+    command / wait-for-version monotonic reads / accept lag where harmless), NOT by making projections
+    synchronous (re-couples, can't span stores atomically L32). That gap also marks where CQRS is
+    **accidental complexity**: reads sharing the write's shape + fitting one DB → two models + a pipeline
+    + a gap for no benefit. The ladder: one model → read replica (volume) → materialized view/cache (one
+    derived shape) → full CQRS (divergent shapes) — climb only as far as the reads force. Four traps:
+    dual-writing to each store instead of projecting (L33's trap → diverge on crash), non-idempotent
+    projection (double-apply on redelivery L13), trusting a read model as truth (stale → L06/32 lost
+    update; validate invariants on the write model, rebuild read models by replay L09/29), hiding the
+    gap from the UX. Trade: read/write optimization vs the eventual-consistency gap between them.
+    (Lesson 0037)
 38. Event sourcing — take L33/L25 to its limit: store the **stream of events** as the source of
     truth and DERIVE current state by folding them (the ledger L25 generalized), so history is free,
     replay (L09/33) rebuilds any view, and audit is total — paid for in snapshotting to avoid

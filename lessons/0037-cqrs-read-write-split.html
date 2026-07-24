@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 37 — Read/Write Splitting &amp; CQRS: Two Shapes of the Same Data</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 37 · Worked Example</div>
+  <h1>Read/Write Splitting &amp; CQRS: Two Shapes of the Same Data</h1>
+  <p class="lead">Several lessons already built a second copy of the data beside the first and never named the pattern. Lesson 2 put a <b>cache</b> in front of the database. Lesson 15 <b>precomputed</b> every follower's feed so the read was a single lookup. Lesson 16 fed a search <b>inverted index</b>, Lesson 29 fed a columnar <b>warehouse</b>, and Lesson 33's <b>outbox/CDC</b> pipeline shipped every change out to all of them. Each time we quietly admitted the same thing: the shape that is good for <i>writing</i> the data is not the shape that is good for <i>reading</i> it. This lesson makes that admission a design. <b>CQRS</b> — Command Query Responsibility Segregation — says: keep <i>one</i> write model optimized for correct, consistent writes (Lessons 6/25), and build <i>as many</i> read models as you have read shapes, each purpose-built and each fed from the write model's change stream (Lesson 33). We'll take one concrete system — the <b>orders</b> service from Lessons 12/24/25/33 (5,000 writes/s, 50,000 reads/s) — and watch a single normalized table that's perfect for placing an order fail four different reads at once, then split it. We'll <b>estimate</b> why reads and writes pull in opposite directions (it's shape, not just volume); <b>model</b> the write side, the read sides, and the projection that connects them; <b>trace</b> a command and a query through the split; and hit the wall the split creates — a read is always a little behind the write (<b>eventual consistency</b>) — which is also the line where CQRS stops being clever and starts being <i>accidental complexity</i>. The trade shifts from Lesson 36's blast-radius isolation to <b>read/write optimization vs the consistency gap between the two sides.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0037-cqrs-read-write-split.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>The <b>orders</b> service we've grown across the course: <b>100M orders</b> (Lesson 12), money that must never be lost or doubled (Lesson 25's ledger), a live schema (Lesson 24), and a change pipeline already shipping every write out to search, cache, and the warehouse (Lesson 33). Traffic: <b>5,000 writes/s</b> (place order, cancel, update address) and <b>50,000 reads/s</b> — a <b>10:1</b> read-heavy load. But the reads aren't one query; they're four wildly different ones, and each wants the data in a different shape:</p>
+
+<div class="diagram"><pre>
+   COMMANDS (writes, ~5k/s)                     QUERIES (reads, ~50k/s)
+   place / cancel / change address              detail page / search / dashboard / status
+        |                                          ^          ^         ^          ^
+        v                                          |          |         |          |
+  +-------------------+                    +----------+ +--------+ +--------+ +---------+
+  |   WRITE MODEL     |                    | doc view | | search | |  OLAP  | |  cache  |
+  | normalized SQL    |   change events    | (detail) | | index  | | warehse| | (status)|
+  | ACID -- the TRUTH |==(L33 outbox/CDC)=>|   L15    | |  L16   | |  L29   | |   L02   |
+  +-------------------+     one log,        +----------+ +--------+ +--------+ +---------+
+   correctness-first        many readers          READ MODELS (derived, purpose-built,
+   (L06/25)                                        each EVENTUALLY CONSISTENT with truth)
+
+   ONE side optimized for correct WRITES.  MANY sides optimized for fast READS.
+   They are different SHAPES of the same data, kept in sync by a stream --
+   so a read model always trails the write by the projection delay.
+</pre></div>
+
+<p class="note"><span class="key">CQRS splits one model into a write model and one-or-more read models, connected by a projection.</span> "Command" = a request that <i>changes</i> state (place an order). "Query" = a request that only <i>reads</i> state (show me the order). The ordinary design uses one model for both. CQRS says the two jobs have different needs, so give them different models — and pay for it in the gap between the moment a write lands and the moment every read model reflects it.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Command</b> — a request that changes state (a write): <code>place order</code>, <code>cancel order</code>. Judged by correctness.</li>
+  <li><b>Query</b> — a request that returns state and changes nothing (a read): <code>show order 42</code>. Judged by speed and shape.</li>
+  <li><b>Write model</b> — the single source of truth, shaped so a command is <i>correct and cheap</i>: normalized, constrained, transactional (Lessons 6/25).</li>
+  <li><b>Read model</b> — a <i>derived</i> copy shaped so one query is fast: a denormalized document, a search index, a columnar table, a cache. Not the truth — a projection of it.</li>
+  <li><b>Projection</b> — the process that turns the write model's change events into a read-model update. The wire between the two sides (Lesson 33's stream).</li>
+  <li><b>Read replica</b> — the <i>mild</i> split: a byte-for-byte copy of the write model for read scaling (Lesson 6). Same shape, more capacity — the step before full CQRS.</li>
+  <li><b>Eventual consistency gap</b> — the delay between a committed write and the read model reflecting it. The cost CQRS introduces.</li>
+</ul>
+
+<h2>Move 1 — Estimate: reads and writes pull in opposite directions</h2>
+<p>Two forces push toward a split. The obvious one is <b>volume</b>: 50,000 reads vs 5,000 writes, so reads deserve their own capacity you can scale independently. But volume alone is solved by a plain read replica (Lesson 6) — same shape, just more copies. The force that actually demands CQRS is <b>shape</b>: the layout that makes a write correct is the layout that makes a read slow, and vice-versa. Price it on the busiest read — the order-detail page.</p>
+
+<div class="card calc">
+  <p><b>Worked: the detail page on the write model.</b> A normalized order is scattered across tables so nothing is duplicated: <code>orders</code> + <code>order_items</code> + <code>products</code> (for names) + <code>customers</code> + <code>addresses</code>. Rendering one detail page is a <b>6-way JOIN</b> — roughly <b>six index seeks</b> at Lesson 12's <code>~0.4 ms</code> each = <code>~2.4 ms</code> of database work per page. Say order-detail is <b>20,000</b> of the 50,000 reads/s. Cost = <code>20,000 × 2.4 ms = 48,000 ms/s = <b>48 CPU-cores</b></code> spent re-assembling the same joins over and over.</p>
+  <p><b>Worked: the detail page on a read model.</b> Precompute the join once (Lesson 15's push): store the whole page as a single denormalized document, <code>order_id → {order, items, product names, customer, address}</code>. Now a read is <b>one key lookup</b> ≈ <code>0.4 ms</code>. Cost = <code>20,000 × 0.4 ms = 8,000 ms/s = <b>8 cores</b></code> — a <b>6× cut</b>, and simpler code (no join to plan). Same data, a different shape, one-sixth the work.</p>
+  <p><b>Why one table can't win both.</b> To make that read cheap you <i>denormalized</i> — you copied the product name into every order document. But a denormalized copy is exactly what makes a <i>write</i> dangerous: change one product's name and you must now update it in every order document that mentions it (Lessons 15/24's fan-out), and any missed copy is a lost-update anomaly (Lesson 6). The write model stays <b>normalized</b> precisely so a name lives in <i>one</i> row and a change touches <i>one</i> place. <span class="key">Normalized is optimal for writing; denormalized is optimal for reading; no single table is both.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off — one shape can't serve opposite jobs.</b> And the detail page is only <i>one</i> read. Search ("my orders containing 'shoes'") wants an <b>inverted index</b> (Lesson 16), not a table scan. The seller dashboard ("units sold per product per day") wants a <b>columnar warehouse</b> (Lesson 29), not row storage. The live status widget wants a tiny, blazing-hot <b>cache</b> (Lesson 2). A relational write model can be <i>none</i> of these well at once — "normal form is a bet on your write:read ratio" (Lesson 29), and with four different reads you have four different bets. So stop trying to make one model win four arguments: give each read the shape it wants, and keep the writes on the one shape that keeps them correct.</p>
+
+<h2>Move 2 — Model: one write side, many read sides, one wire between them</h2>
+<p>CQRS is three parts: a write model that owns the truth, read models that are cheap derivations of it, and a projection that keeps the derivations current.</p>
+
+<div class="card">
+  <p style="margin:.2rem 0"><b>The write model — correctness-first.</b> Normalized relational tables, ACID transactions, foreign-key and balance constraints (Lesson 25's ledger, Lesson 6's atomic updates, Lesson 32's invariants). A command validates against it and commits in <i>one</i> transaction. It is the <b>single source of truth</b>; every read model is downstream of it. Optimized for one thing: a write that is correct and cheap because each fact lives in exactly one place.</p>
+  <p style="margin:.6rem 0 .2rem"><b>The read models — one per read shape.</b> Detail page → a denormalized <b>document</b> (Lesson 15). Text search → an <b>inverted index</b> (Lesson 16). Dashboards → a <b>columnar warehouse</b> (Lesson 29). Live status → a <b>cache</b> (Lesson 2). Each is <i>derived, disposable, and eventually consistent</i> — never the truth, always rebuildable.</p>
+  <p style="margin:.6rem 0 .2rem; color:var(--muted)">The result: writes and each read scale, deploy, and fail independently — a heavy dashboard scan can't evict the write model's buffer or trip its knee (Lesson 29's "never share one DB", Lesson 36's blast radius), because it runs on a different store entirely.</p>
+</div>
+
+<p>What connects them is the piece we already built in Lesson 33. The write model, in the <i>same</i> transaction that commits a command, writes an event to an <b>outbox</b> (or the change is tailed from its commit log by <b>CDC</b>). A <b>projection</b> consumes that stream and applies each change to its read model. This is the load-bearing detail:</p>
+
+<div class="diagram"><pre>
+  THE PROJECTION -- the only correct way to keep a read model in sync.
+
+   command --> [ WRITE MODEL ]  --commit order + event IN ONE TXN--> outbox
+                                                                       |
+                              (L33 relay / CDC tails the durable log)  |
+                                                                       v
+                                             +------- change event stream (at-least-once) -------+
+                                             |                |                |                  |
+                                             v                v                v                  v
+                                        projection A     projection B     projection C      projection D
+                                        -> doc view      -> search idx     -> warehouse      -> status cache
+                                        (idempotent,     (idempotent,      (idempotent,      (idempotent,
+                                         keyed by         L13)              L13)              L13)
+                                         event id, L13)
+
+  Rules that make it safe:
+    * Project from the DURABLE STREAM, never dual-write from the app to each store
+      (writing to write-DB and search-index directly = L33's dual-write trap: they
+      diverge on a crash, with no shared transaction to save you).
+    * Projections are IDEMPOTENT (L13): at-least-once delivery means an event can
+      arrive twice; applying it twice must equal applying it once.
+    * A read model is DERIVED, so it is REBUILDABLE: replay the log from the start
+      to construct a brand-new read model (L09/L29 kappa) -- add a fifth read shape
+      next year with zero write-side change.
+</pre></div>
+
+<p class="note why"><b>Name the trade-off — CQRS vs a read replica.</b> A <b>read replica</b> (Lesson 6) copies the write model <i>byte for byte</i>: it scales read <i>volume</i> but keeps the <i>same shape</i>, so it can serve more detail-page joins but can never become an inverted index or a columnar table. <b>CQRS</b> changes the <i>shape</i>, which is what buys the 6× (and the search, and the aggregates) — but a replica lags by milliseconds of physical replication, while a CQRS projection lags by an application step you built, and it can drift or need rebuilding. Replica = same shape, cheap, tight. CQRS = any shape, powerful, looser. <span class="key">Reach for a replica when you need more of the same read; reach for a read model when you need a different read.</span></p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Two runs — a command down the write side, a query up a read side — and then the gap between them.</p>
+
+<h3>Path A — a command (place order)</h3>
+<div class="diagram"><pre>
+  POST /orders  (Alice buys 2 items, $120)
+
+   1. Validate against the WRITE MODEL: item in stock? balance ok? (L25/L32 invariant)
+   2. ONE transaction: insert order + order_items  AND  insert an outbox event
+        {type:"OrderPlaced", order_id:42, ...}          (L33: two writes, one commit)
+   3. ACK Alice -- the command is durably done the instant the write model commits.
+        (nothing downstream has run yet)
+   -- async, off the commit path --
+   4. Relay/CDC publishes event 42 to the stream (L33).
+   5. Each projection applies it idempotently (L13):
+        doc view: assemble & store the detail document for order 42
+        search  : tokenize product names, add to the inverted index (L16)
+        warehse : append a fact row for tonight's aggregates (L29)
+        cache   : set status=PLACED for the live widget (L02)
+   -> Order 42 appears in each read model after THAT projection's own delay.
+</pre></div>
+
+<h3>Path B — a query (four different reads, four different models)</h3>
+<div class="diagram"><pre>
+  GET  /orders/42            -> doc view    : 1 key lookup, no JOIN (~0.4 ms)   [was 2.4 ms]
+  GET  /orders?q=shoes       -> search idx  : postings intersect (L16), not a scan
+  GET  /seller/dashboard     -> warehouse   : columnar aggregate (L29), not row reads
+  GET  /orders/42/status     -> cache       : hot in-RAM read (L02), ~30k/s of these
+
+  The WRITE MODEL serves NONE of these -- it is never touched by a read.
+  A dashboard scan can't evict the status cache or slow a checkout: different stores.
+</pre></div>
+
+<p>Path A shows the discipline: the command commits to <i>one</i> place (the write model, plus its outbox row in the same transaction), and everything else is a consequence carried by the stream. Path B shows the payoff: each read is served by a store shaped exactly for it, and reads and writes can't starve each other because they don't share a database. But look again at step 3 versus step 5 — Alice is told "order placed" at step 3, and the read models only catch up at step 5. That gap is the wall.</p>
+
+<h3>Path C — read-your-writes, and the gap</h3>
+<div class="diagram"><pre>
+  t=0 ms    Alice places order 42 -> write model commits -> ACK "Order placed!"
+  t=1 ms    Alice's browser loads "My Orders" -> reads the DOC VIEW read model
+  t=1 ms    ...but projection A hasn't applied event 42 yet (it lands at, say, t=120 ms)
+  -> "My Orders" does NOT show order 42.  Alice thinks her order vanished.
+
+  The write SUCCEEDED. The read model is just BEHIND by the projection delay.
+</pre></div>
+
+<h2>Move 4 — Find the first bottleneck: the eventual-consistency gap</h2>
+<p>The command is acknowledged from the write model, but every read model trails it by the projection delay: relay/CDC poll + queue + apply. Estimate it — typically <b>tens to a few hundred milliseconds</b>, and <b>seconds</b> when the stream is backed up (Lesson 6's replication lag, Lesson 9's consumer lag). For most reads (a dashboard, a search) that lag is invisible and fine. For the one read that immediately follows its own write — <b>read-your-writes</b> — it looks like data loss. This is the tax CQRS charges, and you pay it per query, deliberately:</p>
+
+<div class="card">
+  <p style="margin:.2rem 0"><b>1. Read-your-writes from the write side (Lesson 15's trick).</b> For the short window after a user's own write, serve <i>that user's</i> affected data from the write model (or from the command's own result) instead of the lagging read model. Costs a little read load on the write side, buys correctness exactly where it's noticed.</p>
+  <p style="margin:.5rem 0 .2rem"><b>2. Return the result in the command's response.</b> The command already holds the new order — hand it straight back so the client can render it optimistically, no read model consulted at all.</p>
+  <p style="margin:.5rem 0 .2rem"><b>3. Wait-for-version (monotonic reads).</b> The write returns a version/offset; the client passes it on the next read, and the read model serves only once it has applied up to that version. Costs a small wait, guarantees the user never sees <i>older</i> than what they wrote.</p>
+  <p style="margin:.5rem 0 .2rem; color:var(--muted)"><b>4. Just accept the lag</b> where staleness is harmless — the seller dashboard being 200 ms behind changes nothing. <b>Decide per query</b> where the gap matters; don't pay to close it everywhere.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — and when this whole pattern is a mistake.</b> The eventual-consistency gap is <i>the</i> price of CQRS: you traded a single always-consistent model for many fast, purpose-built, lagging ones. That trade only pays when the read shapes <b>genuinely diverge</b> (you truly need search + aggregates + documents) or a read is starving the write DB. If your reads and writes share a shape and fit one database, CQRS is <b>accidental complexity</b>: you've added two models, a projection pipeline, and a consistency gap you now have to paper over — for no read benefit. <span class="key">Start with one model. Add a read replica when read <i>volume</i> is the problem. Reach for a separate read <i>model</i> only when the read <i>shape</i> is the problem.</span> Don't skip to the end of the ladder.</p>
+
+<div class="diagram"><pre>
+  THE LADDER -- climb only as far as the read forces you.
+
+   one model  ->  read replica  ->  materialized view / cache  ->  full CQRS
+   (same DB)      (L6: same          (L2/L15: one derived           (many divergent
+    reads &        shape, more        shape, one projection)         read models, N
+    writes         copies -- fixes                                   projections +
+    share)         VOLUME, not shape)                               the gap)
+
+   cost paid:  none  ->  replication lag  ->  one invalidation/projection  ->  N gaps
+   buy:        --    ->  read capacity    ->  one fast read shape          ->  any read shape
+
+   Each rung pays MORE sync cost for MORE read freedom. Stop at the rung your
+   reads actually need; every rung past that is complexity you maintain for free.
+</pre></div>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — dual-writing instead of projecting.</b> Having the app write to the order DB <i>and</i> the search index <i>and</i> the cache directly is Lesson 33's dual-write in disguise: no shared transaction, so a crash between the writes leaves them diverged with nothing to reconcile them. Always drive read models from the <b>durable event stream</b> (outbox/CDC), never with side-by-side writes from application code.</li>
+  <li><b>Trap 2 — a non-idempotent projection.</b> The stream is at-least-once (Lesson 9), so every event can arrive twice. A projection that does <code>count += 1</code> double-counts on a redelivery. Make every projection <b>idempotent</b> (Lesson 13): key it on the event id or the entity version so applying an event twice equals applying it once.</li>
+  <li><b>Trap 3 — treating a read model as the truth.</b> A read model is a derived cache; if a command trusts a read model's value to enforce an invariant ("is this seat still free?"), a stale read model lets two commands both win (Lesson 6's lost update, Lesson 32's dirty read). Validate invariants against the <b>write model</b> only; a read model can be wrong and is fixed by <b>replaying the log</b> to rebuild it (Lesson 29's kappa).</li>
+  <li><b>Trap 4 — hiding the gap from the UX.</b> Promising instant read-your-writes on <i>every</i> query is expensive and often needless. Decide, per read, whether staleness is acceptable — close the gap on the user's own just-changed data, and let the dashboard lag. Pretending the gap doesn't exist is how "my order vanished" bugs ship.</li>
+</ul>
+
+<table>
+  <tr><th>Approach</th><th>Read shape it can serve</th><th>Sync cost</th><th>Reach for it when</th></tr>
+  <tr><td>Single model</td><td>same as the write</td><td>none (always consistent)</td><td>reads fit one DB and share the write's shape</td></tr>
+  <tr><td>Read replica (read/write split)</td><td>same shape, scaled</td><td>replication lag (ms)</td><td>read <b>volume</b> exceeds one node</td></tr>
+  <tr><td>Materialized view / cache</td><td>one derived shape</td><td>one projection / invalidation</td><td>one hot read shape is slow on the write model</td></tr>
+  <tr><td>Full CQRS</td><td>many divergent shapes</td><td><code>N</code> projections + the gap</td><td>read <b>shapes</b> truly diverge (search + OLAP + docs)</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We took the copy-beside-the-data instinct that Lessons 2, 15, 16, 29, and 33 kept reaching for and made it an explicit design. The <b>orders</b> service runs <b>10:1</b> read-heavy, but the real driver isn't volume — it's <b>shape</b>: <b>estimate</b> showed one normalized table costs <code>~2.4 ms</code> (six index seeks) per detail page = <b>48 cores</b> at 20,000/s, while a denormalized read model does it in one <code>0.4 ms</code> lookup = <b>8 cores</b>, a <b>6× cut</b> — yet the very denormalization that makes the read cheap is what would make a write dangerous, so no single table wins both. <b>Model</b> gave the three parts: a <b>write model</b> that owns the truth (normalized, ACID, correctness-first — Lessons 6/25), many <b>read models</b> each shaped for one query (document/search/columnar/cache — Lessons 15/16/29/2), and the <b>projection</b> that connects them by consuming Lesson 33's durable event stream idempotently (Lesson 13) — and the distinction from a plain <b>read replica</b>, which scales the <i>same</i> shape where CQRS changes the shape. <b>Tracing</b> a command showed it commit to exactly one place (write model + outbox in one transaction) with every read model updated as an async consequence; tracing the queries showed four reads each served by its own optimized store, unable to starve one another. The <b>first bottleneck</b> is the gap between them: a write is acknowledged before any read model reflects it (typically tens to hundreds of ms, seconds under lag), so <b>read-your-writes</b> looks like data loss until you special-case it — serve the user's own fresh data from the write side, return it in the command, wait-for-version, or simply accept the lag where it's harmless. And that same gap marks the line where CQRS becomes <b>accidental complexity</b>: if reads share the write's shape and fit one DB, you've bought two models, a pipeline, and a consistency gap for nothing. The real lesson: <span class="key">a command and a query are two different jobs on the same facts, so give them two different shapes — one write model kept correct, many read models kept fast, a durable stream between them — and pay for it, deliberately and per query, in the eventual-consistency gap. Read/write optimization vs the consistency gap between the two sides.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson takes the write side to its logical extreme:</b></p>
+  <p style="margin:.2rem 0">• <b>Event sourcing:</b> today the write model stored current <i>state</i> and emitted events as a side effect. What if the <b>stream of events IS the source of truth</b>, and current state is just a fold over it (Lesson 25's ledger, generalized)? Then history is free, any read model is a replay away (Lessons 9/33/this lesson's rebuild), and audit is total — paid for in snapshotting to avoid re-folding millions of events, evolving old event schemas, and the "how do I query current state?" problem that CQRS answers. The trade shifts from <b>read/write optimization</b> to <b>perfect auditability &amp; replayability vs query complexity and storage.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">CQRS</span>
+    <span class="pill">command vs query</span>
+    <span class="pill">write model</span>
+    <span class="pill">read model</span>
+    <span class="pill">projection</span>
+    <span class="pill">read replica</span>
+    <span class="pill">read/write splitting</span>
+    <span class="pill">denormalized read shape</span>
+    <span class="pill">materialized view</span>
+    <span class="pill">eventual consistency gap</span>
+    <span class="pill">read-your-writes</span>
+    <span class="pill">monotonic reads / wait-for-version</span>
+    <span class="pill">idempotent projection</span>
+    <span class="pill">rebuild by replay</span>
+    <span class="pill">accidental complexity</span>
+  </p>
+  <p>That's Lesson 37, built on Lesson 2's cache and Lesson 15's precomputed feed (the first read models), Lesson 16's inverted index and Lesson 29's warehouse (more read shapes), Lesson 33's outbox/CDC (the projection stream), Lesson 13's idempotency (safe at-least-once projections), Lesson 6's replicas and lost-update anomalies (why normalized writes, and the mild split), Lesson 25/32's invariants (why the write model stays the truth), and Lesson 36's isolation (read and write stores that can't starve each other). <b>Ask me follow-ups</b> — e.g. "how do I rebuild a read model with zero downtime while it's serving traffic?", "when is a read replica enough and CQRS overkill?", "how does wait-for-version actually pin a client to a projection offset?", "what breaks if a projection is not idempotent, concretely?", or "how does CQRS relate to event sourcing — do I need one for the other?" When you're ready, say <b>next</b> and we'll go deeper on <i>Event sourcing — when the log of changes is the truth.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your orders service runs 10:1 read-heavy, and a teammate says 'just add a read replica — same as CQRS, less work.' You need order-detail pages (a 6-way join), full-text order search, and a seller aggregates dashboard. Why isn't a read replica the same thing?",
+    options: [
+      {t:"A read replica is a byte-for-byte copy of the write model, so it scales read VOLUME but keeps the exact same shape — it can serve more of the same 6-way join, but it can never become an inverted index for search or a columnar table for aggregates. CQRS changes the SHAPE (a denormalized document, a search index, a warehouse), which is what makes the detail page a 1-lookup read and search and dashboards possible at all. Replica = same shape scaled; CQRS = different shapes.",
+       ok:true,
+       fb:"Right. The replica fixes volume, not shape. Your three reads want three different physical layouts, and no copy of one relational model is simultaneously a document store, an inverted index, and a columnar warehouse. That shape divergence is exactly what CQRS buys — and exactly what a replica can't."},
+      {t:"They're identical — a read replica also lets you build search indexes and columnar aggregates on it, so CQRS is just a fancier name for the same replica setup.",
+       ok:false,
+       fb:"A replica is a faithful copy of the write model's schema; it has the same row-oriented relational tables, not an inverted index or a columnar store. You can't query it as a search engine or an OLAP warehouse just because it's a replica. Getting those shapes requires a separate, differently-built read model — which is the point of CQRS."},
+      {t:"A read replica is better than CQRS here because it's always perfectly consistent with the write model and has no lag at all.",
+       ok:false,
+       fb:"Replicas also lag (asynchronous replication has its own delay, Lesson 6), so 'no lag' is wrong — but more importantly, consistency isn't the question here: the replica simply can't produce the read SHAPES you need (search index, aggregates). Even a perfectly-consistent replica of a relational model still can't answer a full-text query as an inverted index would."}
+    ]
+  },
+  {
+    stem: "Alice places an order; the write model commits and she's told 'Order placed!' She immediately loads 'My Orders' and it's not there. Nothing errored. What happened, and what's the RIGHT fix?",
+    options: [
+      {t:"The write succeeded; the read model that 'My Orders' reads from just hasn't applied the change event yet (the projection lags by tens to hundreds of ms). This is the eventual-consistency gap. Fix read-your-writes specifically: for the short window after her own write, serve Alice's affected data from the write model or from the command's own result — don't try to make every read model synchronously consistent.",
+       ok:true,
+       fb:"Exactly. The command is acknowledged from the write model before any projection runs, so a read that immediately follows can miss it. You close the gap only where it's noticed — the user's own just-written data — via read-your-writes, returning the result in the command, or wait-for-version, and let harmless reads (dashboards) stay eventually consistent."},
+      {t:"The write silently failed — the ack was premature. The fix is to make the client retry the POST until 'My Orders' shows the order.",
+       ok:false,
+       fb:"The write did NOT fail: it committed to the write model, which is why she got a truthful 'Order placed!'. Retrying the POST would place a SECOND order (or be caught by an idempotency key). The order is present in the truth and merely absent from a lagging read model — a sync gap, not a failed write."},
+      {t:"Make every read model a synchronous part of the write transaction, so 'My Orders' is updated before the command returns and the gap disappears everywhere.",
+       ok:false,
+       fb:"That re-couples what CQRS deliberately decoupled: the write now blocks on every projection (and across separate stores you can't even share a transaction — Lesson 32), so a slow or down search index or warehouse would fail or stall checkout, and you lose the independent scaling and isolation that motivated the split. Close the gap selectively (read-your-writes), not by making all reads synchronous."}
+    ]
+  },
+  {
+    stem: "You need to keep the search index and the status cache in sync with the orders write model. One engineer proposes: in the order-service code, after saving the order, also write to the search index and to the cache directly. Why is this a trap?",
+    options: [
+      {t:"That's a dual write to multiple stores with no shared transaction — Lesson 33's exact trap. A crash after the DB commit but before the index/cache writes leaves them permanently diverged, and there's nothing to reconcile them. Instead, commit the order plus an event in ONE transaction (outbox) or tail the commit log (CDC), and drive the search index and cache from that durable stream via idempotent projections — a crash then makes the update LATE, not LOST.",
+       ok:true,
+       fb:"Right. Two writes to two systems can't be atomic without a shared transaction, so any crash in the gap diverges them silently. The durable event stream is the fix: the change is recorded once, transactionally, and every read model is a replayable consumer of it (idempotent, Lesson 13). Late beats lost."},
+      {t:"It's fine as long as you write to the search index and cache FIRST, before the database — then if anything crashes, the database write just won't happen and nothing is inconsistent.",
+       ok:false,
+       fb:"Reordering doesn't help: now a crash after updating the index/cache but before the DB commit announces an order that doesn't exist in the truth (a ghost). There is no safe order for independent writes to independent stores — the problem is the absence of a shared transaction, which only projecting from one durable committed log solves."},
+      {t:"The trap is only performance: three synchronous writes make the command slower. Do them asynchronously with a background thread after acking and the divergence problem goes away.",
+       ok:false,
+       fb:"A fire-and-forget background thread makes it WORSE, not better: if the process dies before the thread runs, the index and cache never get the update and silently diverge, with no durable record that the update is owed. The fix isn't async-in-process — it's a DURABLE event (outbox/CDC) that survives the crash and is retried until every projection applies it."}
+    ]
+  },
+  {
+    stem: "Your team is about to add CQRS to a new internal admin tool: a few thousand rows, low traffic, and every read is basically 'show me this record' or 'list these records' — the same shape you write. When is reaching for CQRS here the wrong call?",
+    options: [
+      {t:"Now — this is accidental complexity. The reads share the write's shape and easily fit one database, so a separate read model buys no read benefit while adding a second model, a projection pipeline, and an eventual-consistency gap you must then paper over. Start with one model; add a read replica only if read VOLUME becomes a problem; reach for a separate read MODEL only when a read SHAPE genuinely diverges (search, aggregates, denormalized docs).",
+       ok:true,
+       fb:"Exactly. CQRS earns its keep when read shapes diverge or a read is starving the write DB — neither is true here. Climb the ladder only as far as the reads force you: one model → replica (volume) → materialized view (one hot shape) → full CQRS (many divergent shapes). Every rung past what you need is complexity maintained for free."},
+      {t:"Never — CQRS is a best practice, so applying it everywhere, including this admin tool, is always the safer and more scalable choice.",
+       ok:false,
+       fb:"CQRS is a trade, not a free best practice: it adds two models, a sync pipeline, and a consistency gap. On a low-traffic tool whose reads match its writes, those costs are pure overhead with no offsetting read benefit. 'Always apply it' ignores that the pattern is justified by a specific problem (divergent read shapes / read load), which this tool doesn't have."},
+      {t:"It's only wrong if the admin tool has fewer than a million rows; above that threshold CQRS is automatically justified regardless of read shape.",
+       ok:false,
+       fb:"Row count isn't the trigger — read SHAPE and read LOAD are. A billion-row table whose only read is 'fetch by id' may need nothing but an index or a replica, while a small dataset that must be searched, aggregated, and shown as documents may justify multiple read models. CQRS is justified by divergent read requirements, not by crossing an arbitrary size line."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
