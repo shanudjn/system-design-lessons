@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 38 — Event Sourcing: When the Log of Changes IS the Truth</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 38 · Worked Example</div>
+  <h1>Event Sourcing: When the Log of Changes IS the Truth</h1>
+  <p class="lead">Two lessons already flirted with this idea and then stopped short. Lesson 25 rejected a mutable <code>balance</code> column and stored an immutable, append-only stream of ledger <b>entries</b>, computing the balance as their <code>SUM</code> — the truth was the history, and the number was derived. Lesson 33 committed a change to the write model <i>and</i> an event to an <b>outbox</b> in one transaction, then shipped that event out to everyone downstream. Lesson 37 used those events to feed read models. In every one of those, the <b>current state was the truth and the events were a side effect</b> — a derived echo of the real thing. <b>Event sourcing turns that around.</b> It says: store the <i>stream of events</i> as the one source of truth, and treat current state as the side effect — something you <b>compute by folding the events back up</b>, exactly the way Lesson 25 folded entries into a balance, but now for <i>every</i> aggregate, not just money. The outbox becomes the database. We'll take one concrete system — the <b>digital wallet</b> from Lesson 25, re-built event-sourced — and watch. We'll <b>estimate</b> the two storage walls it creates (a log that never shrinks, and a fold whose cost grows with an account's history); <b>model</b> the four moving parts (events, the aggregate, the fold, and the append with a version check); <b>trace</b> a command, a query, and a full replay; and hit the first wall — folding a long-lived account on every read — whose fix (<b>snapshots</b>) is Lesson 25's snapshot generalized to "a cached fold." The trade shifts from Lesson 37's read/write shapes to <b>perfect auditability &amp; replayability vs query complexity and unbounded storage.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0038-event-sourcing.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>Lesson 25's <b>digital wallet</b>: money that must never be lost, doubled, or un-audited. Back then we stored immutable ledger <b>entries</b> and derived each balance as their sum. Event sourcing takes that instinct and makes it the <i>whole system's</i> storage model, for any kind of state — not just dollars. Instead of a table row that says <code>account 7: balance $100</code> and gets overwritten on every change, we keep the ordered list of <b>facts that happened</b> to that account and never overwrite anything. The current balance is not stored at all; it's <i>replayed</i> on demand.</p>
+
+<div class="diagram"><pre>
+  TWO WAYS TO STORE THE SAME ACCOUNT
+
+  (a) STATE-STORED  (the ordinary DB, L37's write model, L33: state is truth)
+      account 7:  balance = $100        <- one row, OVERWRITTEN on each change
+      history?  gone. how did it reach $100?  unknown. audit?  a separate log you hope is right.
+
+  (b) EVENT-SOURCED  (the log is truth; state is DERIVED by folding)
+      account 7's event stream (append-only, immutable, ordered by version):
+        v1  AccountOpened     {}
+        v2  MoneyDeposited    {amt: 100}
+        v3  TransferSent      {amt:  30}
+        v4  TransferReceived  {amt:  50}
+        v5  MoneyWithdrawn    {amt:  20}
+      balance = fold(apply, $0, [v1..v5]) = $100     <- COMPUTED, stored nowhere
+      history?  every fact, forever.  audit?  the log IS the audit.
+
+  L33/L37: state is the truth, events are a derived side effect.
+  EVENT SOURCING inverts it: events are the truth, state is the derived side effect.
+</pre></div>
+
+<p class="note"><span class="key">Event sourcing stores the ordered stream of events as the source of truth and derives current state by folding them.</span> "Fold" is just Lesson 25's <code>SUM</code>, generalized: start from an empty state, apply each event in order, and the final value is the current state. Nothing is ever updated in place — the only write is <i>appending a new event to the end</i>. That single constraint is where every property (and every cost) comes from.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Event</b> — an immutable record of something that <i>already happened</i>, named in the past tense: <code>MoneyDeposited</code>, <code>OrderShipped</code>. A fact, not a command. It is never edited or deleted.</li>
+  <li><b>Aggregate</b> — the unit you fold events within and enforce a rule across: one account, one order. Its events share an id and are ordered by a <b>version</b>. It's also the consistency boundary (Lessons 6/32).</li>
+  <li><b>Apply / fold</b> — the pure function <code>apply(state, event) → state</code>, run left-to-right over an aggregate's events to compute its current state: <code>state = events.reduce(apply, empty)</code>.</li>
+  <li><b>Append</b> — the only write: add a new event at the aggregate's next version. Guarded by an <b>expected version</b> so two concurrent writers can't both win (Lesson 6's compare-and-set).</li>
+  <li><b>Snapshot</b> — a cached fold: the state as of version <code>N</code>, stored so a read folds only the events <i>after</i> <code>N</code> instead of from the start. Derived, disposable, rebuildable (Lesson 25's snapshot).</li>
+  <li><b>Projection / read model</b> — Lesson 37's read side: consume the event stream to build a query-shaped view (a table, an index). How you answer "current state?" without folding.</li>
+  <li><b>Replay</b> — re-reading the log from the start to rebuild any state or read model (Lessons 9/29/33's kappa). The superpower event sourcing hands you for free.</li>
+</ul>
+
+<h2>Move 1 — Estimate: two walls, both about storage</h2>
+<p>State-stored databases have <i>one</i> copy per entity, so their size tracks the number of entities and is roughly flat. An event-sourced store keeps <i>every change forever</i>, so its size tracks the number of <i>changes</i> — and it only ever grows. Two numbers matter: how fast the log grows, and how expensive the fold gets.</p>
+
+<div class="card calc">
+  <p><b>Worked: the log that never shrinks.</b> The orders/wallet service runs at Lesson 37's <b>5,000 writes/s</b>, and in event sourcing every write is one appended event. Say an event is <code>~300 B</code> (type + aggregate id + a small JSON payload + metadata). Growth = <code>5,000 × 300 B = 1.5 MB/s = ~130 GB/day ≈ <b>47 TB/year</b></code>, and because events are immutable it <i>never</i> shrinks — you don't overwrite, you accumulate. Contrast the state-stored write model: <code>~100M orders × ~1 KB = ~100 GB</code>, roughly constant. <span class="key">Event sourcing trades near-constant state storage for an ever-growing log.</span> That's the price of total history — and it's usually affordable (disk is cheap), but it's real and it's forever.</p>
+  <p><b>Worked: the fold that grows with history.</b> The other wall isn't total size — it's <i>one aggregate's</i> size. A quiet account has 5 events; folding it is instant. But Lesson 25's <b>hot merchant account</b> accumulates one event per transaction and reaches <b>100M events</b>. To answer "what's your balance?" you fold all of them. At an in-memory apply rate of <code>~5M events/s</code> (~200 ns each), that's <code>100,000,000 ÷ 5,000,000 = <b>20 seconds</b></code> to load the account — <i>per read</i>. A state-stored DB answered the same question with one <code>0.4 ms</code> row read (Lesson 12). <span class="key">Deriving state is cheap only while an aggregate's history is short.</span> This is the wall Move 4 knocks down.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — storing events vs storing state.</b> State-stored keeps <i>one</i> current value: tiny, instantly readable, but it has <b>thrown the history away</b> — you cannot ask "how did we get here?", "what was the balance last Tuesday?", or "replay this to build a new view", because the only facts you kept are the latest ones. Event sourcing keeps <i>every</i> value that ever was: perfect audit, free time-travel, any view rebuildable by replay — paid for in a log that grows without bound and a "current state" that costs a fold. You are choosing <b>total history at the cost of storage and derivation</b>, versus <b>a cheap current value at the cost of amnesia</b>. Most systems don't need the history and should stay state-stored; the ones that do — money, compliance, anything where "why?" is a real question — are exactly where event sourcing earns its keep.</p>
+
+<h2>Move 2 — Model: events, an aggregate, a fold, and a guarded append</h2>
+<p>Four parts. The events are the truth; the aggregate is where you fold them and enforce a rule; the fold turns events into state; the append is the one write, guarded so concurrency can't corrupt the rule.</p>
+
+<div class="card">
+  <p style="margin:.2rem 0"><b>Events — immutable facts, past tense.</b> <code>AccountOpened</code>, <code>MoneyDeposited{amt}</code>, <code>MoneyWithdrawn{amt}</code>. Each is something that <i>already happened</i>, so it is never changed or deleted — a wrong event is corrected by <i>appending a new one</i> (a compensating event, Lesson 25's refund / Lesson 32's compensation), never by editing the past. Editing an event would rewrite history and silently break every snapshot and read model derived from it.</p>
+  <p style="margin:.6rem 0 .2rem"><b>The aggregate — the fold boundary and the rule boundary.</b> One account's events share its id and are ordered by <b>version</b> (1, 2, 3…). The aggregate is both the thing you fold into a state <i>and</i> the boundary an invariant is enforced across (balance ≥ 0). Draw it at the true invariant — small enough that a fold is cheap and one writer owns it, large enough to hold the rule (Lessons 6/32).</p>
+  <p style="margin:.6rem 0 .2rem"><b>The fold and the guarded append.</b> To make a decision you fold the aggregate to its current state, check the rule, and <b>append</b> the resulting event at the next version — but only if no one else has appended in the meantime. That version check is Lesson 6's <b>compare-and-set</b>: two concurrent withdrawals both read version 5, both try to write version 6, and the store lets exactly one through. The other retries against the new truth. No lock (Lesson 22), just an atomic append-if-version-matches.</p>
+</div>
+
+<p>Here is the fold made completely concrete — the Base62-style walk-through, but for state instead of ids:</p>
+
+<div class="diagram"><pre>
+  FOLDING account 7's events into a balance (apply left-to-right from $0):
+
+    start                                     state = $0
+    v1  AccountOpened     {}       apply -->  state = $0
+    v2  MoneyDeposited    {amt:100} apply -->  state = $0 + 100 = $100
+    v3  TransferSent      {amt: 30} apply -->  state = $100 - 30 =  $70
+    v4  TransferReceived  {amt: 50} apply -->  state =  $70 + 50 = $120
+    v5  MoneyWithdrawn    {amt: 20} apply -->  state = $120 - 20 = $100
+
+    current balance = $100   -- COMPUTED, stored nowhere; the events are the truth.
+
+  A SNAPSHOT is just a cached fold you can start from:
+
+    snapshot @ v4 = {version:4, balance:$120}   (derived, rebuildable -- NOT the truth)
+    balance = snapshot($120) then fold only [v5]:  $120 - 20 = $100
+            -> folded 1 event instead of 5, and got the identical answer.
+</pre></div>
+
+<p class="note why"><b>Name the trade-off — event sourcing vs the outbox (Lesson 33), and vs CQRS (Lesson 37).</b> Lesson 33's outbox stored current <b>state</b> as the truth and wrote an event as a <i>derived</i> side effect in the same transaction. Event sourcing <b>inverts</b> that: the event <i>is</i> the truth and state is the derived side effect — "the outbox becomes the database." And note what event sourcing is <i>not</i>: it is not CQRS. CQRS (Lesson 37) is about having many read <b>shapes</b>; event sourcing is about how the <b>write side stores truth</b>. You can do either without the other. But they marry perfectly — an event-sourced write side emits exactly the event stream CQRS's projections want to consume — which is why they're so often seen together and so often confused. <span class="key">Event sourcing decides what the truth <i>is</i> (the log); CQRS decides how you <i>read</i> it (many projected shapes).</span></p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Three runs: a command that must enforce a rule, a query that must <i>not</i> fold, and a replay that rebuilds a view from nothing.</p>
+
+<h3>Path A — a command (withdraw $20, balance must never go negative)</h3>
+<div class="diagram"><pre>
+  POST /accounts/7/withdraw {amt: 20}
+
+   1. LOAD: read snapshot (v4, $120) + fold events since it ([v5]) -> state {balance:$100, version:5}
+        (the fold happens on the COMMAND side, only to make a correct decision)
+   2. DECIDE against the invariant: $100 - $20 = $80 >= 0  -> allowed.
+        produce event  MoneyWithdrawn{amt:20}
+   3. APPEND with expectedVersion=5:  store does an atomic check --
+        if account 7 is still at v5, write this as v6;  else CONFLICT -> reload & retry.
+        (L06 compare-and-set: two concurrent withdrawals can't BOTH become v6.
+         One wins v6, the other reloads at v6, re-checks the rule, retries.)
+   4. The appended event is the ONLY write. Downstream, projections (L37) update
+        the read models and, every N events, a new snapshot is written -- all async.
+</pre></div>
+
+<p>Notice the invariant was enforced with <i>no lock</i> (Lesson 22): fold to decide, append-if-version-unchanged to commit. Two people racing to overdraw the account can't both succeed, because only one append can land at version 6.</p>
+
+<h3>Path B — a query (what's the balance? who's overdrawn?) — do NOT fold</h3>
+<div class="diagram"><pre>
+  GET /accounts/7/balance        -> read a PROJECTION (L37): a plain {account -> balance}
+                                    table kept current by consuming the event stream. ~0.4 ms.
+  GET /reports/overdrawn         -> read a PROJECTION: an index of accounts where balance < 0.
+                                    The event LOG cannot answer this -- you can't
+                                    "SELECT ... FROM a stream of facts".
+
+  Folding is for the COMMAND side (decide + append). Queries are served by read
+  models projected from the events -- this is why event sourcing needs CQRS (L37)
+  to answer "current state?" at all.
+</pre></div>
+
+<h3>Path C — a replay (build a brand-new read model, or time-travel)</h3>
+<div class="diagram"><pre>
+  New requirement: "monthly-spend per account." No migration, no backfill script --
+   just a new projection that reads the log FROM v1 and folds spend as it goes (L09/29/33 kappa).
+
+  Audit / time-travel (free, because every fact was kept):
+   "balance on 2026-01-01?"  ->  fold events with timestamp <= that date. A state-stored
+   DB threw those facts away and simply cannot answer this. Event sourcing replays them.
+</pre></div>
+
+<p>Path A shows the discipline (fold to decide, guarded append to commit); Path B shows the catch (you can't query a log, so you must project — event sourcing <i>needs</i> CQRS to be usable); Path C shows the payoff (any new view is a replay away, and history is queryable across time). But look back at Path A step 1: for the hot account, "fold events since the snapshot" is cheap — but only <i>because</i> of the snapshot. Without it, step 1 was the 20-second fold from Move 1. That's the wall.</p>
+
+<h2>Move 4 — Find the first bottleneck: folding a long-lived aggregate</h2>
+<p>The command side must fold an aggregate to its current state before every decision. For a short-lived aggregate (an order with 8 events) that's free. For a long-lived one (Lesson 25's hot account at 100M events) it's the <b>20-second load</b> from Move 1 — and it happens on <i>every single command</i>. The fix is Lesson 25's snapshot, now stated generally: <b>a snapshot is a cached fold.</b> Periodically store the folded state at version <code>N</code>; then a load reads that snapshot and folds only the events after it.</p>
+
+<div class="card calc">
+  <p><b>Worked: the snapshot's payoff.</b> Hot account, 100M events. Fold-from-zero = <code>100M ÷ 5M/s = 20 s</code>. Snapshot every <b>1,000 events</b>: a load reads the latest snapshot (at, say, v99,999,000) and folds at most <b>1,000</b> events = <code>1,000 × 200 ns = 0.2 ms</code>. That's a <code>20 s → 0.2 ms</code> = <b>~100,000× cut</b>, back to state-stored read speeds. The snapshot interval is the dial: snapshot more often → smaller folds but more snapshot storage/writes; less often → cheaper storage but longer tails.</p>
+  <p><b>Why it's safe.</b> A snapshot is <i>derived</i>, never the truth (Lesson 25's rule, and Lesson 37's read model). If a snapshot is wrong, corrupt, or you change the <code>apply</code> logic, you throw it away and <b>rebuild it by replaying the events</b> — the log is still the sole source of truth. The snapshot is a cache in front of a fold, exactly as Lesson 2's cache sat in front of a database.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — derivation speed vs a cache that can go stale.</b> The snapshot buys read/decision speed with storage and a small correctness burden: it's another derived thing you must keep current and be willing to discard. That's the same shape as every accelerator in this course (Lesson 2's cache, Lesson 15's precomputed feed, Lesson 25's balance snapshot) — <span class="key">speed by keeping a derived copy, correctness by remembering the copy is never the truth and can always be rebuilt from the log.</span></p>
+
+<p>Past the fold, three more walls define whether event sourcing is a good fit here:</p>
+
+<div class="diagram"><pre>
+  THE THREE WALLS AFTER THE FOLD
+
+  1. "How do I query current state?"  You can't SELECT over a log.
+        -> PROJECT to read models (L37 CQRS). Event sourcing without CQRS is nearly unusable
+           for queries. This is THE reason the two patterns travel together.
+
+  2. Event schemas are FOREVER.  A 3-year-old MoneyDeposited event must still deserialize
+        after you refactor the code that wrote it.
+        -> VERSION events and UPCAST old shapes on read (add v2 with a currency field;
+           an upcaster turns a stored v1 into a v2 in memory). Events are a forever contract
+           (L18 additive-only, L24 expand/contract, L33 don't couple consumers to raw schema).
+
+  3. The log grows without bound (Move 1: 47 TB/yr, never shrinks).
+        -> For streams that must be trimmed, snapshot + ARCHIVE cold events to object storage
+           (L20), or (where allowed) fold-and-drop a closed aggregate. But dropping events
+           forfeits the audit/replay you adopted event sourcing FOR -- trim reluctantly.
+</pre></div>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — mutating or deleting an event to "fix" a mistake.</b> An event is a fact that happened; editing it rewrites history and silently corrupts every snapshot and read model folded from it. Correct a mistake the way a ledger does — <b>append a compensating event</b> (Lesson 25's refund, Lesson 32's compensation). The wrong fact and its correction both stay in the log, which is what keeps the audit honest.</li>
+  <li><b>Trap 2 — folding the whole log on every read (no snapshot).</b> This turns an O(1) read into O(history) and makes a hot aggregate a 20-second load (Move 1). Snapshot the command side, and serve <i>queries</i> from projected read models (Lesson 37), never from a live fold of the entire stream.</li>
+  <li><b>Trap 3 — an aggregate drawn too big.</b> One giant "Bank" aggregate that every transaction appends to serializes all writes through one version counter — Lesson 6's contention, Lesson 22's serial gate. Draw the aggregate at the real invariant boundary (one account), keep it small so folds are cheap and one writer owns it, and make cross-aggregate consistency a <b>saga</b> (Lesson 32), not a bigger aggregate.</li>
+  <li><b>Trap 4 — events coupled to your current code.</b> Storing events as raw serialized objects that change with the code means old events won't deserialize after a refactor — you've made an <i>immutable, forever</i> record depend on a moving schema. Treat the event as a versioned, additive-only contract and <b>upcast</b> old shapes on read (Lessons 18/24/33). Future-you must be able to read past-you's events for as long as the log exists.</li>
+</ul>
+
+<table>
+  <tr><th>Question</th><th>State-stored DB</th><th>Event-sourced store</th></tr>
+  <tr><td>Current value read</td><td><code>0.4 ms</code> row read</td><td>fold (→ snapshot to keep it <code>0.4 ms</code>)</td></tr>
+  <tr><td>"How did we get here?"</td><td>gone (overwritten)</td><td>every fact, in order, forever</td></tr>
+  <tr><td>"Value last Tuesday?"</td><td>impossible</td><td>fold events up to that time</td></tr>
+  <tr><td>New read shape next year</td><td>backfill migration</td><td>replay the log into a new projection</td></tr>
+  <tr><td>Storage over time</td><td>~flat (one copy/entity)</td><td>grows forever (every change)</td></tr>
+  <tr><td>Cost of a mistake</td><td>UPDATE the row</td><td>append a compensating event</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>We took the instinct Lesson 25 showed with its ledger — keep the immutable history, derive the number — and made it a general storage model. The <b>digital wallet</b>, event-sourced, stores the ordered stream of <b>events</b> as its one source of truth and computes current state by <b>folding</b> them, inverting Lessons 33/37 where state was the truth and events a side effect ("the outbox becomes the database"). <b>Estimate</b> named two storage walls: a log that grows <code>~130 GB/day ≈ 47 TB/year</code> and never shrinks (vs a state DB's flat ~100 GB), and a fold whose cost grows with one aggregate's history — <code>20 seconds</code> to load Lesson 25's 100M-event hot account. <b>Model</b> gave four parts: immutable past-tense <b>events</b> (corrected by appending, never editing), the <b>aggregate</b> as both fold boundary and invariant boundary, the <b>fold</b> (<code>state = events.reduce(apply, empty)</code>, walked through $0→$100), and the <b>guarded append</b> that enforces a rule with Lesson 6's compare-and-set instead of a lock. <b>Tracing</b> showed a command fold-to-decide then append-if-version-matches (no lock, no double-spend), a query served from a projected read model because <i>you cannot query a log</i> (which is why event sourcing needs CQRS), and a replay that builds any new view — or answers "the balance last Tuesday" — for free because every fact was kept. The <b>first bottleneck</b>, folding a long-lived aggregate on every command, falls to a <b>snapshot</b> — Lesson 25's snapshot generalized to "a cached fold," a <code>100,000×</code> cut that stays safe because a snapshot is derived and rebuildable, never the truth. Past it: you must project to answer queries (CQRS), version-and-upcast events because their schema is forever, and accept an unbounded log as the price of total history. The real lesson: <span class="key">choose whether your truth is the latest value or the whole history — event sourcing keeps the history and derives the value, buying perfect audit, time-travel, and replay-any-view at the cost of unbounded storage and a "current state" that must be folded and projected. Perfect auditability &amp; replayability vs query complexity and storage.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson follows the log where it inevitably leads — the data grows forever, so not all of it can live on fast disk:</b></p>
+  <p style="margin:.2rem 0">• <b>Tiered storage &amp; data lifecycle:</b> the event log (this lesson), the object pile (Lesson 20), and the warehouse (Lesson 29) all grow without bound, but a 3-year-old event is read a thousand times less often than yesterday's (Lesson 2's access skew, again). Move data <b>hot → warm → cold → archive</b> (RAM → SSD → HDD → object store → glacier) by age and access frequency, governed by TTL/retention policies — and meet the <b>retrieval-latency cliff</b> of the cold tiers, where reading an archived byte can take <i>minutes</i>. The trade shifts from auditability to <b>storage cost vs retrieval latency and operational policy.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">event sourcing</span>
+    <span class="pill">event (immutable fact)</span>
+    <span class="pill">aggregate</span>
+    <span class="pill">fold / apply</span>
+    <span class="pill">derived state</span>
+    <span class="pill">append-only log</span>
+    <span class="pill">expected-version append</span>
+    <span class="pill">optimistic concurrency</span>
+    <span class="pill">snapshot (cached fold)</span>
+    <span class="pill">projection / read model</span>
+    <span class="pill">replay</span>
+    <span class="pill">compensating event</span>
+    <span class="pill">event versioning / upcasting</span>
+    <span class="pill">temporal query / time-travel</span>
+    <span class="pill">event sourcing vs CQRS</span>
+  </p>
+  <p>That's Lesson 38, built on Lesson 25's append-only ledger and balance snapshot (event sourcing in one domain, generalized here), Lesson 33's outbox (the inversion — events as the truth, not a side effect), Lesson 37's CQRS (the projections that answer "current state?"), Lesson 6's compare-and-set (the guarded append that enforces an invariant without a lock), Lesson 22's "avoid the lock," Lesson 32's compensations (correcting a wrong event), Lessons 9/29/33's replay/kappa (rebuilding any view), and Lessons 18/24's additive-only contracts (why event schemas are forever). <b>Ask me follow-ups</b> — e.g. "how do I decide the aggregate boundary in practice?", "how does snapshot-every-N interact with a concurrent append at version N?", "what does upcasting a v1 event to v3 actually look like in code?", "when is event sourcing overkill and a plain audit table enough?", or "do I need event sourcing to do CQRS, or CQRS to do event sourcing?" When you're ready, say <b>next</b> and we'll go deeper on <i>Tiered storage &amp; data lifecycle — when the log outgrows fast disk.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "A teammate says 'we already write events to an outbox in the same transaction as the row update (Lesson 33) — so we're basically event-sourced already.' Why is that not event sourcing?",
+    options: [
+      {t:"In the outbox design the current STATE is the source of truth (the row you UPDATE), and the event is a derived side effect emitted for downstream consumers. Event sourcing INVERTS that: the event stream is the source of truth and current state is the derived side effect, computed by folding the events — nothing is stored as an authoritative current-state row at all. 'The outbox becomes the database.' The truth moved from the state to the log.",
+       ok:true,
+       fb:"Right. It's about which thing is authoritative. Outbox: state is truth, events echo it. Event sourcing: events are truth, state is folded from them. That inversion is what buys total history, time-travel, and replay — and what costs you an unbounded log and a 'current state' you must derive."},
+      {t:"They're the same thing — as long as you emit an event for every change, it doesn't matter whether the row or the log is authoritative, so the outbox already gives you full event sourcing including replay and time-travel.",
+       ok:false,
+       fb:"It matters a great deal. In the outbox design the row is overwritten on each change, so the history the events represent is not the authoritative record — and typically the outbox is trimmed after publishing. You can't replay years of history or ask 'what was the balance last Tuesday' from a mutable state row plus a purged outbox. Event sourcing keeps the full event stream AS the truth, forever, which is what makes replay and time-travel possible."},
+      {t:"The outbox is actually stronger than event sourcing because it stores both the state and the events, so you get current-state reads AND history with no downsides.",
+       ok:false,
+       fb:"Storing both isn't free and isn't what's happening: the outbox row is a transient publish buffer, not a retained history, and the state row has no history at all. Event sourcing deliberately stores ONLY the events as truth (deriving state) precisely to have one authoritative history — the tradeoff it accepts is an unbounded log and folded reads, not 'no downsides.'"}
+    ]
+  },
+  {
+    stem: "Your event-sourced wallet has a hot merchant account with 100M events. Reads are timing out because each one folds all 100M events (~20 s). What's the right fix, and why is it safe?",
+    options: [
+      {t:"Snapshot the aggregate: periodically store the folded state at version N, then a load reads the latest snapshot and folds only the events after it (e.g. snapshot every 1,000 events → fold ≤1,000 → ~0.2 ms, a ~100,000× cut). It's safe because the snapshot is DERIVED, not the truth — if it's ever wrong or the apply logic changes, you discard it and rebuild it by replaying the events, which are still the sole source of truth.",
+       ok:true,
+       fb:"Exactly. A snapshot is a cached fold (Lesson 25's balance snapshot, generalized): it restores state-stored read speed while the event log stays authoritative. Like every cache in this course, it's fast because it's derived and correct because you never trust it as the truth — it's always rebuildable from the log."},
+      {t:"Switch that account to store a mutable balance column and stop appending events for it, so reads are a single row lookup.",
+       ok:false,
+       fb:"That abandons event sourcing for the one account where the history is most valuable — a hot merchant account is exactly where audit and 'how did we get here' matter most. You'd lose replay, time-travel, and the immutable audit trail. The fold cost is fixable with a snapshot (a cache in front of the fold); you don't have to give up the log to get fast reads."},
+      {t:"Delete the account's old events once they've been folded, keeping only the most recent few, so every fold is short.",
+       ok:false,
+       fb:"Deleting events destroys the very thing event sourcing exists to keep — the immutable history — and it breaks every projection or replay that would read those events, plus any audit. The correct way to make the fold short is a snapshot (which lets you SKIP old events without deleting them). Trim the log only as a last resort for storage, knowing it forfeits the audit/replay you adopted event sourcing for."}
+    ]
+  },
+  {
+    stem: "A deposit event was recorded with the wrong amount ($1,000 instead of $100). An engineer wants to open the event store and edit that event's payload to $100. Why is this a serious mistake, and what should they do instead?",
+    options: [
+      {t:"An event is an immutable fact that already happened; editing it rewrites history and silently corrupts everything folded from it — snapshots, read models, and any past replay now disagree with a record that claims it was always $100. Instead, APPEND a new compensating event (e.g. a $900 correction / reversal), exactly as a ledger issues a refund rather than erasing a charge. Both the wrong fact and its correction stay in the log, which is what keeps the audit honest.",
+       ok:true,
+       fb:"Right. Immutability is the whole foundation: derived state and audit are only trustworthy because events never change. A mistake is corrected forward with a compensating event (Lesson 25's refund, Lesson 32's compensation), leaving a truthful trail of what happened AND what fixed it — never by editing the past."},
+      {t:"It's fine to edit the event as long as you also manually update the current snapshot to match, since the snapshot is what reads actually use.",
+       ok:false,
+       fb:"Editing the event still rewrites history, and hand-patching the snapshot doesn't save you: every OTHER projection and any future replay-from-zero will re-derive from the edited event and disagree with reality (and each other). The point of event sourcing is that all derived state comes from the immutable log; the moment you edit the log, 'derived from the truth' becomes 'derived from a forgery.' Append a compensating event instead."},
+      {t:"The mistake is only that they should delete the wrong event entirely rather than edit it, so the incorrect amount leaves no trace.",
+       ok:false,
+       fb:"Deleting is just as bad as editing — it's still mutating history, it still breaks snapshots/projections/replay, and 'leaves no trace' is the opposite of what an auditable system wants. The correct record is that a $1,000 deposit WAS entered and then corrected by $900; erasing it hides a real event. Append the correction; never delete."}
+    ]
+  },
+  {
+    stem: "Your event-sourced system needs to answer 'show me every account currently overdrawn (balance < 0).' A dev proposes scanning the event log to compute it. What's wrong, and what does this reveal about event sourcing?",
+    options: [
+      {t:"You can't SELECT over a log — the event store answers 'give me aggregate 7's events', not 'find aggregates whose folded balance is negative', so scanning-and-folding every account per query is hopeless. The fix is a PROJECTION (Lesson 37's read model): a consumer folds the event stream into a query-shaped view (e.g. an index of balances) that you query directly. This reveals that event sourcing needs CQRS to be usable for queries — the log is a great write-side truth but a poor query surface, so you project it into read models.",
+       ok:true,
+       fb:"Exactly. Event sourcing decides what the truth IS (the log); CQRS decides how you READ it (projected shapes). The two are independent patterns but pair naturally because an event-sourced write side emits precisely the stream projections consume. 'How do I query current state?' is answered by projecting, never by scanning the log."},
+      {t:"Nothing is wrong — scanning the full event log on every query is the intended way to read an event-sourced system, and it scales fine because events are small.",
+       ok:false,
+       fb:"Scanning and folding the entire log for every account on every query is catastrophically expensive (it's the O(history) fold problem multiplied across all aggregates) and still can't be expressed as a simple filter over a stream of raw facts. Event-sourced systems answer queries from PROJECTIONS built by consuming the stream once, not by re-scanning the log per request."},
+      {t:"It proves event sourcing is the wrong choice whenever you need queries, so you should abandon it and go back to a single state-stored table.",
+       ok:false,
+       fb:"It proves you need a read model, not that you need to abandon event sourcing. The query difficulty is expected and solved by projecting the events into query-shaped views (CQRS, Lesson 37) — that's the standard pairing. You keep the event log as the auditable, replayable truth AND get fast arbitrary queries from projections; you don't have to give up one for the other."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

@@ -589,11 +589,28 @@
     update; validate invariants on the write model, rebuild read models by replay L09/29), hiding the
     gap from the UX. Trade: read/write optimization vs the eventual-consistency gap between them.
     (Lesson 0037)
-38. Event sourcing — take L33/L25 to its limit: store the **stream of events** as the source of
-    truth and DERIVE current state by folding them (the ledger L25 generalized), so history is free,
-    replay (L09/33) rebuilds any view, and audit is total — paid for in snapshotting to avoid
-    re-folding millions of events, schema-evolving old events, and the "how do I query current state"
-    problem (→ CQRS L37). Trade: perfect auditability/replayability vs query complexity & storage.
+38. ✅ **Event sourcing** — L25's digital wallet re-built event-sourced: store the **stream of events**
+    as the sole source of truth and DERIVE current state by **folding** them (`state = events.reduce(
+    apply, empty)`, L25's ledger generalized to every aggregate) — inverting L33/L37 where state was
+    truth and events a side effect ("the outbox becomes the database"). Estimate two storage walls:
+    the log grows ~130 GB/day ≈ **47 TB/yr and never shrinks** (vs a state DB's flat ~100 GB), and the
+    fold cost grows with one aggregate's history (100M-event hot account = **20 s** to load per read).
+    Model four parts: immutable past-tense **events** (corrected by APPENDING a compensating event L25/
+    L32, never editing), the **aggregate** as fold-and-invariant boundary, the **fold/apply**, and the
+    **guarded append** (expected-version = L06 compare-and-set enforces `balance≥0` with NO lock L22 —
+    two concurrent withdrawals can't both land at v6). Trace command (fold-to-decide → append-if-version-
+    matches), query (served from a PROJECTION L37, because you can't SELECT over a log → event sourcing
+    NEEDS CQRS to answer "current state?"), replay (any new view or "balance last Tuesday" free, L09/29/33
+    kappa + time-travel). First wall = folding a long-lived aggregate every command → **snapshot** = a
+    cached fold (L25 generalized; snapshot every 1,000 → fold ≤1,000 ≈ 0.2 ms = **100,000× cut**, safe
+    because derived/rebuildable, never the truth). Then: project for queries (CQRS), version+**upcast**
+    events (schema is forever, L18/24 additive-only, L33 no schema coupling), unbounded log = price of
+    total history. Four traps: mutate/delete an event (rewrites history, corrupts every fold/projection);
+    fold whole log per read (O(history), 20 s); aggregate too big (L06 contention / L22 serial gate →
+    cross-aggregate = saga L32); events coupled to current code (won't deserialize after refactor).
+    Distinct from CQRS (L37): ES decides what the truth IS (the log), CQRS how you READ it (projected
+    shapes) — independent but pair naturally. Trade: perfect auditability/replayability vs query
+    complexity & unbounded storage. (Lesson 0038)
 39. Tiered storage & data lifecycle — the L20/29/33 data piles grow forever; not all bytes are worth
     the same. Move data hot→warm→cold→archive (RAM/SSD/HDD/object-store/glacier) by age &
     access frequency (L02 skew again), with TTL/retention policies and the retrieval-latency cliff
