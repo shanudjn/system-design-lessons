@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 39 — Tiered Storage &amp; Data Lifecycle: When the Log Outgrows Fast Disk</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 39 · Worked Example</div>
+  <h1>Tiered Storage &amp; Data Lifecycle: When the Log Outgrows Fast Disk</h1>
+  <p class="lead">Three lessons in a row handed us a pile of bytes that only ever grows. Lesson 20's object store held 100 PB of dashcam clips. Lesson 29's warehouse kept 11 TB of orders and re-scanned quarters of history. Lesson 38's event log grew <code>~130 GB/day ≈ 47 TB/year</code> and, because events are immutable, <b>never shrinks</b>. Each of those lessons ended on the same quiet worry: <i>we can't afford to keep all of this on fast disk forever.</i> This lesson is the answer, and it rests on one fact you already met in Lesson 2: <b>reads are wildly skewed toward new data.</b> Yesterday's event is read constantly; a three-year-old one is read a thousand times less often — but you're still paying the same fast-SSD price to store it. So we split storage into <b>tiers</b> — RAM → SSD → HDD → object store → glacier — that get exponentially cheaper and exponentially slower as you go down, and we let each byte <b>flow downhill as it cools</b>, governed by a <b>lifecycle policy</b>. We'll take one concrete system — Lesson 38's <b>event log</b>, kept 7 years for compliance — and watch. We'll <b>estimate</b> the bill for keeping it all hot versus tiering it (a ~44× cut); <b>model</b> the tier ladder, temperature, and the policy that moves data; <b>trace</b> a write, a hot read, a cold read, and the background sweep that demotes and finally deletes; and hit the first wall — the <b>retrieval-latency cliff</b>, where reading an archived byte takes <i>minutes</i>, not milliseconds. The trade shifts from Lesson 38's auditability to <b>storage cost vs retrieval latency &amp; operational policy.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0039-tiered-storage-lifecycle.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>Lesson 38's event log: <b>5,000 events/second</b>, each <code>~300 B</code>, appended forever and never overwritten. A regulator says we must keep every event for <b>7 years</b>, then we may delete it. That's the whole system — a firehose of small immutable records with a fixed retention window. The question is not <i>how to store it</i> (we know: append to a log). The question is <b>where</b> each record should live as it ages, because a record written today and a record written three years ago have the same size but are worth wildly different amounts of money to keep on fast disk.</p>
+
+<div class="diagram"><pre>
+  ACCESS FREQUENCY DECAYS WITH AGE  (Lesson 2's skew, drawn over time)
+
+   reads/day
+   to a record
+      ^
+ high |#
+      |##
+      |###
+      |#####
+      |########__
+  low |###############_____________________________________
+      +--------------------------------------------------------> age
+       today   1wk        90d              1yr                7yr
+       [ HOT ] [ WARM ]   [ COLD ]         [ ARCHIVE ..................... ]
+
+  Same 300 B whether it's 1 day or 6 years old. But the 6-year-old byte is
+  read ~1000x less often -- so paying the fast-SSD price to store it is waste.
+  TIERED STORAGE = let each byte fall to a cheaper/slower tier as it COOLS.
+</pre></div>
+
+<p class="note"><span class="key">Tiered storage keeps data in a hierarchy of storage classes that trade price against retrieval latency, and a lifecycle policy moves each record to a cheaper, slower tier as its access frequency falls.</span> Everything in this lesson comes from two facts standing next to each other: storage tiers get roughly <b>5× cheaper and ~10× slower</b> at each step down, and access frequency <b>collapses with age</b>. Put those together and the design writes itself: cheap-and-slow is exactly right for old-and-rarely-read.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Tier / storage class</b> — a place to keep bytes with a fixed <code>$/GB-month</code> and a fixed retrieval latency. Cheaper tiers are slower. Examples: RAM, SSD, HDD, object store, glacier/tape.</li>
+  <li><b>Temperature (hot / warm / cold / archive)</b> — how often data is read. <b>Hot</b> = read constantly; <b>archive</b> = read almost never. Age is usually a good <i>proxy</i> for temperature, but not always (Move 4).</li>
+  <li><b>Lifecycle policy</b> — the rules that automatically move a record to another tier, or delete it, based on age or access. The thing that makes tiering happen without a human.</li>
+  <li><b>TTL (time to live)</b> — "after N days, do X" (demote, or delete). The knob a lifecycle rule turns.</li>
+  <li><b>Retention</b> — the minimum time you are required to keep data (compliance). A <i>floor</i> you may not delete below. Its opposite is a mandated <i>maximum</i> (e.g. privacy law says delete after N days).</li>
+  <li><b>Tiering vs expiration</b> — two different actions a policy can take: <b>tier</b> = move to cheaper storage but keep it retrievable; <b>expire</b> = delete permanently. Never confuse them.</li>
+  <li><b>Retrieval / rehydration</b> — pulling cold or archived data back up to a readable tier. On the archive tier this takes <i>minutes to hours</i> and often a per-GB fee — the cliff of Move 4.</li>
+</ul>
+
+<h2>Move 1 — Estimate: the bill for keeping it all hot vs tiering it</h2>
+<p>Two numbers drive everything: how much data we accumulate over the 7-year window, and how skewed the reads are. Let's get both, then price the naive design against the tiered one.</p>
+
+<div class="card calc">
+  <p><b>How much data, total.</b> <code>5,000 events/s × 300 B = 1.5 MB/s = ~130 GB/day</code>. Over the 7-year retention window: <code>130 GB × 365 × 7 ≈ <b>332 TB</b></code>, and it only grows until the oldest data starts aging out at year 7. Call it ~330 TB in steady state.</p>
+  <p><b>How skewed the reads are (Lesson 2).</b> Suppose ~90% of reads touch data from the <b>last 7 days</b>. Seven days is <code>130 GB × 7 = ~910 GB ≈ 1 TB</code> — which is <code>1 / 330 = <b>0.3%</b></code> of the pile serving <b>90%</b> of the traffic. The other 99.7% is read rarely, and the oldest years almost never. That is the whole opportunity.</p>
+  <p><b>The naive bill — everything on hot SSD.</b> Take hot SSD at <code>$0.10/GB-month</code>. <code>330,000 GB × $0.10 = <b>$33,000/month ≈ $396k/year</b></code> — to keep 99.7% of it fast for the 0.3% of reads that are, and the rest for almost nothing.</p>
+</div>
+
+<p>Now tier it. Pick four classes (real cloud pricing is close to these), each ~5× cheaper and ~10× slower than the one above, and slice the data by age:</p>
+
+<div class="diagram"><pre>
+  THE TIER LADDER  (price and latency per step; numbers approximate but realistic)
+
+  tier      medium              $/GB-month   read latency        step down = ...
+  --------  ------------------  -----------  ------------------  -------------------
+  HOT       SSD / NVMe          $0.100       ~1 ms               (baseline)
+  WARM      HDD / std object    $0.020       ~10 ms              ~5x cheaper, ~10x slower
+  COLD      infrequent object   $0.004       ~100 ms - 1 s (+fee) ~5x cheaper, ~10x slower
+  ARCHIVE   glacier / tape      $0.001       MINUTES to HOURS    ~4x cheaper, ~1000x slower  <-- the CLIFF
+
+  SLICE THE 330 TB BY AGE, put each slice on the right tier:
+
+  age range        data          tier      monthly cost
+  0 - 7 days       ~1 TB         HOT       1,000 x $0.100 = $  100
+  7 - 90 days      ~10.8 TB      WARM      10,800 x $0.020 = $  216
+  90d - 1 year     ~35.8 TB      COLD      35,800 x $0.004 = $  143
+  1 - 7 years      ~285 TB       ARCHIVE   285,000 x $0.001 = $ 285
+                   --------                                 --------
+                   ~332 TB                        TOTAL  ~ $  744 / month
+
+  All-hot: $33,000/mo.   Tiered: ~$744/mo.   =>  ~44x cheaper, same data kept.
+</pre></div>
+
+<div class="card calc">
+  <p><b>Double-check the arithmetic.</b> Warm span = <code>90 − 7 = 83 days × 130 GB ≈ 10.8 TB → 10,800 × $0.02 = $216</code>. Cold span = <code>365 − 90 = 275 days × 130 GB ≈ 35.8 TB → 35,800 × $0.004 = $143</code>. Archive = <code>6 years × 47.5 TB/yr ≈ 285 TB → 285,000 × $0.001 = $285</code>. Sum = <code>100 + 216 + 143 + 285 = <b>$744/month</b></code> vs <code>$33,000</code> all-hot. <span class="key">The cut is ~44×, and every dollar of it came from the read skew — you moved the cold 99.7% onto storage that's cheap precisely because it's slow, and left the hot 0.3% fast.</span> Note the shape: the <i>biggest</i> slice of data (archive, 86% of the bytes) is the <i>smallest</i> slice of the bill (38%), because its per-GB price is 100× lower.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — price vs retrieval latency, tier by tier.</b> There is no free lunch in the ladder: every step down multiplies your savings <i>and</i> multiplies the time to read the data back. Hot SSD is 100× the price of glacier and 100,000× faster to read. So tiering is not "make storage cheap" — it's <b>match each byte's tier to how fast you'll need it back.</b> A byte you might need in 1 ms must stay hot no matter how old it is; a byte you'll accept waiting hours for can go to archive. Age is the cheap proxy we use to guess that, but the real variable is <b>retrieval urgency</b>, and Move 4 is about what happens when the proxy is wrong.</p>
+
+<h2>Move 2 — Model: the ladder, the temperature, and the policy that moves data</h2>
+<p>Three parts. The <b>ladder</b> is the fixed menu of tiers. The <b>temperature</b> of a record decides which rung it belongs on. The <b>lifecycle policy</b> is the background machinery that actually moves records down the ladder as they cool — and deletes them at the end.</p>
+
+<div class="card">
+  <p style="margin:.2rem 0"><b>The ladder is a menu, not a decision.</b> Each tier is just <code>(price, latency)</code>. You don't design the tiers — the cloud/hardware gives them to you. You design the <b>mapping</b> from data to tier. The whole skill is deciding, per class of data, how far down the ladder it may fall and how fast it must come back.</p>
+  <p style="margin:.6rem 0 .2rem"><b>Temperature is what you're really sorting by — age is only a proxy.</b> The rung a record belongs on is set by how often it's read and how urgently. For an append-only log, <i>age predicts temperature almost perfectly</i> (new = hot, old = cold), so "demote by age" is a fine policy. But the two can diverge — a dormant account reactivated after two years is suddenly hot despite being old (Move 4's promotion path). Sort by temperature; use age as the estimator when it's a good one.</p>
+  <p style="margin:.6rem 0 .2rem"><b>The lifecycle policy is a background sweep, not a per-read decision.</b> A record carries metadata: <code>created-at</code>, <code>last-accessed</code>, current <code>tier</code>. A background job (Lesson 24's batched, throttled sweep) walks the data and applies rules: <code>age &gt; 7d → warm</code>, <code>age &gt; 90d → cold</code>, <code>age &gt; 1y → archive</code>, <code>age &gt; 7y → DELETE</code>. Two actions, kept strictly separate: <b>tiering</b> (move, still retrievable) and <b>expiration</b> (delete forever). Conflating them is how you either keep paying for data you were allowed to drop, or delete data you were required to keep.</p>
+</div>
+
+<p>Keep the <b>index separate from the data</b> — this is Lesson 20's metadata-plane / data-plane split, and it's the move that makes cold tiers usable:</p>
+
+<div class="diagram"><pre>
+  SPLIT THE INDEX (small, always HOT) FROM THE DATA (huge, tiered)
+
+  METADATA PLANE  (tiny, stays HOT forever)          DATA PLANE (330 TB, tiered)
+  ----------------------------------------           ------------------------------
+  event_id | created_at  | tier    | locator  --->   HOT  : recent segments (SSD)
+  ...9f3a  | 2026-07-26  | HOT     | seg-8891 --+     WARM : older segments (HDD)
+  ...1c02  | 2024-02-11  | ARCHIVE | glc-0247 ----->  COLD : infrequent object store
+  ...              (~a few GB total)                  ARCH : glacier / tape
+
+  Because the INDEX is always hot, you can always FIND any event in ~1 ms and know
+  exactly which tier holds its bytes. Only the BYTES are slow to fetch from cold tiers.
+  "Where is event X?" is never the slow part; "give me X's payload from archive" is.
+</pre></div>
+
+<p class="note why"><b>Name the trade-off — a lifecycle policy encodes two opposite legal limits at once.</b> Retention is a <b>floor</b> (you must keep payment records 7 years — deleting early is a compliance violation) and privacy law is often a <b>ceiling</b> (you must delete personal data after N days — keeping it too long is a liability). The same policy engine enforces both: an expiration rule is either "don't you dare delete before <code>T</code>" or "you must delete by <code>T</code>." <span class="key">Tiering saves money; expiration manages risk. They run in the same sweep but answer to different masters — cost on one side, law on the other — so never let a cost-driven demotion quietly turn into a delete, and never let a legal-hold record get expired.</span></p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Four runs: a write (always lands hot), a hot read (fast, the common case), a cold/archive read (the cliff, previewed here), and the background sweep that does the demoting and the deleting.</p>
+
+<h3>Path A — a write (a new event arrives)</h3>
+<div class="diagram"><pre>
+  append event  {id: 9f3a, type: MoneyDeposited, ...}
+
+   1. Write the payload to the current HOT segment (SSD) -- newest data is hottest,
+        so it always starts at the top of the ladder. ~1 ms, done.
+   2. Insert one row in the METADATA index: {id, created_at=now, tier=HOT, locator}.
+   3. Return success. No tiering decision at write time -- cooling happens LATER,
+        in the background sweep (Path D). Writes never touch cold tiers.
+</pre></div>
+
+<h3>Path B — a hot read (the 90% case: recent data)</h3>
+<div class="diagram"><pre>
+  GET event 9f3a  (written today)
+
+   1. Look up 9f3a in the HOT metadata index -> {tier: HOT, locator: seg-8891}. ~1 ms.
+   2. tier == HOT -> read the bytes straight from SSD. ~1 ms. Return.
+
+  Total ~2 ms. This is 90% of traffic (Move 1's skew), served entirely from the
+  cheap-to-serve 0.3% of the data that we chose to keep fast. This is WHY tiering pays.
+</pre></div>
+
+<h3>Path C — a cold / archive read (the rare case: an old event)</h3>
+<div class="diagram"><pre>
+  GET event 1c02  (written 2 years ago -> tier ARCHIVE)
+
+   1. Look up 1c02 in the metadata index -> {tier: ARCHIVE, locator: glc-0247}. ~1 ms.
+        (Finding it is still fast -- the index is always hot.)
+   2. tier == ARCHIVE -> the bytes are on glacier/tape. You CANNOT read them inline.
+        Issue a RESTORE (rehydration) job and respond 202 "retrieval in progress".
+   3. Minutes to hours later, the bytes are copied up to a temporary readable tier.
+        Now the read succeeds -- and you often pay a per-GB retrieval fee.
+
+  This is the CLIFF. A read went from ~2 ms (Path B) to MINUTES. Fine for a rare
+  audit; a disaster if a user-facing request lands here. Move 4 is how to not fall off it.
+</pre></div>
+
+<h3>Path D — the lifecycle sweep (demote as data cools, delete at the end)</h3>
+<div class="diagram"><pre>
+  Background job, runs continuously, throttled (L24: batch + don't starve live traffic):
+
+   for each segment, by age:
+     age crosses  7 days  -> COPY to WARM tier, update index tier=WARM, free HOT copy
+     age crosses 90 days  -> COPY to COLD tier, update index tier=COLD, free WARM copy
+     age crosses  1 year  -> COPY to ARCHIVE,   update index tier=ARCHIVE, free COLD copy
+     age crosses  7 years -> EXPIRE: delete bytes + tombstone the index row (L20/L38)
+
+  Two different actions, never conflated:
+     TIER  = move to cheaper storage, STILL retrievable   (a cost decision)
+     EXPIRE = delete permanently, gone forever            (a compliance decision)
+
+  Order matters: write the new-tier copy and update the index BEFORE freeing the old
+  copy -- or a crash mid-move loses the only copy (L20's "commit metadata last" instinct).
+</pre></div>
+
+<p>Path B is why you tier (90% of reads never leave hot); Path C is the price you agreed to pay for the cold 99.7% (rare reads are slow); Path D is the machinery that keeps the bill at $744 instead of $33,000 and honors the 7-year law. But look again at Path C: a read that should be milliseconds became <i>minutes</i>. If that ever lands on a path a user or a live system is waiting on, tiering just turned a cost win into an availability incident. That's the wall.</p>
+
+<h2>Move 4 — Find the first bottleneck: the retrieval-latency cliff</h2>
+<p>Every step down the ladder was ~10× slower — until the last one. Hot→warm→cold is milliseconds to a second: annoying but survivable. Cold→archive is a <b>cliff</b>: seconds become <b>minutes to hours</b>, because the bytes may be on spun-down disks or physical tape that has to be staged before it can be read. The naive reflex — "then keep everything warm so nothing is ever slow" — throws away the entire 44× saving (you're back to paying for 330 TB of fast disk). The real fix isn't to flatten the ladder; it's to <b>make sure nothing latency-sensitive is ever parked below the tier its SLA allows.</b></p>
+
+<div class="card calc">
+  <p><b>Worked: tier to the access SLA, not to the age.</b> Suppose 0.1% of old events are pulled by a support tool that must answer in <b>&lt; 1 second</b>. If those live in archive, every such request falls off the cliff (minutes) and the tool is unusable. Keeping them in <b>cold</b> instead of archive costs <code>$0.004</code> vs <code>$0.001</code> per GB-month — 4× more for that slice — but stays under a second. You don't demote by age alone; you demote by <b>the slowest retrieval the data's access pattern can tolerate.</b> The support-critical slice has a tighter SLA, so it stops one rung higher. Age was only ever a proxy for temperature — when a known access pattern contradicts it, the access pattern wins.</p>
+  <p><b>Worked: keep the index hot even when the data is frozen (Lesson 20).</b> The metadata plane is a few GB — keep <i>all</i> of it hot forever for pennies. Then "does event X exist / when / which tier?" is always ~1 ms, and only fetching X's <i>payload</i> from archive is slow. You never make a user wait minutes just to learn <i>whether</i> their record exists — only to read its cold bytes, and only when they actually ask for them.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — a lower tier's storage saving vs its per-read retrieval tax.</b> This is the trap that eats naive tiering. Cold and archive tiers are cheap to <i>store</i> but charge a <b>per-GB fee every time you read</b> (plus the latency). If you demote data by age while it's still read often, you save on storage and then lose it all — and more — to retrieval fees. <span class="key">The tier must follow the data's <i>temperature</i> (how often it's read), not just its <i>age</i>. Age is a good proxy for a write-once log; it's a terrible one for data that's old but still hot.</span> The right mental model: cheap-to-store, expensive-to-read is a bet that you almost never read it. Only demote data that will honor that bet.</p>
+
+<p>Past the cliff, three more walls decide whether your lifecycle design is sound:</p>
+
+<div class="diagram"><pre>
+  THE THREE WALLS AFTER THE CLIFF
+
+  1. Retrieval FEES ambush a mis-tiered slice.  Demoting still-read data to cold/archive
+        saves storage $ but pays a per-read fee each access -> can cost MORE than staying hot.
+        -> Tier by TEMPERATURE (access frequency), not age alone. Watch read counts, not just
+           the clock. A dashboard that scans "cold" every hour does NOT belong on a cold tier.
+
+  2. The SMALL-OBJECT tax (Lesson 20 again).  Archiving billions of 300 B events one-by-one
+        pays per-object request + minimum-size fees that dwarf the bytes.
+        -> PACK cold data into large segments/containers before demoting (compact first),
+           so you archive a few big blobs, not a billion tiny ones.
+
+  3. Thrash / flapping thresholds (Lessons 2, 10).  A record parked right at a tier boundary,
+        or a badly-chosen age cutoff, gets demoted then re-read then promoted, over and over --
+        paying a move (and a retrieval fee) each way.
+        -> Hysteresis: demote on age, but require a real cooling-off gap before promoting back;
+           size thresholds against the real access histogram, not a guess.
+</pre></div>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — tiering by age when age isn't the temperature.</b> A write-once log cools predictably, so "demote by age" is safe. But data that's old yet still read (a popular legacy report, a reactivated account) will rack up retrieval fees and cliff-latency if you demote it on age alone. Sort by <b>access frequency</b>; use age only where it's a faithful proxy — and keep a promotion path for data that heats back up.</li>
+  <li><b>Trap 2 — confusing tiering with expiration.</b> <i>Tiering</i> moves data to cheaper storage but keeps it retrievable; <i>expiration</i> deletes it forever. A policy bug that expires when it meant to tier destroys data you were legally required to keep; one that never expires keeps personal data past its lawful maximum. They run in the same sweep but answer to cost and law respectively — keep the two actions, and their thresholds, explicitly separate and audited.</li>
+  <li><b>Trap 3 — putting the index on a cold tier too.</b> If finding a record is as slow as reading it, every existence check falls off the cliff. Keep the small, always-hot <b>metadata plane</b> (Lesson 20) so "where/whether/which tier" is always ~1 ms; let only the bulky payloads go cold. You should never wait minutes to learn a record <i>exists</i>.</li>
+  <li><b>Trap 4 — archiving a billion tiny objects individually, or freeing the old copy before the new one is committed.</b> Cold tiers charge per request and per object, so pack small records into big segments before demoting (Lesson 20's small-file problem). And move data <i>copy-new-then-free-old</i>, updating the index before releasing the previous tier — a crash mid-move must never leave a record with zero copies (Lesson 20's "commit metadata last").</li>
+</ul>
+
+<table>
+  <tr><th>Question</th><th>All-hot (single tier)</th><th>Tiered by lifecycle</th></tr>
+  <tr><td>Store 330 TB / month</td><td><code>~$33,000</code></td><td><code>~$744</code> (~44× less)</td></tr>
+  <tr><td>Read yesterday's event</td><td><code>~1 ms</code></td><td><code>~1 ms</code> (hot)</td></tr>
+  <tr><td>Read a 3-year-old event</td><td><code>~1 ms</code></td><td>minutes (archive) — the cliff</td></tr>
+  <tr><td>"Does event X exist?"</td><td><code>~1 ms</code></td><td><code>~1 ms</code> (index stays hot)</td></tr>
+  <tr><td>Cost driver</td><td>storage $/GB (paid on all bytes)</td><td>retrieval fees + latency on cold reads</td></tr>
+  <tr><td>What sets the tier</td><td>— (one tier)</td><td>temperature / retrieval SLA, not just age</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>The immutable piles from Lessons 20, 29, and 38 all grow without bound, but their reads are skewed toward new data (Lesson 2), so paying one fast-disk price for every byte is waste. We took Lesson 38's <b>event log</b> — 5,000 events/s, 300 B each, kept 7 years — and tiered it. <b>Estimate</b> priced the two designs: ~330 TB all on hot SSD is <code>~$33,000/month</code>, but 90% of reads touch the last 7 days (<code>~1 TB</code>, 0.3% of the data), so slicing by age across a HOT→WARM→COLD→ARCHIVE ladder (each ~5× cheaper, ~10× slower) drops the bill to <code>~$744/month</code> — a <b>~44× cut</b>, with the biggest slice of bytes (archive, 86%) being the smallest slice of the bill (38%). <b>Model</b> gave three parts: the fixed tier <b>ladder</b>, the <b>temperature</b> that decides a record's rung (age is only a proxy), and the background <b>lifecycle policy</b> that demotes as data cools and, at the 7-year line, <b>expires</b> it — with <i>tiering</i> (a cost move, still retrievable) kept strictly separate from <i>expiration</i> (a compliance move, gone forever), and the small <b>index kept hot</b> (Lesson 20) while only the payloads cool. <b>Tracing</b> showed writes always landing hot, hot reads served in ~2 ms (the 90% that make tiering pay), cold/archive reads issuing a restore job and waiting <i>minutes</i>, and the throttled sweep that moves copy-new-then-free-old and deletes at the end. The <b>first bottleneck</b>, the <b>retrieval-latency cliff</b>, is not fixed by flattening the ladder (that forfeits the 44×) but by tiering to the data's <b>retrieval SLA and temperature</b> rather than its age alone — keeping latency-sensitive or still-read data one rung higher, keeping the index hot, and packing small objects before archiving. The real lesson: <span class="key">storage is a hierarchy of price-vs-latency, and old data is cheap to keep only because it's rarely and un-urgently read — so let each byte fall to the cheapest tier its access pattern can tolerate, and never below it. Storage cost vs retrieval latency &amp; operational policy.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson turns from one tenant's data over time to many tenants sharing one system at once:</b></p>
+  <p style="margin:.2rem 0">• <b>Multi-tenancy &amp; noisy neighbors:</b> one platform, many customers sharing the same fleet (Lesson 27) and databases (Lesson 3). How do you stop one tenant's spike or abuse from starving everyone else? Per-tenant <b>rate limits</b> (Lesson 8), quotas, and fair queuing; the shared-vs-silo-vs-pool spectrum (row-level → schema → database → a whole <b>cell</b> per tenant, Lesson 36); tenant routing and the recurring <b>hot-tenant</b> problem (Lessons 3/19); and <b>shuffle-sharding</b> (Lesson 36) as the blast-radius refinement. The trade shifts to <b>density &amp; cost efficiency vs isolation &amp; fairness.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">tiered storage</span>
+    <span class="pill">storage class / tier</span>
+    <span class="pill">temperature (hot/warm/cold/archive)</span>
+    <span class="pill">access skew</span>
+    <span class="pill">lifecycle policy</span>
+    <span class="pill">TTL</span>
+    <span class="pill">retention floor</span>
+    <span class="pill">expiration / deletion</span>
+    <span class="pill">tiering vs expiration</span>
+    <span class="pill">retrieval / rehydration</span>
+    <span class="pill">retrieval-latency cliff</span>
+    <span class="pill">retrieval fee</span>
+    <span class="pill">metadata plane / data plane</span>
+    <span class="pill">small-object tax</span>
+    <span class="pill">threshold hysteresis</span>
+  </p>
+  <p>That's Lesson 39, built on Lesson 2's access skew (why old data is read far less), Lesson 20's object store &amp; metadata/data-plane split and small-file problem, Lesson 24's batched, throttled background sweeps, Lesson 29's warehouse (another ever-growing pile), and Lesson 38's immutable, never-shrinking event log (the concrete system we tiered). <b>Ask me follow-ups</b> — e.g. "how do I pick the age thresholds from a real access histogram?", "what does S3 Intelligent-Tiering automate versus a hand-written policy?", "how do compaction/tombstones interact with expiration on an append-only log?", "how do I model retrieval fees so I don't demote data I read often?", or "how does a legal hold override a lifecycle expiration rule?" When you're ready, say <b>next</b> and we'll go deeper on <i>Multi-tenancy &amp; noisy neighbors — many customers on one shared system.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your team stores 330 TB of an append-only event log, all on hot SSD, and the bill is ~$33,000/month. Measurements show 90% of reads touch data from the last 7 days (~1 TB). What's the reasoning that justifies tiering, and roughly what does it buy?",
+    options: [
+      {t:"Access is heavily skewed toward new data (Lesson 2): 0.3% of the bytes serve 90% of reads, so paying the fast-SSD price for the cold 99.7% is waste. Keep the last few days hot and let older data fall down a ladder of cheaper, slower tiers (HDD → infrequent object → glacier, each ~5× cheaper and ~10× slower). Slicing 330 TB by age this way drops the bill to ~$744/month — about a 44× cut — while the hot 90% of reads still get ~1 ms service.",
+       ok:true,
+       fb:"Right. The saving comes entirely from the read skew: you move the rarely-read majority onto storage that's cheap precisely because it's slow, and leave the hot minority fast. The biggest slice of BYTES (archive) becomes the smallest slice of the BILL, because its per-GB price is ~100× lower than hot."},
+      {t:"Tiering compresses the data, so the same 330 TB takes far less space and therefore costs less on the same SSD.",
+       ok:false,
+       fb:"Tiering isn't compression. It doesn't shrink the bytes — it moves them to a different, cheaper class of storage (HDD, object store, glacier) that costs less per GB because it's slower to read. You could compress on top of tiering, but the ~44× saving here comes from paying a lower $/GB for cold data, not from storing fewer bytes."},
+      {t:"Tiering makes every read faster, so it's a pure win with no downside — you should push all 330 TB to the cheapest glacier tier immediately.",
+       ok:false,
+       fb:"Backwards. Cheaper tiers are SLOWER, not faster — glacier reads take minutes to hours. Pushing everything to glacier would make the hot 90% of reads unusable and rack up per-read retrieval fees. Tiering keeps recent/hot data fast and only demotes data that's rarely and un-urgently read; the trade is storage cost vs retrieval latency, not a free speed-up."}
+    ]
+  },
+  {
+    stem: "A dashboard query scans a set of 'old' records (>90 days) every hour. Following an age-based policy, those records were demoted to a cold tier that's cheap to store but charges a per-GB fee on every read. The monthly bill went UP, not down. What went wrong, and what's the fix?",
+    options: [
+      {t:"The policy tiered by AGE when it should tier by TEMPERATURE (access frequency). Those records are old but still read constantly, so each hourly scan pays the cold tier's per-read retrieval fee — which for frequently-read data can exceed what you saved on storage. The fix: base the tier on how often data is actually read, not just its age. Data that's old but hot belongs on a warm/hot tier; keep it there and only demote data whose reads genuinely fall off.",
+       ok:true,
+       fb:"Exactly. Age is only a PROXY for temperature — great for a write-once log, wrong for old-but-popular data. Cheap-to-store, expensive-to-read is a bet that you almost never read it; only demote data that honors that bet. Watch read counts, not just the clock."},
+      {t:"The cold tier is simply broken or mispriced; switch cloud providers to one whose cold tier has no retrieval fees.",
+       ok:false,
+       fb:"Per-read retrieval fees are the normal, intentional pricing of cold/archive tiers — you pay less to store in exchange for paying (in money and latency) to read. No mainstream provider gives you glacier-level storage prices with hot-level free reads. The problem isn't the tier; it's demoting frequently-read data onto it. Fix the policy to tier by access frequency."},
+      {t:"Nothing went wrong — a higher bill is expected and acceptable because cold tiers are always the right choice for anything over 90 days old.",
+       ok:false,
+       fb:"A tiering change that INCREASES the bill has failed at its one job. 'Older than 90 days' is not automatically cold — a report scanned every hour is hot regardless of age. Blindly applying an age cutoff to still-hot data is the classic retrieval-fee trap. Tier by temperature; keep the hourly-scanned set warm."}
+    ]
+  },
+  {
+    stem: "A support tool occasionally needs a specific 2-year-old event and must respond in under 1 second. Currently all data older than 1 year is on the archive (glacier) tier, where retrieval takes minutes to hours. A dev proposes 'keep everything on warm HDD so nothing is ever slow.' Why is that the wrong fix, and what's better?",
+    options: [
+      {t:"Keeping all 330 TB warm throws away almost the entire ~44× saving — you're back to paying a high price for data that's read almost never. The retrieval-latency cliff isn't fixed by flattening the ladder; it's fixed by tiering to each slice's retrieval SLA. Keep the support-critical old events one rung UP (cold, ~1 s) instead of archive (minutes) — 4× the storage cost for that thin slice, but under the SLA — and keep the always-hot metadata index so you can still find any event in ~1 ms. Demote by the slowest retrieval the data's access pattern can tolerate.",
+       ok:true,
+       fb:"Right. The tier follows the access SLA, not the age. Only the thin latency-sensitive slice stops higher; the vast, truly-cold majority still goes to archive and keeps the saving. And because the index stays hot, existence/location lookups are never on the cliff — only fetching cold PAYLOADS is."},
+      {t:"The dev is correct: because one access pattern needs sub-second reads, the only safe design is to keep the entire dataset on a fast tier at all times.",
+       ok:false,
+       fb:"One thin slice needing sub-second reads doesn't justify keeping ALL 330 TB fast — that forfeits the whole reason to tier and pays ~44× more for data read almost never. You keep only the latency-sensitive slice higher (cold, not archive) and let the rest cool. Tiering to the SLA, not flattening the ladder, is the fix."},
+      {t:"Move the support-critical events to an even CHEAPER tier than glacier so retrieval is faster, since cheaper tiers are quicker to read.",
+       ok:false,
+       fb:"Cheaper tiers are SLOWER, not faster — glacier is already near the bottom, and 'deep archive' below it is slower still (hours). To get under a 1-second SLA you must move UP the ladder (to cold or warm), paying more per GB for that slice in exchange for faster retrieval. Cost and latency trade off in opposite directions."}
+    ]
+  },
+  {
+    stem: "You're writing the lifecycle policy for payment events: regulation requires keeping them for exactly 7 years, and a privacy rule requires deleting certain personal fields after they're no longer needed. A junior writes one rule: 'anything older than 1 year → archive tier.' What critical distinction is missing?",
+    options: [
+      {t:"The rule only TIERS (moves to cheaper storage, still retrievable) — it never EXPIRES (deletes). Those are two different actions answering to two different masters: tiering is a cost decision, expiration is a compliance decision. You need an explicit expiration rule at 7 years to satisfy the retention limit, plus separate deletion rules for the privacy-mandated fields — and you must never let a cost-driven demotion silently become a delete, nor let a legally-held record get expired early. Retention is a floor you can't delete below; privacy law is often a ceiling you must delete by.",
+       ok:true,
+       fb:"Exactly. Tiering ≠ expiration. One saves money by moving retrievable data down the ladder; the other manages legal risk by deleting. They run in the same sweep but must stay explicitly separate and audited — deleting when you meant to tier destroys required data; never deleting keeps personal data past its lawful maximum."},
+      {t:"Nothing important is missing — moving data to archive after a year effectively deletes it for compliance purposes, since it's out of the way and cheap.",
+       ok:false,
+       fb:"Archiving is NOT deleting — the data is still fully retained and retrievable (that's the point of tiering). It satisfies neither a mandate to delete (privacy) nor, by itself, proves you'll stop keeping it at year 7. Compliance cares about whether data still EXISTS, not which tier it's on. You need distinct expiration rules; tiering alone changes cost, not legal retention."},
+      {t:"The only fix needed is to archive after 1 month instead of 1 year, so the data is cheaper sooner; retention and deletion are the storage vendor's responsibility.",
+       ok:false,
+       fb:"Archiving sooner is a cost tweak that still doesn't delete anything, and retention/deletion are YOUR responsibility, not the vendor's — the vendor stores whatever your policy says to store, for as long as you say. You still need an explicit expiration action at the 7-year retention limit and separate deletion for the privacy-mandated fields. Tiering and expiration are different actions with different owners."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

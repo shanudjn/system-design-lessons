@@ -611,11 +611,30 @@
     Distinct from CQRS (L37): ES decides what the truth IS (the log), CQRS how you READ it (projected
     shapes) — independent but pair naturally. Trade: perfect auditability/replayability vs query
     complexity & unbounded storage. (Lesson 0038)
-39. Tiered storage & data lifecycle — the L20/29/33 data piles grow forever; not all bytes are worth
-    the same. Move data hot→warm→cold→archive (RAM/SSD/HDD/object-store/glacier) by age &
-    access frequency (L02 skew again), with TTL/retention policies and the retrieval-latency cliff
-    of cold tiers. Compaction, tombstones (L20), and the cost-vs-latency dial per tier. Trade:
-    storage cost vs retrieval latency & operational policy.
+39. ✅ **Tiered storage & data lifecycle** — L38's event log (5k events/s × 300 B = ~130 GB/day,
+    immutable, kept 7 yrs for compliance → ~330 TB) can't all live on fast disk; the L20/29/38 piles
+    grow forever but reads are skewed to new data (L02): ~90% of reads hit the last 7 days (~1 TB =
+    0.3% of the pile), so all-hot SSD @ $0.10/GB-mo = ~$33k/mo pays a fast price for data read ~1000×
+    less. Fix = a **tier ladder** (HOT SSD $0.10/~1ms → WARM HDD $0.02/~10ms → COLD object $0.004/
+    ~100ms-1s+fee → ARCHIVE glacier $0.001/MINUTES-HOURS; each step ~5× cheaper, ~10× slower) with
+    each byte falling downhill as it **cools**; slicing 330 TB by age → ~$744/mo = **~44× cut** (biggest
+    byte-slice = archive 86% = smallest bill-slice 38%). Model = the fixed ladder + **temperature**
+    (access freq; age is only a PROXY — a reactivated 2-yr account is hot) + a background **lifecycle
+    policy** (L24 throttled sweep) that demotes by age and at 7 yrs **expires**, keeping **tiering**
+    (cost move, still retrievable) strictly separate from **expiration** (compliance move, gone), and
+    the small **index HOT** (L20 metadata/data-plane split) while only payloads cool. Trace write
+    (always lands hot), hot read (~2 ms, the 90%), cold/archive read (issue restore job → **202**, wait
+    MINUTES + per-GB fee), lifecycle sweep (copy-new-then-free-old = L20 commit-metadata-last, delete
+    at end). First wall = the **retrieval-latency cliff** (cold→archive isn't 10× slower, it's a cliff:
+    ms → minutes/hours on tape) → fix NOT by flattening the ladder (forfeits the 44×) but by tiering to
+    each slice's **retrieval SLA + temperature** (a sub-1s support slice stops at COLD not ARCHIVE, 4×
+    more for a thin slice), keep the index hot so existence lookups never cliff. Four traps: tier by AGE
+    when age≠temperature → retrieval fees on still-read data cost MORE than staying hot (tier by access
+    freq); confuse tiering with expiration (delete required data / keep personal data past its legal
+    ceiling — retention floor vs privacy ceiling); index on a cold tier (existence checks cliff);
+    small-object retrieval tax (pack before archiving, L20). Reuses L02 skew, L20 object store/small-file/
+    metadata-plane, L24 batched sweep, L29 warehouse, L38 immutable log. Trade: storage cost vs retrieval
+    latency & operational policy. (Lesson 0039)
 40. Multi-tenancy & noisy neighbors — one platform, many customers sharing a fleet (L27) and DBs
     (L03): isolate them so one tenant's spike/abuse can't starve the rest — per-tenant rate limits
     (L08), quotas, fair queuing, and the shared-vs-silo-vs-pool spectrum (row-level → schema →
