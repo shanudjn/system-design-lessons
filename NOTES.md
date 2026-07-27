@@ -635,16 +635,64 @@
     small-object retrieval tax (pack before archiving, L20). Reuses L02 skew, L20 object store/small-file/
     metadata-plane, L24 batched sweep, L29 warehouse, L38 immutable log. Trade: storage cost vs retrieval
     latency & operational policy. (Lesson 0039)
-40. Multi-tenancy & noisy neighbors — one platform, many customers sharing a fleet (L27) and DBs
-    (L03): isolate them so one tenant's spike/abuse can't starve the rest — per-tenant rate limits
-    (L08), quotas, fair queuing, and the shared-vs-silo-vs-pool spectrum (row-level → schema →
-    database → cell L36 per tenant). Tenant routing, the hot-tenant problem (L03/19), and
-    shuffle-sharding (L36) as the blast-radius refinement. Trade: density/cost efficiency vs
-    isolation & fairness.
+40. ✅ **Multi-tenancy & noisy neighbors** — a B2B SaaS, 50,000 tenants on one shared fleet (L27,
+    40k req/s) + one Postgres cluster with a 300-connection pool: multi-tenancy = the cost model
+    (pack many tenants → pennies each), its one risk = the word SHARED (every shared pot is a channel
+    for one tenant to starve the rest = the **noisy neighbor**). Estimate the blast: normal load fits
+    ~60k q/s headroom (Little's Law L13: 300 conns ÷ 5 ms), but one tenant's 200-query × 2-second-each
+    export grabs 200 of 300 conns → others collapse to 100÷0.005 = 20k q/s < 40k demand → unbounded
+    queue (L28) past the knee (L27) = **100% blast radius from 0.002% of tenants**, no rule broken.
+    Model = the **isolation spectrum** (shared table WHERE tenant_id → schema/tenant → DB/tenant →
+    **cell/tenant** L36; density↑ vs isolation↓) + three fairness controls on a live shared pot:
+    per-tenant **rate limit** (L08 token bucket keyed on tenant_id, 50k buckets not one global — the
+    global re-creates the shared pot + head-of-line blocking), per-tenant concurrency **bulkhead**
+    (L07, cap in-flight SLOTS not arrivals — the direct fix for the 2-second-hold drain), and **fair
+    queuing** (a line per tenant vs one FIFO). Static cap (simple, wastes idle capacity) vs
+    work-conserving/weighted fair queuing (reclaims idle capacity but must PREEMPT a borrower instantly).
+    Trace: normal request (cheap, shared, lets go), spike w/o isolation (100% outage), same spike w/
+    30-conn bulkhead (270 left → 54k q/s → ZERO impact, greed paid by the greedy — E's export just runs
+    slow), and a genuine **whale** (needs 5k req/s → don't tighten the wall, give a BIGGER ROOM: router
+    moves it to own DB/cell L36, Path D). First wall = **a limit counts requests, not WORK**: a tenant
+    inside every count cap sends 10 un-indexed scans at ~40 s each (L12 selectivity trap) → monopolizes
+    CPU → fix = meter the SCARCE resource (CPU-seconds/rows/bytes, L08 generalized) + per-query
+    guardrails (statement timeout, row caps, forced LIMIT); measurable-but-wrong (count) vs
+    accurate-but-costly (cost, only knowable post-run → reactive). Three more walls = shared resource is
+    still ONE blast surface → **shuffle-sharding** (L36: N partitions, k random per tenant, C(100,2)=4,950
+    → full co-victim ~0.02% vs 100%); the **hot tenant** (Zipf L02/03/19, route the whale out); the
+    noisy neighbor you can't rate-limit = BACKGROUND work + cache (per-tenant queues/quotas on the async
+    tier L05/09 + per-tenant cache budgets L02 — wall every pot, not just the front door). Four traps:
+    count-not-cost limit; one global limit not per-tenant; one isolation model forced on all sizes;
+    wall the front door but leave async/cache open. Reuses L02 skew, L03 shard/hot-shard+routing, L07
+    bulkhead/429, L08 token bucket per tenant, L12 selectivity trap, L13 Little's Law, L27 knee, L28
+    bounded queue/goodput, L36 cells+shuffle-sharding. Trade: density & cost efficiency vs isolation &
+    fairness. (Lesson 0040)
 41. Graph & relationship systems — "who are my friends' friends?" over a billion-edge social graph:
     why a relational JOIN explodes at depth (L12 N+1 across hops), adjacency lists vs a native graph
     store, partitioning a graph without cutting every edge (the hard part — supernodes/celebrities
     recur, L15), and BFS/traversal at scale. Trade: traversal speed vs partitionability of connected data.
+
+### Advanced topics (next batch — queued so the course never runs dry)
+42. Load balancing algorithms & layers — 40k req/s across a churning fleet (L27/34): L4 (connection)
+    vs L7 (request) balancing, the algorithm choice (round-robin → least-connections → EWMA/least-latency
+    → power-of-two-choices → consistent-hash for stickiness, L04), why round-robin starves behind one slow
+    backend, health checks + connection draining (L31/34), and the LB itself as a SPOF (L07/26). Trade:
+    even load distribution vs stickiness & simplicity.
+43. Gossip & anti-entropy — keep 1,000 nodes agreeing on membership and 3 replicas agreeing on data
+    without a central coordinator (contrast L34's registry, L10's consensus): epidemic/gossip dissemination
+    (SWIM failure detection), Merkle trees to find which keys diverged cheaply (Dynamo-style repair of L06's
+    replicas), read-repair vs background anti-entropy. Trade: convergence speed vs message overhead & staleness.
+44. Time-series & metrics storage — store L17's observability firehose (millions of points/s): append-heavy
+    writes, downsampling/rollups (raw → 1m → 1h) and retention tiers (L39), delta-of-delta + columnar
+    compression (L29), the cardinality explosion (L17's ids-on-traces-not-labels), and query-by-time-range.
+    Trade: resolution & retention vs storage cost.
+45. Webhooks & outbound event delivery — deliver "your order shipped" to thousands of third-party endpoints
+    you don't control: at-least-once + retries with backoff (L07/09), a signature so the receiver can trust it
+    (L30), an idempotency key so the receiver can dedup (L13), the slow/dead endpoint (circuit breaker + DLQ,
+    L07/09), and ordering guarantees. Trade: delivery reliability vs the burden pushed onto the receiver.
+46. Distributed job scheduling — run thousands of cron jobs across a fleet, each firing once at the right
+    time: leader/lease to avoid double-fire (L10/22), sharding the schedule for throughput, missed-fire
+    catch-up after an outage, clock skew across nodes (L35), and idempotent jobs so a retry is harmless (L13).
+    Trade: timeliness vs exactly-once execution.
 
 ## Lesson format conventions
 - Four reusable "moves" framing introduced in Lesson 01: estimate → model →

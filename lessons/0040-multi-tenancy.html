@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 40 — Multi-Tenancy &amp; Noisy Neighbors: Many Customers on One Shared System</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 40 · Worked Example</div>
+  <h1>Multi-Tenancy &amp; Noisy Neighbors: Many Customers on One Shared System</h1>
+  <p class="lead">Every lesson so far designed a system for <i>one</i> workload. But almost every SaaS runs <b>one shared system for thousands of paying customers at once</b> — that's the whole business model: pack many <b>tenants</b> onto the fleet you already built (Lesson 27's 286 servers, 40k req/s) and the database you already sharded (Lesson 3), so each tenant costs pennies to serve. The catch is a single word: <b>shared</b>. A shared connection pool, a shared cache, a shared queue — every one of them is a resource that all tenants draw from the same pot. So the instant <i>one</i> tenant misbehaves — a runaway export, a bad query, a traffic spike, an abusive script — it can drain that pot and <b>starve everyone else</b>. That's the <b>noisy neighbor</b>: one customer's problem becomes all customers' problem, through a resource they didn't know they were sharing. This lesson takes one concrete system — a B2B SaaS with <b>50,000 tenants</b> on that shared fleet and one Postgres cluster — and defends it. We'll <b>estimate</b> how much damage one greedy tenant does through a shared connection pool (a 100% blast radius from 0.002% of the tenants); <b>model</b> the isolation spectrum (shared table → schema → database → a whole cell per tenant) and the three fairness controls that tame the pot — per-tenant rate limits (Lesson 8), concurrency bulkheads (Lesson 7), and fair queuing; <b>trace</b> a normal request, the same spike with and without isolation, and a tenant that has genuinely outgrown the pool; and hit the first wall — <b>a rate limit counts requests, not work</b>, so one cheap-looking query can still burn the fleet. The trade running underneath: <b>density &amp; cost efficiency vs isolation &amp; fairness.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0040-multi-tenancy.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>A B2B SaaS — say a project tracker. <b>50,000 tenant companies</b> share one platform: the same fleet of app servers (Lesson 27) and one Postgres cluster whose app-side <b>connection pool</b> holds <b>300 connections</b>. Every request carries a <code>tenant_id</code>; rows are tagged with it (<code>WHERE tenant_id = ?</code>). Total traffic is <b>40,000 req/s</b>. This is the cheapest possible design — one stack, all tenants — and that cheapness is exactly why it's dangerous: everything is shared, so everything is a channel through which one tenant can hurt another. The question this lesson answers is not <i>how to serve a tenant</i> (we know how). It's <b>how to stop one tenant from taking down the other 49,999.</b></p>
+
+<div class="diagram"><pre>
+  ONE SHARED STACK, MANY TENANTS  (every box is a resource they all draw from)
+
+     tenant A  tenant B  ... tenant Z ...   (50,000 companies, one tenant_id each)
+         \        |            /
+          \       |           /
+        +--------------------------+
+        |   shared app fleet       |   286 servers, 40k req/s   (Lesson 27)
+        +--------------------------+
+                    |
+        +--------------------------+
+        |  shared connection pool  |   300 connections   <-- the pot everyone dips into
+        +--------------------------+
+                    |
+        +--------------------------+
+        |    shared Postgres       |   rows tagged WHERE tenant_id = ?   (Lesson 3)
+        +--------------------------+
+
+  The pool is FINITE and SHARED. If one tenant grabs most of the 300 connections,
+  the other 49,999 wait. One tenant's spike is now everyone's outage. That is the
+  NOISY NEIGHBOR, and it happens through a resource nobody chose to share on purpose.
+</pre></div>
+
+<p class="note"><span class="key">Multi-tenancy means many independent customers share one system's resources; a noisy neighbor is one tenant whose demand on a shared resource degrades service for the others.</span> The whole discipline is: get the cost savings of sharing, without letting the sharing become a channel for one tenant to harm the rest. You do that by putting <b>limits and walls</b> around each tenant's slice of every shared pot.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Tenant</b> — one customer (a company, an account) whose data and traffic are logically separate from every other customer's, even though they run on the same system. Identified by a <code>tenant_id</code>.</li>
+  <li><b>Multi-tenancy</b> — one running system serving many tenants at once. Its opposite is <b>single-tenancy</b> (a private stack per customer): more isolation, far more cost.</li>
+  <li><b>Noisy neighbor</b> — a tenant whose load on a shared resource (CPU, connections, cache, a queue) steals capacity from the others.</li>
+  <li><b>Isolation</b> — how well one tenant's behavior is walled off from another's. More isolation = a smaller <b>blast radius</b> when one tenant misbehaves (Lesson 36).</li>
+  <li><b>Density</b> — how many tenants you pack onto one unit of infrastructure. High density is cheap; it trades directly against isolation.</li>
+  <li><b>Quota</b> — a hard cap on how much of a resource one tenant may consume over time (storage, rows, API calls/day). A fixed ceiling.</li>
+  <li><b>Fair share</b> — the slice of a shared resource a tenant is entitled to right now. Can be static (a fixed cap) or dynamic (its cut of whatever's free).</li>
+  <li><b>Fair queuing</b> — instead of one shared line where a flood from one tenant blocks all others, give each tenant its own line and serve them in rotation, so no tenant can monopolize the server.</li>
+  <li><b>Bulkhead</b> — a per-tenant cap on <i>in-flight</i> work (Lesson 7): a tenant may hold at most N of the shared connections/threads at once, so it can never drain the whole pool.</li>
+</ul>
+
+<h2>Move 1 — Estimate: how much damage does one greedy tenant do?</h2>
+<p>Two facts collide. First, tenant usage is <b>wildly skewed</b> (Lesson 2's Zipf, yet again): the average tenant does <code>40,000 / 50,000 = 0.8 req/s</code>, but that average is a lie — most tenants do almost nothing while a handful of big enterprises do thousands of req/s. Second, the pool is <b>finite and shared</b>. Put those together and you can price the blast radius of one bad actor.</p>
+
+<div class="card calc">
+  <p><b>The pool's normal headroom.</b> 300 connections; a normal query holds one for <code>~5 ms</code>. By Little's Law (Lesson 13), throughput = concurrency ÷ hold-time = <code>300 / 0.005 s = 60,000 queries/s</code> of capacity — comfortably above the <code>40,000 req/s</code> the whole platform needs. In steady state everyone is served in single-digit milliseconds. So far, sharing looks like a pure win.</p>
+  <p><b>Now one tenant misbehaves.</b> At 09:00 a single enterprise tenant kicks off a nightly bulk export: <b>200 heavy report queries</b>, each a full-table scan holding a connection for <code>~2 seconds</code> (Lesson 12's un-indexed scan). Those 200 queries grab and hold <b>200 of the 300 connections</b> for two seconds at a stretch. That leaves <code>300 − 200 = 100</code> connections for <i>everyone else</i>.</p>
+  <p><b>The blast radius.</b> Remaining capacity for the other 49,999 tenants collapses to <code>100 / 0.005 s = 20,000 queries/s</code> — but demand is still <code>40,000 req/s</code>. Demand now exceeds capacity by <code>20,000/s</code>, so the queue in front of the pool grows without bound (Lesson 28), latency leaves the knee (Lesson 27), and requests start timing out across the board. <span class="key">One tenant — <code>1 / 50,000 = 0.002%</code> of the customer base — just degraded <b>100%</b> of the platform.</span> It didn't attack anything. It didn't exceed any per-request rule. It simply drew hard from a pot everyone shares.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — density vs isolation.</b> The reason the blast radius is 100% is the same reason the platform is cheap: <b>everything is shared</b>. Maximum density (one pool for all 50,000) gives maximum cost efficiency and <i>zero</i> isolation — any tenant can drain the shared pot. Maximum isolation (a private pool per tenant) gives each tenant a wall no neighbor can cross, at 50,000× the infrastructure. <span class="key">Every multi-tenancy decision is a point on the line between these two: how much money you'll spend on walls to shrink the blast radius.</span> The rest of this lesson is how to buy a lot of isolation without paying for a private stack per tenant.</p>
+
+<h2>Move 2 — Model: the isolation spectrum and the three fairness controls</h2>
+<p>Two questions to answer. First, <b>how separate is each tenant's data and infrastructure?</b> — that's the isolation spectrum. Second, given a shared resource, <b>how do you divide it fairly so no tenant can take more than its share?</b> — that's the three controls.</p>
+
+<h3>The isolation spectrum: shared → siloed</h3>
+<div class="diagram"><pre>
+  FOUR PLACES TO PUT THE WALL  (top = cheap/dense/leaky, bottom = costly/isolated)
+
+  model                    what's shared              density   isolation   cost/tenant
+  -----------------------  -------------------------  --------  ----------  -----------
+  1. shared table          one table, tenant_id col   HIGHEST   LOWEST      pennies
+     (WHERE tenant_id=?)    everything shared                    a bad query hurts all
+  2. schema per tenant      same DB, separate schema   high      low-mid     low
+     (table per tenant)     still one engine/pool                one hot tenant, one DB
+  3. database per tenant    own DB, shared hardware    mid       high        higher
+                            noisy neighbor bounded to its own DB
+  4. cell per tenant        whole stack, own cell      LOWEST    HIGHEST     highest
+     (Lesson 36)            nothing shared -> 1/N blast radius, physically
+
+  You don't pick ONE for all tenants. Small tenants share a table (cheap);
+  a giant enterprise gets its own database or cell (isolated). Match the wall
+  to the tenant -- density where you can afford it, isolation where you can't.
+</pre></div>
+
+<p>The spectrum decides <i>where</i> data lives. But the incident in Move 1 happened at the shared <b>connection pool</b>, which even models 1–3 keep sharing. So you also need controls that carve up a live shared resource in real time. There are three, and they answer three different questions:</p>
+
+<div class="card">
+  <p style="margin:.2rem 0"><b>1. Per-tenant rate limit (Lesson 8) — "how fast may this tenant ask?"</b> Give each <code>tenant_id</code> its own token bucket, sized by its plan (e.g. 500 req/s sustained, burst 1,000). Requests past the bucket get an honest <code>429</code> (Lesson 7). This is the key move Lesson 8 hinted at: the limit is keyed on <b>tenant</b>, not on one global counter — 50,000 independent buckets, so a flood from one drains only its own.</p>
+  <p style="margin:.6rem 0 .2rem"><b>2. Concurrency bulkhead (Lesson 7) — "how much may this tenant hold at once?"</b> A rate limit counts arrivals per second; a bulkhead caps <i>in-flight</i> work. Cap each tenant at, say, <b>30 of the 300 connections</b> simultaneously. Now the Move-1 export — 200 queries wanting connections — can only ever tie up 30, no matter how many it fires. The rest queue <i>inside that tenant's own slice</i>. This is the control that directly stops the pool-drain, because the drain was about concurrency (2-second holds), not arrival rate.</p>
+  <p style="margin:.6rem 0 .2rem"><b>3. Fair queuing — "when the resource is scarce, whose request goes next?"</b> One shared FIFO lets a tenant that dumped 10,000 requests block a tenant with 1 waiting behind them (head-of-line blocking). Instead, give each tenant its own sub-queue and serve them round-robin (or weighted by plan). A tenant with a huge backlog waits on <i>its own</i> queue; a quiet tenant's lone request is served on the next rotation. No tenant's flood delays another's trickle.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — a static cap wastes idle capacity; work-conserving fairness reclaims it but must give it back instantly.</b> The simplest fair share is a fixed cap: every tenant gets 30 connections, full stop. Easy to reason about, but if 49,999 tenants are idle, their 30-slot allowances sit unused while a busy tenant is throttled at 30 — you've left most of the pool empty. A <b>work-conserving</b> scheme (weighted fair queuing) instead lets a tenant borrow the idle capacity of others — until another tenant shows up, at which point it must <b>reclaim its share immediately</b>. That's strictly better utilization, but harder: the whole risk is a borrower that won't let go fast enough, which reopens the noisy-neighbor door. <span class="key">Static caps trade utilization for simplicity and safety; work-conserving fairness trades simplicity for utilization, and lives or dies on how fast it can preempt a borrower.</span></p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Four runs: a normal request (the cheap common case), the Move-1 spike <i>without</i> isolation (the outage), the same spike <i>with</i> the bulkhead (contained), and a tenant that has genuinely outgrown the shared pool (route it out).</p>
+
+<h3>Path A — a normal request (small tenant, the 99% case)</h3>
+<div class="diagram"><pre>
+  GET /projects   (tenant_id = B, a 5-person company)
+
+   1. Edge checks tenant B's rate-limit bucket -> has tokens, allow. (Lesson 8)
+   2. App borrows 1 of 300 pool connections -> within B's 30-conn bulkhead. (Lesson 7)
+   3. Query: SELECT ... WHERE tenant_id = B  -> indexed, ~5 ms, release connection.
+   4. Return. B used 1 connection for 5 ms out of a 300-connection pool. Invisible to all.
+
+  This is why sharing pays: 49,999 small tenants like B cost almost nothing each,
+  because each touches the shared pot briefly and lets go.
+</pre></div>
+
+<h3>Path B — the spike WITHOUT isolation (Move 1 replayed: the outage)</h3>
+<div class="diagram"><pre>
+  tenant E (enterprise) fires 200 x 2-second full-scan report queries
+
+   1. No per-tenant bulkhead -> E grabs connections as fast as it can.
+   2. 200 of 300 connections held for ~2 s each. Only 100 left for everyone.
+   3. Platform capacity: 100 / 0.005 = 20,000 q/s  <  40,000 q/s demand.
+   4. Shared queue grows unbounded (L28); latency past the knee (L27); timeouts.
+   5. RESULT: all 49,999 other tenants degraded. Blast radius 100%, from 0.002% of tenants.
+
+  E didn't break a rule. It just drew hard from a pot with no per-tenant wall.
+</pre></div>
+
+<h3>Path C — the SAME spike WITH a per-tenant bulkhead (contained)</h3>
+<div class="diagram"><pre>
+  tenant E fires the same 200 report queries -- but now capped at 30 connections
+
+   1. E's bulkhead = 30 of 300 connections. It grabs 30; query 31+ queues in E's OWN slice.
+   2. Pool left for everyone else: 300 - 30 = 270 connections.
+   3. Their capacity: 270 / 0.005 = 54,000 q/s  >  40,000 q/s demand.  -> nobody starves.
+   4. E's export still runs -- just serialized through 30 connections, so it takes longer.
+      The pain of E's greed is paid BY E (a slow export), not by the other 49,999.
+
+  Same load, same pool. One per-tenant wall moved the blast radius from 100% to ZERO.
+  The noisy neighbor is now only noisy in its own room.
+</pre></div>
+
+<h3>Path D — a tenant that has genuinely outgrown the shared pool (route it out)</h3>
+<div class="diagram"><pre>
+  tenant E keeps growing: it legitimately needs 5,000 req/s, sustained.
+
+   Bulkheading E to 30 connections now HURTS E -- it's a real, paying, heavy tenant,
+   not an abuser. The fix isn't a tighter wall; it's a BIGGER ROOM:
+
+   1. The tenant ROUTER (tenant_id -> location) moves E down the isolation spectrum:
+        give E its own database (model 3) or its own cell (model 4, Lesson 36).
+   2. E now has a private pool it cannot share -> it can use all of it, harming no one.
+   3. The shared pool serves only the 49,999 small tenants -> back to comfortable headroom.
+
+  Routing (tenant_id -> shard/DB/cell) is the knob that lets you place each tenant at the
+  RIGHT point on the spectrum: dense for the small, siloed for the large. (L3/L4/L36)
+</pre></div>
+
+<p>Path A is why multi-tenancy is cheap; Path B is the disaster that "just share everything" invites; Path C is the per-tenant wall that fixes it for pennies; Path D is what you do when a tenant deserves more room, not less. But look again at Path C. The bulkhead capped E at 30 <i>connections</i> — 30 requests in flight. What if E stays within 30 connections but each of those 30 requests is a query that scans 100 million rows? The wall counts <i>slots</i>, not <i>work</i>. That's the first bottleneck.</p>
+
+<h2>Move 4 — Find the first bottleneck: a limit counts requests, not work</h2>
+<p>Every control in Move 2 meters the <b>number</b> of something — requests per second, connections held, position in a queue. None of them meters how <b>expensive</b> each of those things is. And tenant workloads vary in cost by orders of magnitude: one request lists 10 rows from an index; another runs an unindexed aggregate over the tenant's entire 100-million-row history (Lesson 12's selectivity trap). Both are "one request." Both fit inside a 30-connection bulkhead. One costs 5 ms; the other costs 40 seconds of CPU.</p>
+
+<div class="card calc">
+  <p><b>Worked: the cheap-looking request that isn't.</b> Tenant E, now well-behaved on request <i>count</i> (well under its 500 req/s and 30-connection caps), sends just <b>10 requests</b>, each an un-indexed report over its 100M rows: <code>20 GB scan ÷ 500 MB/s ≈ 40 s</code> of work each (Lesson 12). Ten of them held for 40 s = <code>10 connections tied up for 40 seconds</code>. E is inside every count-based limit and still monopolizing capacity — because the limits never priced the <b>work per request</b>. Counting requests told you nothing about the CPU and I/O each one would burn.</p>
+  <p><b>The fix: meter cost, not count.</b> Charge each tenant against a budget denominated in the resource that's actually scarce — <b>CPU-seconds, rows scanned, or bytes read</b> — not requests. A cost-based limiter (a token bucket whose tokens are CPU-milliseconds, Lesson 8 generalized) drains fast for a 40 s scan and slowly for a 5 ms lookup, so a tenant's <i>expensive</i> traffic is throttled even when its request <i>count</i> is tiny. Pair it with per-tenant query guardrails: statement timeouts, row-scan limits, forced <code>LIMIT</code>s — so no single request can run away in the first place.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — measurable-but-wrong vs accurate-but-costly limits.</b> Request count is trivial to measure and enforce at the edge, but it's a poor proxy for load, so it lets expensive tenants through. Cost (CPU-seconds, rows) is the <i>right</i> thing to limit, but you often can't know a request's cost until <i>after</i> you've run it — so cost-based limiting is reactive (meter what a tenant spent, throttle its next request) and needs real accounting plumbing. <span class="key">The deeper lesson: fairness is only as good as the unit you meter. Meter the wrong unit and a tenant games it for free — so meter the resource that is actually scarce, even when it's harder to measure.</span></p>
+
+<p>Past the metering wall, three more walls decide whether your multi-tenant design holds:</p>
+
+<div class="diagram"><pre>
+  THE THREE WALLS AFTER THE METERING WALL
+
+  1. The SHARED RESOURCE is still one blast surface (L36).  Even with perfect fairness,
+        a bug or a poison query in the ONE shared DB/cache/pool can hurt every tenant on it.
+        -> SHUFFLE-SHARDING: split the resource into N partitions, assign each tenant a random
+           SUBSET of k. Two tenants are fully co-victim only if their whole subsets coincide.
+           100 partitions, k=2 -> C(100,2)=4,950 combos -> a given pair fully overlaps with
+           probability ~1/4,950 ~ 0.02% (vs 100% when everything is shared). The AWS trick.
+
+  2. The HOT TENANT problem (L3/L19).  Tenant usage is Zipf; one tenant is 100x the rest, so a
+        single tenant's DATA (not just traffic) becomes a hot shard no bulkhead can fix.
+        -> Route the whale to its own database/cell (Path D); don't force one wall on all sizes.
+
+  3. The NOISY-NEIGHBOR you can't rate-limit: BACKGROUND work.  Rate limits guard the request
+        path, but tenants also share async workers (L5/L9), cron jobs, and the cache (L2 -- one
+        tenant's giant scan evicts everyone's hot keys).
+        -> Per-tenant queues/quotas on the async tier too, and per-tenant cache budgets. Every
+           shared pot needs a per-tenant wall, not just the front door.
+</pre></div>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — a limit that counts requests but not their cost.</b> A tenant inside every per-second and per-connection cap can still run 10 full-table scans and monopolize the fleet. Count-based limits are a proxy for load, and a leaky one. Meter the scarce resource itself — CPU-seconds, rows, bytes — and add per-query guardrails (timeouts, row caps) so one request can't run away.</li>
+  <li><b>Trap 2 — one global limit instead of one per tenant.</b> A single shared rate limit or a single shared FIFO queue re-creates the shared pot: one tenant's flood fills it and every other tenant hits the wall or waits behind the flood (head-of-line blocking). Keep the counter, the bucket, and the queue <b>per <code>tenant_id</code></b>, so one tenant's excess drains only its own allowance.</li>
+  <li><b>Trap 3 — forcing one isolation model on every tenant.</b> Bulkheading a giant, paying tenant to a tiny slice punishes a good customer; sharing a table with an abusive one endangers the rest. Usage is Zipf — match the wall to the tenant: dense (shared table) for the 49,999 small ones, siloed (own DB or cell) for the few whales, chosen by the tenant router.</li>
+  <li><b>Trap 4 — walling the front door but leaving the back doors open.</b> Rate-limiting the HTTP path while the shared async workers, cron jobs, and cache have no per-tenant limits just moves the noisy neighbor somewhere you're not looking — one tenant's batch job starves everyone's background processing, or its scan evicts everyone's cache. Every shared resource, sync or async, needs its own per-tenant wall.</li>
+</ul>
+
+<table>
+  <tr><th>Question</th><th>Shared everything (no per-tenant walls)</th><th>Multi-tenant with fairness controls</th></tr>
+  <tr><td>Cost per small tenant</td><td>pennies (max density)</td><td>pennies (still dense where safe)</td></tr>
+  <tr><td>One tenant fires a 200-query export</td><td>drains the pool → 100% blast radius</td><td>bulkhead caps it → 0 impact on others</td></tr>
+  <tr><td>Tenant floods the rate limiter</td><td>global limit → everyone throttled</td><td>per-tenant bucket → only that tenant 429s</td></tr>
+  <tr><td>A whale needs 5,000 req/s</td><td>starves the shared pool for all</td><td>router moves it to its own DB/cell</td></tr>
+  <tr><td>One cheap-count, expensive query</td><td>monopolizes CPU inside the limits</td><td>cost-based meter + query guardrails catch it</td></tr>
+  <tr><td>What sets a tenant's slice</td><td>— (first come, first served)</td><td>plan-weighted fair share, metered by cost</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>Multi-tenancy is the SaaS business model — pack 50,000 tenants onto one shared fleet (Lesson 27) and one database (Lesson 3) so each costs pennies — and its single risk is the word <b>shared</b>: every shared resource is a channel through which one tenant can starve the rest, the <b>noisy neighbor</b>. We took a B2B SaaS with a 300-connection shared pool and defended it. <b>Estimate</b> priced the danger: normal load fits in <code>60,000 q/s</code> of headroom, but one tenant's 200-query, 2-second-each export grabs 200 of 300 connections, dropping everyone else's capacity to <code>20,000 q/s</code> below <code>40,000</code> demand — a <b>100% blast radius from 0.002% of the tenants</b>, with no rule broken. <b>Model</b> gave the <b>isolation spectrum</b> (shared table → schema → database → cell per tenant, trading density for isolation) plus three controls that carve a live shared pot: per-tenant <b>rate limits</b> (Lesson 8, one bucket per <code>tenant_id</code>), <b>concurrency bulkheads</b> (Lesson 7, a cap on in-flight slots), and <b>fair queuing</b> (a line per tenant, not one shared FIFO). <b>Tracing</b> showed the cheap normal request, the spike without isolation (the 100% outage), the same spike with a 30-connection bulkhead (270 left → <code>54,000 q/s</code> → zero impact, the greed paid by the greedy), and a genuine whale routed out to its own database. The <b>first bottleneck</b> — <b>a limit counts requests, not work</b> — bites when a tenant stays inside every count-based cap yet sends 10 full-table scans at 40 s each; the fix is to <b>meter the scarce resource itself</b> (CPU-seconds, rows, bytes) plus per-query guardrails, then to shuffle-shard the shared resource (Lesson 36) so no bug has a 100% blast radius, route hot tenants out (Lesson 3/19), and put per-tenant walls on the async tier and cache too — not just the front door. The real lesson: <span class="key">sharing is what makes multi-tenancy cheap, and the only thing that makes it safe is a per-tenant wall around every shared pot, sized by the resource that's actually scarce. Density &amp; cost efficiency vs isolation &amp; fairness.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson turns from tenants sharing a system to the shape of connected data itself:</b></p>
+  <p style="margin:.2rem 0">• <b>Graph &amp; relationship systems:</b> "who are my friends' friends?" over a billion-edge social graph. Why a relational <code>JOIN</code> explodes at each hop (Lesson 12's N+1 across depth), adjacency lists vs a native graph store, how you partition a graph <i>without</i> cutting every edge (the genuinely hard part — supernodes and celebrities recur, Lesson 15), and BFS/traversal at scale. The trade shifts to <b>traversal speed vs the partitionability of connected data.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">multi-tenancy</span>
+    <span class="pill">tenant / tenant_id</span>
+    <span class="pill">noisy neighbor</span>
+    <span class="pill">isolation</span>
+    <span class="pill">blast radius</span>
+    <span class="pill">density</span>
+    <span class="pill">isolation spectrum</span>
+    <span class="pill">shared table / schema / DB / cell</span>
+    <span class="pill">per-tenant rate limit</span>
+    <span class="pill">concurrency bulkhead</span>
+    <span class="pill">fair queuing</span>
+    <span class="pill">fair share (static vs work-conserving)</span>
+    <span class="pill">quota</span>
+    <span class="pill">tenant routing</span>
+    <span class="pill">cost-based limiting</span>
+    <span class="pill">shuffle-sharding</span>
+    <span class="pill">hot tenant</span>
+  </p>
+  <p>That's Lesson 40, built on Lesson 2's access skew (tenant usage is Zipf), Lesson 3's sharding &amp; the hot-shard problem (routing a whale out), Lesson 7's bulkhead &amp; honest 429, Lesson 8's token bucket (now keyed per tenant), Lesson 12's selectivity trap (the expensive query hiding inside a cheap request count), Lesson 13's Little's Law (pool capacity = concurrency ÷ hold-time), Lesson 27's utilization knee, Lesson 28's bounded queue &amp; goodput, and Lesson 36's cells &amp; shuffle-sharding (the blast-radius refinement). <b>Ask me follow-ups</b> — e.g. "how do I actually meter CPU-seconds per tenant in Postgres?", "weighted fair queuing vs a simple per-tenant cap — when is the extra complexity worth it?", "how do I decide the connection/plan tiers for 50,000 tenants?", "how does shuffle-sharding work when the resource is stateful data, not stateless requests?", or "how do I migrate a whale from the shared table to its own database with zero downtime (Lesson 24)?" When you're ready, say <b>next</b> and we'll go deeper on <i>Graph &amp; relationship systems — traversing a billion-edge graph.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "50,000 tenants share one app fleet and a 300-connection database pool (a normal query holds a connection ~5 ms, so ~60,000 q/s of headroom against 40,000 req/s of real demand). One tenant kicks off 200 report queries that each hold a connection for ~2 seconds. What happens, and why is it a multi-tenancy problem specifically?",
+    options: [
+      {t:"Those 200 queries grab 200 of the 300 connections and hold them for ~2 s, leaving only 100 connections — so everyone else's capacity collapses to 100 / 0.005 = 20,000 q/s, below the 40,000 req/s demand. The shared queue grows unbounded and latency leaves the knee, degrading all 49,999 other tenants. It's a multi-tenancy problem because the harm travels through a resource they all share (the pool): one tenant — 0.002% of the base — caused a 100% blast radius without breaking any per-request rule.",
+       ok:true,
+       fb:"Right. The connection pool is a finite, shared pot; nothing capped one tenant's slice of it, so its concurrency drained capacity for everyone. That's the noisy neighbor exactly — one customer's load on a shared resource starves the others. The fix is a per-tenant wall (a bulkhead), not a faster database."},
+      {t:"Nothing bad happens — 200 queries is well under the 60,000 q/s headroom, so the pool absorbs them easily and no other tenant notices.",
+       ok:false,
+       fb:"The 60,000 q/s figure assumes ~5 ms holds. These queries hold for ~2 seconds each — 400× longer — so it's concurrency, not arrival rate, that matters. 200 connections held for 2 s leaves only 100 for everyone else, cutting capacity to 20,000 q/s below the 40,000 demand. Throughput headroom says nothing when one tenant monopolizes the connections themselves."},
+      {t:"It only slows down the tenant that ran the export; the database isolates each tenant's queries automatically, so the other 49,999 are unaffected.",
+       ok:false,
+       fb:"There's no automatic isolation here — the whole point is that the pool is SHARED with no per-tenant cap. The export ties up 200 of 300 connections that every tenant draws from, so the pain falls on everyone, not just the tenant that caused it. Making the pain fall only on the greedy tenant is exactly what a per-tenant bulkhead buys you — but it isn't there by default."}
+    ]
+  },
+  {
+    stem: "To contain the noisy neighbor from Q1, a colleague proposes 'add a global rate limit: the platform accepts at most 40,000 req/s total, and rejects the rest with 429.' Why does this fail to solve the multi-tenancy problem, and what's the right shape?",
+    options: [
+      {t:"A single global limit re-creates the shared pot at the limiter: when one tenant floods it, the platform hits 40,000 req/s and starts 429-ing — but the rejections fall on WHOEVER asks next, including quiet tenants with one request behind the flood (head-of-line blocking). The right shape is one limiter PER tenant_id: 50,000 independent token buckets sized by plan, so a tenant's excess drains only its own bucket and everyone else is untouched. Fairness controls must be keyed per tenant, not global.",
+       ok:true,
+       fb:"Exactly. A global limit protects the platform's total capacity but not tenants FROM EACH OTHER — the flooding tenant's overflow gets 429s meant for innocents. Per-tenant buckets (Lesson 8 keyed on tenant_id) confine each tenant's excess to its own allowance. Same idea for queues: a line per tenant, not one shared FIFO."},
+      {t:"It works perfectly — capping total intake at 40,000 req/s guarantees the pool is never overloaded, so no tenant can ever affect another again.",
+       ok:false,
+       fb:"Capping the TOTAL protects the platform from overload but does nothing to divide capacity fairly BETWEEN tenants. One tenant sending 30,000 req/s still consumes most of the 40,000 budget, and the 429s land on other tenants' requests. Global limits and per-tenant fairness are different jobs; you need the limit keyed per tenant_id."},
+      {t:"The idea is right but the number is wrong — set the global limit to 20,000 req/s instead, since that's the capacity that remained during the incident.",
+       ok:false,
+       fb:"Lowering a GLOBAL limit just throttles everyone harder — it still can't tell the flooding tenant apart from a quiet one, so innocents still absorb the 429s, and now the whole platform runs at half capacity for no reason. The problem isn't the threshold; it's that one shared limiter can't enforce fairness between tenants. Make it per tenant."}
+    ]
+  },
+  {
+    stem: "You add a per-tenant concurrency bulkhead: each tenant may hold at most 30 of the 300 connections at once. It stops the 200-query export cleanly. Then a tenant sends just 10 requests — each an un-indexed scan over its 100M rows (~40 s of CPU each) — and again hogs the fleet, while staying well under 30 connections and under its req/s limit. What's the underlying flaw, and the fix?",
+    options: [
+      {t:"Every control so far meters a COUNT — requests per second, connections held — but never the COST of each unit, and request cost varies by orders of magnitude (5 ms lookup vs 40 s scan). The tenant is inside every count-based limit yet burns enormous CPU, because nothing priced the work per request. Fix: meter the scarce resource itself — CPU-seconds, rows scanned, bytes — with a cost-based limiter, and add per-query guardrails (statement timeouts, row-scan caps, forced LIMITs) so one request can't run away.",
+       ok:true,
+       fb:"Right. Fairness is only as good as the unit you meter. Counting requests is easy but a leaky proxy for load; a tenant games it for free with a few monstrous queries. Meter what's actually scarce (CPU/rows/bytes) and cap per-query cost directly. Count-based and cost-based limits are complementary, not substitutes."},
+      {t:"The bulkhead is set too high — lower it to 5 connections per tenant and the expensive queries can't do damage.",
+       ok:false,
+       fb:"Lowering the connection cap punishes every legitimate tenant and still doesn't price work: even 1 connection running a 40 s scan monopolizes CPU/IO for 40 s, and it throttles good tenants doing cheap, fast queries. The flaw isn't the bulkhead's size — it's that it counts SLOTS, not the cost of what runs in them. You need cost-based metering and per-query guardrails, not a tighter count."},
+      {t:"There's no real flaw — 10 requests is a tiny number, so by definition it can't be a noisy-neighbor problem; the scans just need a better index.",
+       ok:false,
+       fb:"Request COUNT is exactly the misleading metric here: 10 requests at 40 s of CPU each is far more load than thousands of 5 ms lookups. 'Only 10 requests' feeling safe is the trap. A better index helps that query, but the general fix is to meter cost, not count, and guardrail per-query work — otherwise the next expensive query pattern slips through the same gap."}
+    ]
+  },
+  {
+    stem: "One enterprise tenant has grown to legitimately need 5,000 req/s sustained — real, paying traffic, not abuse. Bulkheading it to 30 of 300 shared connections now throttles a good customer. Meanwhile a shared-DB bug could still hurt all tenants at once. What's the right combination of moves?",
+    options: [
+      {t:"Two different tools for two different needs. For the whale: the tenant router moves it DOWN the isolation spectrum — its own database or its own cell (Lesson 36) — so it gets a private pool it can fully use without touching the shared one; you don't force one wall on all tenant sizes (usage is Zipf). For the shared-DB blast radius: shuffle-shard the shared resource — split it into N partitions and give each small tenant a random subset of k, so a fault's full-overlap victim set shrinks from 100% toward, e.g., 1/C(100,2) ≈ 0.02%.",
+       ok:true,
+       fb:"Exactly. Isolation isn't one-size-fits-all: route the few big tenants to their own DB/cell (dense where you can, siloed where you must), and shuffle-shard the shared tier so no single fault has a 100% blast radius. Fairness controls tame a shared pot; routing and shuffle-sharding change how much is shared in the first place."},
+      {t:"Just raise the whale's bulkhead to 250 of the 300 connections so it gets the capacity it needs while still sharing the pool with everyone.",
+       ok:false,
+       fb:"That hands 250 of 300 connections to one tenant and re-creates the Move-1 outage on purpose — the other 49,999 are back to 50 connections and starve. A tenant that needs most of a pool's capacity shouldn't be on the SHARED pool at all; route it to its own database/cell. Bulkheads divide a shared resource; they don't create capacity."},
+      {t:"Give every one of the 50,000 tenants its own dedicated database and cell, so there's nothing shared and no noisy neighbor is ever possible.",
+       ok:false,
+       fb:"That's maximum isolation at maximum cost — 50,000 private stacks throws away the entire density advantage that makes multi-tenancy economical, for tenants that mostly do ~0.8 req/s. The skill is matching the wall to the tenant: dense (shared) for the 49,999 small ones, siloed for the few whales, plus shuffle-sharding to bound the shared tier's blast radius. Full silo-everyone is the wrong point on the density-vs-isolation line."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
