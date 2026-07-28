@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 41 — Graph &amp; Relationship Systems: Traversing a Billion-Edge Graph</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 41 · Worked Example</div>
+  <h1>Graph &amp; Relationship Systems: Traversing a Billion-Edge Graph</h1>
+  <p class="lead">Every table we've built holds <i>rows</i> — an order, a tenant, a photo — and the questions were about one row at a time: fetch it, count it, cache it. This lesson is about the <b>relationships between rows</b> as the thing you're actually querying. Take a social network: <b>1 billion people</b>, each with about <b>200 friends</b>. The question isn't "fetch user X" — it's <b>"who are my friends' friends?"</b> — the people two hops away, the pool every "People You May Know" suggestion is drawn from. That one innocent question is where the row-at-a-time database we've leaned on for 40 lessons falls off a cliff. We'll <b>estimate</b> why a relational <code>JOIN</code> explodes as the question reaches deeper — each hop multiplying the work by 200, so three hops is 8 million lookups and five hops is the entire planet (Lesson 12's N+1, now compounding). We'll <b>model</b> the fix — an <b>adjacency list</b> and a <b>native graph store</b> whose <b>index-free adjacency</b> makes "get my neighbors" a pointer-follow whose cost doesn't grow with the graph. We'll <b>trace</b> a two-hop traversal both ways and watch the difference. And we'll hit the wall that makes graphs genuinely hard: <b>you cannot cut a well-connected graph into shards without cutting almost every edge</b>, so the moment the graph outgrows one machine, each cheap local pointer-follow becomes a network round trip — and the <b>supernode</b> (a celebrity with 100M followers) recurs as the hot shard we first met in Lesson 15. The trade running underneath: <b>traversal speed vs the partitionability of connected data.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0041-graph-relationships.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>A social graph. <b>1 billion users</b> (we'll call them <b>nodes</b>), each with an average of <b>200 friends</b>. Friendship is mutual, so we store it as two directed <b>edges</b> (A→B and B→A) to make "who are A's friends?" and "who are B's friends?" both a single lookup. The one query we must answer fast, millions of times a second, is the <b>friend-of-friend (FoF)</b> query: starting from you, walk out <b>two hops</b> and return the distinct people you're <i>not</i> yet friends with. That set powers friend suggestions, "3 mutual friends" badges, and reach estimates. Simple to ask. Brutal to serve at a billion nodes.</p>
+
+<div class="diagram"><pre>
+  A SOCIAL GRAPH  (nodes = people, edges = friendships)  --  "friends of friends?"
+
+        me
+       / | \                 hop 0:  1 node      (me)
+      A  B  C   ...           hop 1:  200 nodes   (my friends)          <- easy
+     /|  |  |\                hop 2:  ~40,000     (friends of friends)  <- the query
+    ...........               hop 3:  ~8,000,000  (friends^3)
+   .............              hop 4:  ~1.6 billion (> whole graph)
+  ...............            hop 5:  everyone     ("six degrees")
+
+  Each hop multiplies the frontier by the average degree d = 200.
+  The graph has 1e9 nodes but only ~5 hops SEPARATE ANY TWO PEOPLE.
+  That tiny diameter is exactly why deep traversal explodes: the answer
+  itself grows 200x per hop until it swallows the whole graph.
+</pre></div>
+
+<p class="note"><span class="key">A graph is data whose value is in the connections: nodes joined by edges. A traversal walks edges from a starting node to reach others; a hop is one edge crossed; degree is how many edges a node has.</span> The whole difficulty of this lesson is that a graph's answers grow with the <b>number of paths</b>, and paths multiply at every hop — while the storage engines we've used are built to fetch <b>rows</b>, one indexed lookup at a time.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Node</b> (vertex) — one entity in the graph: here, one person. Identified by a <code>user_id</code>.</li>
+  <li><b>Edge</b> — a relationship between two nodes: here, a friendship. <b>Directed</b> means it has a from/to (A→B); an undirected friendship is stored as two directed edges.</li>
+  <li><b>Degree</b> — how many edges a node has. Average degree <code>d = 200</code> here; a <b>supernode</b> is a node with a huge degree (a celebrity with millions of followers).</li>
+  <li><b>Hop</b> — one edge crossed during a walk. "Friends" are 1 hop away; "friends of friends" are 2 hops.</li>
+  <li><b>Traversal</b> — walking edges from a start node to visit others. <b>BFS</b> (breadth-first search) visits all 1-hop nodes, then all 2-hop, and so on — the natural shape of a FoF query.</li>
+  <li><b>Adjacency list</b> — for each node, the list of its neighbors' ids stored together. The opposite of scattering edges across a big shared table you must index into.</li>
+  <li><b>Index-free adjacency</b> — a node's record points <i>directly</i> at its neighbors' records, so "get my neighbors" follows pointers instead of searching a global index. The defining trick of a native graph store.</li>
+  <li><b>Cross-shard edge</b> — an edge whose two endpoints live on different machines, so following it costs a network round trip instead of a memory read.</li>
+</ul>
+
+<h2>Move 1 — Estimate: why the relational JOIN explodes at depth</h2>
+<p>Model friendships the obvious way — one table, two columns, indexed on the first: <code>friendships(user_id, friend_id)</code>. Friendship is mutual and stored both ways, so the row count is <code>1e9 users &times; 200 friends = 2 &times; 10&sup1;&sup1;</code> — <b>200 billion rows</b>. That alone is a warning (at ~16 bytes per edge that's <code>~3.2 TB</code> just for the edges — it will not fit one machine, which is Move 3's problem). But the real trouble is the shape of the query.</p>
+
+<div class="card calc">
+  <p><b>Hop 1 — my friends.</b> <code>SELECT friend_id FROM friendships WHERE user_id = ME</code>. One index seek into the 200-billion-row table, returns <b>200 rows</b>. Cheap — this is the row-at-a-time lookup every earlier lesson optimized. If it misses cache and hits SSD, ~<code>100&nbsp;&micro;s</code>. No problem.</p>
+  <p><b>Hop 2 — friends of friends.</b> Now self-join the table to itself:</p>
+  <pre style="color:var(--blue); font-size:.8rem; margin:.4rem 0">SELECT f2.friend_id
+FROM friendships f1
+JOIN friendships f2 ON f1.friend_id = f2.user_id
+WHERE f1.user_id = ME</pre>
+  <p>To resolve it, the database takes each of my <b>200</b> friends and does <b>one index seek per friend</b> to fetch <i>their</i> 200 friends: <code>200 index seeks &rarr; 200 &times; 200 = 40,000 rows</code>. This is <b>Lesson 12's N+1</b> — one query fanning into N per-row lookups — except the N is now a whole hop of the graph. At ~<code>100&nbsp;&micro;s</code> per seek that's <code>200 &times; 100&nbsp;&micro;s = 20&nbsp;ms</code>. Still survivable.</p>
+  <p><b>Hop 3 — and here it detonates.</b> Each of those 40,000 rows needs its own index seek to reach <i>its</i> friends: <code>40,000 index seeks &rarr; 8,000,000 rows</code>. At ~<code>100&nbsp;&micro;s</code> each that's <code>40,000 &times; 100&nbsp;&micro;s = 4 seconds</code> — for one query. <b>Hop 4</b> would be <code>8,000,000 seeks &rarr; 1.6 billion rows &rarr; ~13 minutes</code>. <span class="key">Every hop multiplies both the row count <i>and</i> the number of index seeks by the average degree, <code>d = 200</code>. The JOIN's cost is <code>d^k</code> — geometric in depth.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off — the relational model optimizes the wrong axis for connected data.</b> A B-tree index makes finding <i>one</i> row among 200 billion cheap: <code>log&#8322;(2&times;10&sup1;&sup1;) &asymp; 38</code> comparisons. That is exactly the right tool for "fetch order #12345." But a traversal isn't one lookup — it's <code>d^k</code> lookups, and it re-pays that <code>log N</code> index descent on <i>every single one</i>, at <i>every hop</i>. <span class="key">The relational engine is built to jump to a row by key; a graph question is built out of following edges, and the JOIN turns each edge-follow into a fresh global index search.</span> The cost you want a traversal to pay is "proportional to the answer"; the JOIN makes you pay "answer &times; the size of the whole table, per hop." That mismatch is the entire reason graph stores exist.</p>
+
+<h2>Move 2 — Model: adjacency lists and index-free adjacency</h2>
+<p>Two ideas fix the mismatch. The first — the <b>adjacency list</b> — changes how edges are <i>stored</i>. The second — <b>index-free adjacency</b> — changes how you <i>reach</i> a neighbor.</p>
+
+<h3>Adjacency list: keep a node's neighbors together</h3>
+<p>Instead of scattering 200 billion edges across one giant table you must index into, store <i>with each node</i> the list of its neighbor ids: <code>me &rarr; [A, B, C, &hellip;]</code> (200 ids). "Get my friends" becomes "read my node's list" — a single sequential read of one record, not an index seek. In a key-value store (Lesson 3) this is one <code>GET</code> by <code>user_id</code>. The 40,000-row hop-2 query becomes: read my list (200 ids), then read 200 lists (one per friend). Still 201 reads — but each is a direct key lookup, not a self-join, and the ids for a hop arrive already grouped.</p>
+
+<h3>Index-free adjacency: point straight at the neighbor</h3>
+<p>A native graph store (Neo4j, and the spirit of Facebook's TAO) goes one step further. Each node's record holds <b>direct pointers to its neighbors' records</b> — physical references, not ids you must look up. Following an edge is dereferencing a pointer: <code>O(1)</code>, a memory-or-disk read at a known address. Crucially, <span class="key">the cost of one hop no longer depends on how big the graph is.</span></p>
+
+<div class="diagram"><pre>
+  TWO WAYS TO CROSS ONE EDGE  (from me to a friend)
+
+  RELATIONAL JOIN                          INDEX-FREE ADJACENCY
+  ----------------------------------       ----------------------------------
+  friend_id = ?                            my node record
+      |  search a B-tree over                  |  holds a direct pointer
+      v  200,000,000,000 rows                  v  to the friend's record
+  ~38 comparisons + maybe random I/O       follow pointer -> arrive. O(1).
+  COST PER HOP GROWS with graph size       COST PER HOP is CONSTANT
+  (log N), paid d^k times                  (independent of N), paid d^k times
+
+  Double the graph to 2 billion users:
+    JOIN  -> every one of the d^k seeks gets slower (log N grew)
+    graph -> a 2-hop query runs at EXACTLY the same speed (N doesn't appear)
+</pre></div>
+
+<p>Both still visit <code>d^k</code> nodes at depth <code>k</code> — that fan-out is the <i>answer's own size</i> and no store can dodge it. What index-free adjacency removes is the <b>per-graph-size tax</b>: the <code>log N</code> you paid on every seek, every hop. For a shallow query (1–2 hops) on a graph that fits in one machine's memory, that turns a 20&nbsp;ms self-join into a sub-millisecond pointer-chase.</p>
+
+<p class="note why"><b>Name the trade-off — a graph store buys traversal speed by giving up the general index.</b> A relational table lets you ask <i>any</i> question — filter by any column, aggregate, join arbitrary tables — because everything is indexed and set-based. A native graph store is specialized: it is superb at "follow edges from here" and mediocre at "sum every order in Europe last Tuesday" (Lesson 29's job). <span class="key">You trade the generality of the relational model for one thing done exceptionally well — walking relationships — and you pay for it whenever the question <i>isn't</i> a traversal.</span> That's why real systems keep both: the graph store for connections, a relational or columnar store for everything else, kept in sync by Lesson 33's change stream.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Three runs: the two-hop FoF on one machine (the good case the graph store was built for), the same query once the graph is sharded across many machines (where it falls apart), and the query when it passes through a celebrity supernode (the fan-out bomb).</p>
+
+<h3>Path A — friends-of-friends on ONE machine (graph fits in RAM)</h3>
+<div class="diagram"><pre>
+  FoF(me), 2 hops, index-free adjacency, whole graph in one machine's memory
+
+   1. Read my node -> follow 200 neighbor pointers        -> 200 friends (hop 1)
+   2. For each friend, follow ITS neighbor pointers       -> 40,000 ids (hop 2)
+   3. Dedup, drop people I'm already friends with, rank by #mutuals
+   4. Return top suggestions.  ~40,200 pointer-follows in memory -> single-digit ms.
+
+  No index seeks, no JOINs, no network. Cost tracks the ANSWER size (40k),
+  not the GRAPH size (200 billion edges). This is the whole point of a graph store.
+</pre></div>
+
+<h3>Path B — the SAME query, graph sharded across 100 machines</h3>
+<p>200 billion edges (~3.2 TB) don't fit one machine, so we shard nodes by <code>hash(user_id)</code> across, say, <b>100</b> machines — each holds ~1% of the nodes. Now the trouble: an edge connects two nodes that were hashed <i>independently</i>, so they usually land on <i>different</i> shards.</p>
+
+<div class="card calc">
+  <p><b>How many edges get cut?</b> With random assignment across <code>P = 100</code> shards, the chance both endpoints of an edge land on the same shard is <code>1/P = 1/100</code>. So <code>99%</code> of edges are <b>cross-shard</b> — following them means a network round trip, not a memory read. A random partition of a well-connected graph cuts nearly every edge.</p>
+  <p><b>What that does to the FoF query.</b> Hop 1 fans to 200 friends spread across ~100 shards. Hop 2 must expand each of those 40,000 frontier nodes <i>where it lives</i> — so the traversal bounces machine-to-machine, ~40,000 cross-shard steps. Even batched per shard, that's a scatter-gather across the whole cluster with a network hop (~<code>0.5&nbsp;ms</code> each, even in one datacenter) on the tail latency (Lesson 27), and the query's speed is now set by the <b>slowest shard it must wait for</b> (Lesson 7's fan-out fragility). The elegant in-memory pointer-chase of Path A became a distributed storm.</p>
+</div>
+
+<div class="diagram"><pre>
+  WHY YOU CAN'T JUST SHARD A GRAPH  (hash(user_id) -> 100 machines)
+
+     shard 1        shard 2        shard 3   ...   shard 100
+     [me, X]        [A, C]         [B, ...]        [...]
+        \___edge___/  \___edge____/                       every edge that
+         cross-shard   cross-shard                        crosses = 1 network hop
+
+   Random partition: P(both ends same shard) = 1/100  ->  ~99% of edges CUT.
+   A 2-hop walk of 40,000 nodes crosses shard boundaries ~40,000 times.
+   Local pointer-follow (nanoseconds) -> network round trip (~0.5 ms). 10^4x slower.
+</pre></div>
+
+<h3>Path C — the query passes through a celebrity (supernode)</h3>
+<div class="diagram"><pre>
+  FoF where one of my friends is a celebrity with 100,000,000 followers
+
+   1. Hop 1: 200 friends -- one of them is @celebrity.
+   2. Hop 2: expanding @celebrity alone fans out to 100,000,000 nodes.
+      -> the frontier is no longer ~40,000; it's ~100 MILLION, from ONE edge.
+   3. @celebrity's node is a HOT SHARD (Lesson 3): every FoF query touching a fan
+      hits it, and its adjacency list is 100M entries -- it can't sit "with the node"
+      cheaply, and it can't be traversed through without exploding the walk.
+
+  This is Lesson 15's fan-out problem, reincarnated as graph structure. The average
+  degree is 200; the MAX degree is 100 million. The average is a lie (Lesson 2's skew).
+</pre></div>
+
+<p>Path A is why a graph store is magical; Path B is the wall that makes graphs the hardest thing to scale in this course; Path C is the skewed-degree monster that makes Path B worse. Look again at Path B: the whole cost came from <b>cut edges</b>. So the design question becomes — <i>can we partition the graph so that most edges stay <b>inside</b> a shard?</i> That's the first bottleneck.</p>
+
+<h2>Move 4 — Find the first bottleneck: you can't partition connected data cleanly</h2>
+<p>Every scaling tool in this course worked by <b>cutting data into independent pieces</b>: shard the URL table (Lesson 3), the tenants (Lesson 40), the object store (Lesson 20). It worked because those rows were <i>independent</i> — splitting them lost nothing. A graph is the opposite: its <b>value is the edges</b>, and an edge is a dependency between two rows. Cut the graph and you cut the very thing you're trying to query. There is no partition of a well-connected graph that keeps pieces both <b>balanced</b> (equal size) and <b>rarely cut</b> (few cross-shard edges) — finding the best one is a known hard problem (balanced graph partitioning is NP-hard). So you don't get a clean answer; you buy the best imperfect one. Three moves, each naming what it trades:</p>
+
+<div class="diagram"><pre>
+  FOUR WAYS TO FIGHT THE PARTITION WALL
+
+  1. REPLICATE instead of partition.  Keep the whole graph (or just the edge lists) in
+        RAM on every server, so every hop is local -- no cut edges at all (Path A, cloned).
+        200B edges ~ 3.2 TB: too big for one box's RAM, but the HOT working set (recent,
+        active users' adjacency) often fits. Facebook's TAO does this: a graph-shaped cache
+        over the edges, read-mostly, in memory. Trade: fast local traversal vs RAM cost &
+        write-propagation to every replica (Lesson 6's replication lag returns).
+
+  2. PARTITION SMARTLY, not randomly.  Social graphs have COMMUNITY structure -- people
+        cluster by geography, school, workplace (triadic closure, Lesson 15). Co-locate a
+        community on one shard and most of its edges stay LOCAL. Cross-shard edges drop from
+        ~99% toward, say, ~30%. Trade: far fewer cut edges vs an expensive, NP-hard partition
+        that must be recomputed as the graph changes (a moving target).
+
+  3. VERTEX-CUT the supernodes (Path C).  Don't force a celebrity onto one shard (a hot spot
+        no bulkhead fixes). SPLIT the high-degree node: replicate it across shards and cut its
+        EDGES among them instead of cutting the node's neighbors off from it. Handles the 100M-
+        degree monster the way Lesson 15 handled celebrities -- special-case the few, not the many.
+
+  4. DON'T TRAVERSE DEEP AT READ TIME.  d^k is the answer's own size; no store escapes it past
+        ~3 hops. PRECOMPUTE what you can (materialize "mutual friends counts" like Lesson 15's
+        fanned-out feed), and CAP depth (2 hops for suggestions, never 5). Trade: fresh answers
+        vs precomputed staleness -- the same read-vs-write choice from Lesson 15, on a graph.
+</pre></div>
+
+<p class="note why"><b>Name the trade-off — traversal speed vs partitionability.</b> The two things you want are in direct tension. <b>Fast traversal</b> wants every edge to be a local pointer-follow — which wants the whole graph on one machine (Path A), which doesn't scale past one machine's RAM. <b>Horizontal scale</b> wants the graph cut across many machines — which cuts edges, which turns local follows into network hops (Path B), which destroys traversal speed. <span class="key">You cannot have both cheaply: co-location gives speed but caps size; partitioning gives size but cuts the edges that made traversal fast. Every graph system is a chosen point on that line — replicate the hot subgraph, partition the cold bulk by community, special-case the supernodes, and precompute the deep answers.</span> That's why graphs are the last hard problem: the tool that scaled everything else — cut into independent shards — is the one tool a graph refuses.</p>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — serving deep traversals with relational <code>JOIN</code>s.</b> A self-join costs <code>d^k</code> index seeks and re-pays the <code>log N</code> B-tree descent on each — 4 seconds at hop 3, minutes at hop 4. Fine for 1 hop ("my friends"); a cliff beyond it. Use an adjacency list / graph store whose per-hop cost is <code>O(1)</code>, not <code>O(log N)</code>.</li>
+  <li><b>Trap 2 — sharding a graph like a table.</b> <code>hash(user_id)</code> across P shards cuts ~<code>(P-1)/P</code> of the edges, so every traversal becomes a cluster-wide network storm. Cut by <b>community</b> to keep edges local, or replicate the hot subgraph so hops stay in-process.</li>
+  <li><b>Trap 3 — trusting the average degree.</b> "Average 200 friends" hides a celebrity with 100M — a supernode that is a hot shard, a fan-out bomb, and an adjacency list that won't fit the model. Degree is Zipf (Lesson 2); special-case the whales with vertex-cuts, exactly as Lesson 15 special-cased celebrity fan-out.</li>
+  <li><b>Trap 4 — traversing arbitrarily deep at read time.</b> Because the frontier grows <code>200&times;</code> per hop, an uncapped traversal reaches the whole graph in ~5 hops and never returns. Cap the depth (2 hops for suggestions) and precompute what you can — a graph store makes hops cheap, not free, and it can never beat the answer's own <code>d^k</code> size.</li>
+</ul>
+
+<table>
+  <tr><th>Question</th><th>Relational table, one big index</th><th>Native graph store (index-free adjacency)</th></tr>
+  <tr><td>"Fetch user #12345"</td><td>one B-tree seek — excellent</td><td>one node lookup — fine</td></tr>
+  <tr><td>"My friends" (1 hop)</td><td>one index seek → 200 rows — fine</td><td>read one adjacency list — fine</td></tr>
+  <tr><td>"Friends of friends" (2 hops)</td><td>200 seeks, 40k rows, ~20 ms (N+1)</td><td>~40k pointer-follows, single-digit ms</td></tr>
+  <tr><td>Cost of one hop as graph grows</td><td>grows as <code>log N</code> per seek</td><td>constant — independent of N</td></tr>
+  <tr><td>"Sum all orders in Europe"</td><td>native strength (set/aggregate)</td><td>weak — not what it's for</td></tr>
+  <tr><td>Sharding across machines</td><td>rows independent → clean shards</td><td>edges cut → network per hop (the wall)</td></tr>
+</table>
+
+<h2>Where we landed</h2>
+<p>A graph is data whose value lives in its <b>edges</b>, and the row-at-a-time database we spent 40 lessons tuning is built for the opposite. We took one social graph — <b>1 billion nodes, ~200 friends each, 200 billion edges</b> — and answered one question, "who are my friends' friends?" <b>Estimate</b> showed why the relational <code>JOIN</code> detonates: a self-join does <code>d^k</code> index seeks and re-pays the <code>log N</code> descent on every one, so 1 hop is trivial, 2 hops is Lesson 12's N+1 (~20 ms), 3 hops is 8M seeks (~4 s), and 5 hops is the entire planet — each hop multiplies the work by <code>d = 200</code>. <b>Model</b> gave the two fixes: the <b>adjacency list</b> (a node's neighbors stored together, so "get my friends" is one read, not a join) and <b>index-free adjacency</b> (a node points straight at its neighbors, so one hop is <code>O(1)</code> and — the key win — its cost is <i>independent of graph size</i>, trading the relational model's generality for one thing done superbly). <b>Tracing</b> showed the magic and the wall: on one machine the 40,000-node FoF is a sub-millisecond in-memory pointer-chase, but 3.2 TB of edges won't fit one machine, and sharding by <code>hash(user_id)</code> across 100 shards <b>cuts ~99% of edges</b>, turning every hop into a network round trip — and a celebrity <b>supernode</b> (100M degree) fans one edge out to 100 million nodes and becomes a hot shard, Lesson 15 and Lesson 3 reincarnated as graph structure. The <b>first bottleneck</b> is the deepest one in the course: <b>you cannot cut connected data into independent shards</b> — an edge <i>is</i> a dependency — so you buy the best imperfect partition: <b>replicate</b> the hot subgraph (TAO), <b>partition by community</b> not by hash (fewer cut edges, at the cost of an NP-hard, ever-changing layout), <b>vertex-cut the supernodes</b>, and <b>precompute + cap depth</b> because <code>d^k</code> is the answer's own size and no store escapes it. The real lesson: <span class="key">the one tool that scaled everything else — split into independent pieces — is the tool a graph refuses, so graph systems live entirely on the line between traversal speed and partitionability of connected data.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson steps back from the data to the front door that steers traffic into it:</b></p>
+  <p style="margin:.2rem 0">• <b>Load balancing algorithms &amp; layers:</b> 40k req/s spread across a churning fleet (Lessons 27/34). Layer 4 (connection) vs Layer 7 (request) balancing, the algorithm ladder — round-robin → least-connections → EWMA/least-latency → power-of-two-choices → consistent-hash for stickiness (Lesson 4) — why plain round-robin starves behind one slow backend, health checks and connection draining (Lessons 31/34), and the balancer itself as a single point of failure (Lessons 7/26). The trade shifts to <b>even load distribution vs stickiness &amp; simplicity.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">graph</span>
+    <span class="pill">node / vertex</span>
+    <span class="pill">edge (directed)</span>
+    <span class="pill">degree</span>
+    <span class="pill">hop</span>
+    <span class="pill">traversal / BFS</span>
+    <span class="pill">friend-of-friend</span>
+    <span class="pill">adjacency list</span>
+    <span class="pill">index-free adjacency</span>
+    <span class="pill">native graph store</span>
+    <span class="pill">self-join / N+1</span>
+    <span class="pill">cross-shard edge</span>
+    <span class="pill">graph partitioning</span>
+    <span class="pill">community structure</span>
+    <span class="pill">supernode</span>
+    <span class="pill">vertex-cut</span>
+    <span class="pill">replicate the hot subgraph</span>
+  </p>
+  <p>That's Lesson 41, built on Lesson 2's access/degree skew (the "average 200 friends" that hides a 100M-degree celebrity), Lesson 3's sharding &amp; hot-shard problem (a supernode is a hot shard), Lesson 6's replication lag (returns when you replicate the graph), Lesson 12's N+1 &amp; index selectivity (the self-join re-paying <code>log N</code> per seek), Lesson 15's fan-out &amp; celebrity special-casing (reincarnated as graph structure), Lesson 27's tail latency (a fan-out waits on the slowest shard), and Lesson 33's change stream (keeping the graph store and the relational store in sync). <b>Ask me follow-ups</b> — e.g. "how does Facebook's TAO actually cache a graph?", "what does a real graph-partitioning algorithm (METIS / edge-cut vs vertex-cut) do?", "when should I use a native graph DB vs just adjacency lists in Postgres or a KV store?", "how do I precompute mutual-friend counts without recomputing the world?", or "how do supernodes break PageRank / recommendation traversals, and what's the fix?" When you're ready, say <b>next</b> and we'll go deeper on <i>Load balancing algorithms &amp; layers — steering 40k req/s across a churning fleet.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "A social graph has 1 billion users, ~200 friends each, stored as friendships(user_id, friend_id) indexed on user_id (200 billion rows). \"My friends\" (1 hop) is a fast single index seek. Why does \"friends of friends of friends\" (3 hops), written as a self-join, become unusable — and what's the underlying pattern?",
+    options: [
+      {t:"Each hop expands the frontier and requires one index seek per node reached, so the work multiplies by the average degree d=200 every hop: hop 1 = 200 rows (1 seek), hop 2 = 40,000 rows (200 seeks, ~20 ms), hop 3 = 8,000,000 rows (40,000 seeks, ~4 s). It's Lesson 12's N+1 compounding across hops — a self-join re-pays a log-N B-tree descent on every one of the d^k seeks, so cost is geometric in depth. The relational engine is built to jump to one row by key, not to follow d^k edges.",
+       ok:true,
+       fb:"Right. The JOIN turns every edge-follow into a fresh global index search, and there are d^k of them at depth k. That's why 1 hop is trivial and 3 hops is seconds: the cost grows as the answer size (d^k) TIMES the per-seek index cost (log N), paid every hop. The fix is a store where a hop is O(1), not O(log N)."},
+      {t:"The 200-billion-row table is simply too large for the index to fit in memory, so every query — including 1 hop — is slow; adding RAM so the index is cached makes all hop depths equally fast.",
+       ok:false,
+       fb:"1 hop is fast in the same table, so table size and index caching aren't the problem — the 1-hop query proves a single seek into 200B rows is fine. What changes with depth is the NUMBER of seeks: d^k of them. Even with the whole index in RAM, hop 3 still does 40,000 seeks and hop 4 does 8,000,000. Depth, not table size, is what explodes."},
+      {t:"Three hops returns duplicate people, and de-duplicating 8 million rows is the expensive part; if the query used SELECT DISTINCT the JOIN would run in milliseconds.",
+       ok:false,
+       fb:"Dedup is real but tiny next to the traversal cost. The expense is reaching 8,000,000 rows in the first place — 40,000 index seeks at ~100 µs each is ~4 seconds of lookups BEFORE any dedup. DISTINCT removes duplicates from a result you already paid to compute; it can't avoid the d^k seeks that produced it."}
+    ]
+  },
+  {
+    stem: "You move to a native graph store with index-free adjacency (each node points directly at its neighbors' records). The 2-hop friends-of-friends query, which was ~20 ms as a self-join, now runs in single-digit milliseconds on one machine. What EXACTLY did index-free adjacency remove, and what did it NOT remove?",
+    options: [
+      {t:"It removed the per-graph-size tax: a hop is now a direct pointer-follow (O(1)) instead of a B-tree seek (O(log N)) into a 200-billion-row table, so one hop's cost no longer depends on how big the graph is — double the graph and a 2-hop query runs at the same speed. It did NOT remove the d^k fan-out: you still visit ~40,000 nodes at 2 hops and ~8M at 3 hops, because that's the answer's own size. No store escapes it; a graph store makes hops cheap, not free.",
+       ok:true,
+       fb:"Exactly. Index-free adjacency deletes the log-N you paid on every seek — the cost that grew with the graph — turning each hop into a constant-time dereference. But the frontier still grows 200× per hop because that IS the answer. So graph stores win at shallow depth on a co-located graph, and you still must cap depth and precompute for deep questions."},
+      {t:"It removed the d^k fan-out entirely: because pointers are direct, a graph store visits only a constant number of nodes regardless of hop depth, so even a 6-hop query is O(1).",
+       ok:false,
+       fb:"Nothing can remove the fan-out — d^k is the number of nodes that ARE k hops away, i.e. the answer's own size. A 6-hop query still reaches ~200^6 nodes (the whole graph). Index-free adjacency makes each of those visits cheaper (a pointer-follow, not a seek), not fewer. That's why depth must still be capped."},
+      {t:"It removed the need for any other database: since a graph store answers traversals in O(1) per hop, you should move all your tables — orders, analytics, aggregates — into it and delete the relational store.",
+       ok:false,
+       fb:"A graph store is specialized for following edges and weak at set/aggregate queries like 'sum all orders in Europe last Tuesday' (Lesson 29's job). You trade the relational model's generality for one thing done superbly. Real systems keep BOTH — graph store for connections, relational/columnar for the rest — synced by a change stream (Lesson 33). It's a specialist, not a replacement."}
+    ]
+  },
+  {
+    stem: "The graph's 200 billion edges (~3.2 TB) won't fit one machine, so a colleague shards nodes by hash(user_id) across 100 machines — 'the same partitioning that scaled every other table in the course.' Why does this specifically break graph traversal, when it worked fine for the URL table and the tenants?",
+    options: [
+      {t:"Rows in those tables were independent, so cutting them across shards lost nothing. A graph's value is its EDGES, and hashing the two endpoints of an edge independently puts them on different shards ~99% of the time (P(same shard) = 1/100). So a 2-hop walk of 40,000 nodes crosses shard boundaries ~40,000 times, and each cut edge becomes a network round trip (~0.5 ms) instead of a memory read — a local pointer-chase becomes a cluster-wide scatter-gather bounded by the slowest shard. You can't cut connected data cleanly because an edge IS a dependency between two rows.",
+       ok:true,
+       fb:"Right. Hash-sharding assumes independent rows; a graph is the opposite — the edges you're querying are exactly the dependencies a random cut destroys. ~99% cross-shard edges turn every hop into network I/O. The fixes all reduce cut edges: replicate the hot subgraph, or partition by community so related nodes stay co-located."},
+      {t:"It doesn't break anything — hash sharding distributes load evenly, so the traversal just runs 100× faster because 100 machines share the work in parallel.",
+       ok:false,
+       fb:"Parallelism across shards doesn't help when the traversal must HOP between them: hop 2 can't start on a node until hop 1 delivered it, and that node likely lives on another machine. ~99% of edges are cross-shard, so the query is dominated by ~40,000 sequential-ish network round trips and waits on the slowest shard (Lesson 27's tail). Even distribution of storage is not the same as fast traversal.",},
+      {t:"It breaks only because 100 shards is too few; with 1,000 shards each edge's endpoints would usually land together and traversal would stay local.",
+       ok:false,
+       fb:"More shards makes it WORSE, not better: P(same shard) = 1/P, so 1,000 shards means ~99.9% of edges are cut, not fewer. Random hashing can never keep an edge's endpoints together — that's the whole point. Keeping edges local requires partitioning by COMMUNITY (co-locating related nodes), not more random buckets."}
+    ]
+  },
+  {
+    stem: "Two problems remain: the graph doesn't fit one machine (so cut edges hurt traversal), and one 'friend' is a celebrity with 100,000,000 followers whose 2-hop expansion alone reaches 100M nodes and whose shard is red-hot. What's the right combination of moves?",
+    options: [
+      {t:"Two different problems, two tools. For the cut-edge cost: don't partition randomly — either REPLICATE the hot working set (recent, active users' adjacency lists) in RAM on every server so those hops stay local (Facebook's TAO), and/or partition the cold bulk by COMMUNITY (geography, school) so most edges stay inside a shard. For the celebrity: VERTEX-CUT the supernode — split its edges across shards and special-case it so traversals don't fan out through it — exactly as Lesson 15 special-cased celebrity fan-out. Plus cap depth and precompute, because d^k is unavoidable past ~3 hops.",
+       ok:true,
+       fb:"Exactly. Replication and community partitioning attack cut edges (keep hops local); vertex-cutting attacks the supernode (a hot shard and a fan-out bomb, Lessons 3 and 15). And since the frontier grows 200× per hop, you cap depth (2 hops for suggestions) and precompute mutual-friend counts. No single knob — you buy the best imperfect partition on the traversal-speed-vs-partitionability line."},
+      {t:"Just buy a bigger machine with 4 TB of RAM so the whole 3.2 TB graph fits on one box; then there are no cut edges and no hot shard, and the celebrity is no problem.",
+       ok:false,
+       fb:"One big box removes cut edges (nice) but doesn't scale — the graph grows past any single machine, and a single box is a SPOF with no headroom for the read traffic a billion-user graph generates. And the celebrity's 100M-node fan-out per query is a TRAVERSAL problem, not a storage one: even in RAM, expanding a 100M-degree node blows up the walk. You still need depth caps, precomputation, and supernode special-casing.",},
+      {t:"Treat the celebrity like any other node and force the whole graph onto 1,000 uniform hash shards so load is perfectly even; uniformity solves both the fan-out and the cut edges.",
+       ok:false,
+       fb:"Uniform hashing maximizes cut edges (~99.9% at 1,000 shards) and does nothing for the fan-out — a 100M-degree node reached in hop 1 still explodes hop 2 no matter which shard it's on, and its shard is still hammered by every FoF query that touches a fan. Degree is Zipf (Lesson 2): the fix is to special-case the few whales (vertex-cut) and keep edges local by community, not to pretend every node is average."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

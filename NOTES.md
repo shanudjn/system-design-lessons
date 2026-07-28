@@ -666,10 +666,13 @@
     bulkhead/429, L08 token bucket per tenant, L12 selectivity trap, L13 Little's Law, L27 knee, L28
     bounded queue/goodput, L36 cells+shuffle-sharding. Trade: density & cost efficiency vs isolation &
     fairness. (Lesson 0040)
-41. Graph & relationship systems — "who are my friends' friends?" over a billion-edge social graph:
-    why a relational JOIN explodes at depth (L12 N+1 across hops), adjacency lists vs a native graph
-    store, partitioning a graph without cutting every edge (the hard part — supernodes/celebrities
-    recur, L15), and BFS/traversal at scale. Trade: traversal speed vs partitionability of connected data.
+41. ✅ **Graph & relationship systems** — "who are my friends' friends?" over a billion-edge social graph:
+    why a relational JOIN explodes at depth (d^k index seeks, L12 N+1 across hops), adjacency lists +
+    index-free adjacency (per-hop cost O(1), independent of N) vs a native graph store, partitioning a
+    graph without cutting every edge (the hard part — hash-shard cuts ~99% of edges; replicate hot
+    subgraph/TAO, partition by community, vertex-cut the supernodes/celebrities that recur from L15/L3),
+    and capping depth + precomputing because d^k is the answer's own size. Trade: traversal speed vs
+    partitionability of connected data. (Lesson 0041)
 
 ### Advanced topics (next batch — queued so the course never runs dry)
 42. Load balancing algorithms & layers — 40k req/s across a churning fleet (L27/34): L4 (connection)
