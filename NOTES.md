@@ -675,11 +675,33 @@
     partitionability of connected data. (Lesson 0041)
 
 ### Advanced topics (next batch — queued so the course never runs dry)
-42. Load balancing algorithms & layers — 40k req/s across a churning fleet (L27/34): L4 (connection)
-    vs L7 (request) balancing, the algorithm choice (round-robin → least-connections → EWMA/least-latency
-    → power-of-two-choices → consistent-hash for stickiness, L04), why round-robin starves behind one slow
-    backend, health checks + connection draining (L31/34), and the LB itself as a SPOF (L07/26). Trade:
-    even load distribution vs stickiness & simplicity.
+42. ✅ **Load balancing algorithms & layers** — the front door to L27's fleet (286 servers, 40k req/s,
+    ~140 req/s each): which backend serves each request? Estimate why the "fairest" rule breaks first —
+    round-robin distributes request COUNTS evenly but is blind to backend STATE, so one server slowed 10×
+    (400 ms/req → real capacity 8 cores/0.4s = 20 req/s) still gets fed its full 140 req/s → unbounded
+    backlog (L28) that fails ~0.35% (1/286) of all traffic (counts turns, not trouble). Model two orthogonal
+    choices: the LAYER (L4 = per-connection, cheap/protocol-blind but pins a multiplexed HTTP/2 or long-lived
+    stream to ONE box chosen once; L7 = per-request, reads path/header/cookie, can retry L07, demuxes the
+    stream — pays parse + TLS) and the ALGORITHM ladder, each rung buying back the info round-robin discarded:
+    weighted-RR (unequal boxes), least-connections & least-latency/EWMA (REACT to load — a slow box's rising
+    in-flight routes traffic away), **power-of-two-choices** (pick 2 at random → lighter; near-optimal balance
+    with NO global scan and NO herd because random picks don't correlate — imbalance drops from growing like
+    ln N/ln ln N to a near-constant ln ln N), **consistent-hash** for stickiness (L04 ring: same key→same
+    backend, warm cache L02, only ~1/N remaps on churn vs %N's reshuffle L03) whose price is a HOT key pinning
+    one box (L03/15/40) → bounded-load hashing (cap (1+ε)×avg, spill on the ring). Trace: healthy P2C request;
+    a sick box HEALED in ms by load-awareness then ejected in seconds by a health check (L34 readiness);
+    a deploy that drops ZERO requests via connection draining — deregister→drain→die (L31/34). First wall =
+    the LB is the fattest SPOF (every request crosses it → its death = 100% outage, L07/26) → redundancy
+    (anycast / VIP failover / DNS round-robin) but that DESTROYS the global load view (each LB sees only its
+    own traffic → "global best" becomes a herd of balancers stampeding stale guesses, L02) → exactly why
+    coordination-free RANDOMIZED algorithms (P2C) win at scale. Four traps: blind algorithm in front of
+    servers that can slow (round-robin melts behind the slow box); a health check probing a SHARED dependency
+    (one DB blip fails ALL → LB ejects the whole fleet = correlated total outage, L34); L4 in front of
+    multiplexed/long-lived connections (pins hundreds of requests to one box → skew); treating the LB as
+    infrastructure that "just works" (it's the SPOF; run several + drain on deploy). Reuses L02 locality &
+    thundering herd, L03 %N reshuffle & hot shard, L04 consistent-hash ring, L07 partial failure/retry/SPOF,
+    L26 stateful front door, L27 fleet sizing & knee, L28 unbounded queue, L34 readiness/health/drain.
+    Trade: even load distribution vs stickiness & simplicity. (Lesson 0042)
 43. Gossip & anti-entropy — keep 1,000 nodes agreeing on membership and 3 replicas agreeing on data
     without a central coordinator (contrast L34's registry, L10's consensus): epidemic/gossip dissemination
     (SWIM failure detection), Merkle trees to find which keys diverged cheaply (Dynamo-style repair of L06's

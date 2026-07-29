@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 42 — Load Balancing: Steering 40k req/s Across a Churning Fleet</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 42 · Worked Example</div>
+  <h1>Load Balancing: Steering 40k req/s Across a Churning Fleet</h1>
+  <p class="lead">For 41 lessons we've built the <i>fleet</i> — servers that scale out (Lesson 27), register and deregister as they churn (Lesson 34), and roll out new versions without an outage (Lesson 31). But we never asked the question at the very front door: when <b>40,000 requests a second</b> arrive, <b>which of the 286 servers</b> does each one go to? Getting that wrong wastes the whole fleet — some boxes melt while others sit idle, and one sick server can swallow a slice of your traffic whole. The thing that decides is a <b>load balancer</b>, and it turns out "just spread them evenly" is deceptively hard the moment servers stop being identical. We'll <b>estimate</b> why a naïve round-robin — the fairest-sounding rule there is — collapses the instant one backend slows down. We'll <b>model</b> the two places balancing happens (<b>Layer 4</b>, per-connection; <b>Layer 7</b>, per-request) and the ladder of algorithms — round-robin → least-connections → least-latency → <b>power-of-two-choices</b> → <b>consistent-hash</b> for stickiness (Lesson 4). We'll <b>trace</b> a request through a healthy fleet, a fleet with one slow box, and a fleet being deployed to. And we'll hit the bottleneck hiding in plain sight: the load balancer is the one box <i>every</i> request must pass through, so it is the fattest <b>single point of failure</b> in the system (Lessons 7 &amp; 26). The trade underneath every choice: <b>even load distribution vs stickiness &amp; simplicity.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0042-load-balancing.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>The API tier from Lesson 27: <b>286 servers</b>, offered <b>40,000 requests/second</b> at peak. Each request takes about <b>40 ms</b> of work, each server has <b>8 cores</b>, so one server can finish at most <code>8 / 0.04 s = 200 req/s</code> flat out; we run them at ~70% (Lesson 27's utilization knee), so each carries about <code>140 req/s</code>. In front of the fleet sits a <b>load balancer (LB)</b>: a single logical front door that every client connects to, which then forwards each request to one backend server. Its whole job is to answer one question, 40,000 times a second — <b>"which backend?"</b> — and it must keep answering it well while servers are dying, booting, and being deployed to underneath it. That last part is what makes it hard.</p>
+
+<div class="diagram"><pre>
+  THE FRONT DOOR  (clients -> load balancer -> fleet of 286 servers)
+
+     clients                     LAYER 7 LB                    fleet
+   (40,000 req/s)          reads the HTTP request         286 servers
+        |                  picks a backend PER request    ~140 req/s each
+        |   ==============>   +---------------------+   ==============>  [srv 1 ]
+        |                     |  which backend?     |                   [srv 2 ]
+        |                     |  - round robin?     |                   [srv 3 ]
+        |                     |  - least conn?      |    ...            [ ...  ]
+        |                     |  - power of two?    |                   [srv286]
+        |                     |  - hash(user)?      |
+                              +---------------------+
+                                       ^
+                    LAYER 4 LB below it: forwards whole CONNECTIONS
+                    (never reads the request; one decision per TCP connection)
+
+  Every request in the whole system funnels through this one box. Spread them
+  well -> the fleet hums at 70%. Spread them badly -> some boxes melt at 100%
+  while others idle at 20%, and the LB's own death is a 100% outage.
+</pre></div>
+
+<p class="note"><span class="key">A load balancer is the component that receives every incoming request and forwards it to one of many identical backend servers, so no single server is overwhelmed and the fleet's capacity adds up.</span> "Identical" is the assumption we'll spend the whole lesson testing — because a server that's mid-GC-pause, or running a slow disk, or half-drained for a deploy, is <i>not</i> identical to its neighbors, and a balancer that assumes it is will feed traffic straight into the sick one.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Backend</b> — one of the interchangeable servers behind the balancer that actually does the work. Also called an <i>upstream</i> or a <i>pool member</i>.</li>
+  <li><b>Layer 4 (L4)</b> — balancing at the transport layer: the LB forwards whole TCP/UDP <b>connections</b> by looking only at IP address and port, never reading the payload. Cheap and protocol-blind.</li>
+  <li><b>Layer 7 (L7)</b> — balancing at the application layer: the LB reads the HTTP <b>request</b> (path, headers, cookies) and can make a fresh decision for every request. Richer, but it must parse and often terminate TLS.</li>
+  <li><b>Round-robin</b> — hand requests to backends in fixed rotation: 1, 2, 3, …, 286, 1, 2, … Counts <i>turns</i>, ignores <i>state</i>.</li>
+  <li><b>Least-connections</b> — send the next request to whichever backend currently has the fewest requests still in flight. Reacts to actual load.</li>
+  <li><b>Power-of-two-choices (P2C)</b> — pick <b>two</b> backends at random, send to the less-loaded of the two. Nearly as good as scanning all of them, at a fraction of the cost and without the herd effect.</li>
+  <li><b>Sticky session (session affinity)</b> — routing so a given client (or key) always lands on the <i>same</i> backend, e.g. to keep its local cache warm (Lesson 2) or its session in memory.</li>
+  <li><b>Health check</b> — a probe (active) or observed failures (passive) the LB uses to decide a backend is unfit and pull it out of the pool (Lesson 34's readiness).</li>
+  <li><b>Connection draining</b> — when retiring a backend (deploy/scale-in), stop sending it <i>new</i> work but let its in-flight requests finish first (Lessons 31 &amp; 34's graceful shutdown).</li>
+</ul>
+
+<h2>Move 1 — Estimate: why the "fairest" rule breaks first</h2>
+<p>Round-robin sounds unimprovable: give every server an exactly equal number of requests, in strict rotation. On a healthy fleet it <i>is</i> fine — <code>40,000 / 286 &asymp; 140 req/s</code> to each, dead even. The problem is that "equal number of requests" is only "equal load" if every request costs the same on every server. The instant one server slows down, that assumption breaks — and round-robin keeps shoving traffic at the sick box because it counts turns, not trouble.</p>
+
+<div class="card calc">
+  <p><b>Set the scene.</b> One server out of 286 hits a stop-the-world GC pause / a degraded disk and its requests now take <b>400 ms</b> instead of 40 ms — <b>10× slower</b>. Its real capacity just fell: <code>8 cores / 0.4 s = 20 req/s</code>, down from 200.</p>
+  <p><b>What round-robin does.</b> It has no idea. It keeps sending that server its fair share: <code>140 req/s</code>. So the sick box takes in <b>140/s</b> and drains <b>20/s</b>. The other <b>120/s</b> pile up in its queue (Lesson 28). In one second the backlog is 120 requests; in ten seconds it's 1,200; the queue grows without bound until every request routed there waits past the client's timeout and <b>fails</b> (Lesson 7's partial failure).</p>
+  <p><b>Price it.</b> <code>1 / 286 &asymp; 0.35%</code> of all traffic — about <code>140 req/s</code> — is routed into the tar pit, and essentially <b>all of it fails or times out</b>. Worse, those are slow-failing requests: they hold a client connection open for the full timeout (Lesson 7), and if clients retry (Lesson 7's retry storm) the sick box gets <i>more</i> load, not less. One degraded server out of 286 became a steady stream of user-visible errors — because the balancer was <b>blind to backend state.</b></p>
+</div>
+
+<p class="note why"><b>Name the trade-off — round-robin buys simplicity by ignoring information.</b> It needs to track <i>nothing</i> about the backends: just a counter that says whose turn is next. That statelessness is exactly why it's fast, trivially correct, and why every LB offers it as the default. But the price of tracking nothing is <b>reacting to nothing</b> — it can't tell a healthy server from a dying one, so it distributes <i>requests</i> evenly while distributing <i>load</i> catastrophically. <span class="key">Round-robin is optimal when all backends are identical and all requests cost the same; it is worst-case-blind exactly when you most need help — when one backend is sick.</span> Every smarter algorithm that follows buys back that lost information, and pays for it in state the LB must track.</p>
+
+<h2>Move 2 — Model: the layer you balance at, and the algorithm ladder</h2>
+<p>Two independent choices. First, <b>where</b> in the network stack the LB makes its decision (Layer 4 vs Layer 7). Second, <b>which rule</b> it uses to pick a backend (the algorithm). They're orthogonal — you pick one of each.</p>
+
+<h3>L4 vs L7: connections vs requests</h3>
+<p>A <b>Layer 4</b> balancer works at the transport layer. It sees a TCP connection — a source IP:port and a destination — and forwards the packets, never looking inside. It makes <b>one decision per connection</b>: pick a backend when the connection opens, then pin every byte of that connection to it for its whole life. It's cheap (no parsing, no TLS), fast, and works for any protocol.</p>
+<p>A <b>Layer 7</b> balancer works at the application layer. It terminates the connection, reads each HTTP request, and makes <b>one decision per request</b>. That costs more — it parses every request and usually terminates TLS — but it can route by URL path or header, retry a failed request on another backend (Lesson 7), and split many requests from one connection across many servers.</p>
+
+<div class="diagram"><pre>
+  ONE HTTP/2 CONNECTION CARRYING 100 REQUESTS  (why the layer matters)
+
+  L4 balancer (per CONNECTION):
+     client ==== 1 long-lived connection ====>  picks backend #5 ONCE
+                                                 ALL 100 requests -> backend #5
+     -> one chatty client pins 100 requests to ONE server. Uneven. And a
+        long-lived stream (WebSocket, gRPC, HTTP/2) can't be rebalanced mid-life.
+
+  L7 balancer (per REQUEST):
+     client ==== 1 connection, 100 requests ==>  demultiplexes the stream
+        req 1 -> backend #5     req 2 -> backend #12    req 3 -> backend #40 ...
+     -> the 100 requests spread across the fleet. Even. Costs: parse + TLS per req.
+
+  Modern protocols MULTIPLEX many requests onto one connection, so "balance the
+  connection" (L4) and "balance the request" (L7) drift far apart. Per-request
+  granularity is why service meshes and API gateways balance at L7.
+</pre></div>
+
+<h3>The algorithm ladder — each rung buys back information round-robin threw away</h3>
+<table>
+  <tr><th>Algorithm</th><th>Rule</th><th>What it fixes / costs</th></tr>
+  <tr><td><b>Round-robin</b></td><td>strict rotation 1,2,3,…</td><td>Even <i>counts</i>. Blind to load — melts behind one slow box (Move 1). State: a counter.</td></tr>
+  <tr><td><b>Weighted RR</b></td><td>bigger boxes get more turns</td><td>Handles <i>unequal</i> servers, still blind to <i>dynamic</i> slowness.</td></tr>
+  <tr><td><b>Least-connections</b></td><td>fewest in-flight wins</td><td>Reacts to load: a slow box's in-flight piles up → it stops receiving. State: a live count per backend.</td></tr>
+  <tr><td><b>Least-latency (EWMA)</b></td><td>lowest recent response time wins</td><td>Reacts to <i>speed</i>, not just count — catches a box that's slow but not yet backed up. State: a running latency average per backend.</td></tr>
+  <tr><td><b>Power-of-two-choices</b></td><td>pick 2 at random, send to the lighter</td><td>Near-optimal balance without scanning all N or a global "best" — and no herd. State: read 2 counters.</td></tr>
+  <tr><td><b>Consistent-hash</b></td><td><code>hash(key) → backend</code> on a ring (L4)</td><td><b>Stickiness</b>: same key → same backend, cache stays warm. Trades even load for affinity.</td></tr>
+</table>
+
+<p>The two rungs worth dwelling on are the two clever ones: power-of-two-choices (how to balance <i>well</i> cheaply) and consistent-hash (how to be <i>sticky</i> without wrecking rebalancing).</p>
+
+<h3>Power-of-two-choices: why picking the global best is a trap</h3>
+<p>The obvious upgrade from round-robin is "always send to the least-loaded server." It sounds ideal and it's a trap for two reasons. First, cost: scanning all 286 backends' loads on every one of 40,000 requests/second is a lot of bookkeeping. Second — and worse — the <b>herd</b>: if several load balancers (you always run more than one; see Move 4) all look at slightly stale load numbers and all pick the <i>same</i> "least-loaded" server, they stampede onto it together, it instantly becomes the <i>most</i>-loaded, and the load oscillates violently — Lesson 2's thundering herd, aimed at whichever box looked idle a moment ago.</p>
+<p><b>Power-of-two-choices</b> dissolves both problems with almost nothing. Pick <b>two backends at random</b>, send the request to whichever of the two has fewer in-flight. That's it. Reading two counters is cheap, and because each LB's two picks are <i>random</i>, they don't correlate into a herd. Yet the balance is astonishingly good: with purely random assignment the busiest server's backlog grows roughly like <code>ln N / ln ln N</code> above average (it keeps drifting worse as the fleet grows), while with two choices that gap collapses to about <code>ln ln N</code> — <span class="key">for any realistic N the imbalance stops growing and stays near-constant</span>. One extra random pick turns "spread that slowly gets lumpier as you scale" into "spread that stays tight at any size."</p>
+
+<h3>Consistent-hash: stickiness without the reshuffle</h3>
+<p>Sometimes you <i>want</i> the same client to hit the same backend every time — to keep that backend's in-memory cache warm (Lesson 2) or its session state local. The naïve way, <code>backend = hash(user) % N</code>, has Lesson 3's fatal flaw: change <code>N</code> by one (a server dies or boots) and <b>almost every</b> user remaps to a different backend, every warm cache goes cold at once, and the origin gets hammered. The fix is Lesson 4's <b>consistent hashing</b>: place backends on a ring, hash each key to a point, walk clockwise to the owning backend. Add or remove one backend and only <code>~1/N</code> of keys move — the rest stay put, caches stay warm.</p>
+
+<p class="note why"><b>Name the trade-off — stickiness vs even load.</b> Affinity and balance pull in opposite directions. Sticky routing pins a key to a backend, so a <b>hot key</b> — a celebrity, a whale tenant (Lessons 3, 15, 40) — pins its whole flood onto <i>one</i> server, recreating the hot shard: perfect cache locality, terrible balance. Stateless per-request balancing (P2C) spreads load beautifully but can't keep a cache warm or a session local. <span class="key">You can't maximize both: the routing that keeps a backend's cache warm is exactly the routing that lets one hot key overwhelm it.</span> The middle ground is <b>bounded-load consistent hashing</b> — hash for stickiness, but cap each backend at (1+ε)× the average and spill overflow to the next backend on the ring — buying most of the affinity while refusing to let any one box melt.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Three runs on the same fleet: a healthy request, the one-slow-box scenario from Move 1 (now under a load-aware algorithm), and a request arriving mid-deploy.</p>
+
+<h3>Path A — healthy fleet, power-of-two-choices</h3>
+<div class="diagram"><pre>
+  A request arrives at an L7 LB. Fleet healthy, all ~140 req/s, ~40 ms each.
+
+   1. LB terminates TLS, reads the HTTP request.
+   2. Pick 2 backends at random:  #58 (5 in-flight)  vs  #203 (3 in-flight).
+   3. Send to #203 (the lighter). Forward the request, stream the response back.
+   4. #203's in-flight ticks 3 -> 4, then back to 3 when it responds ~40 ms later.
+
+  40,000 times a second, two random picks each, and the fleet stays within a
+  hair of even -- no global scan, no herd, no per-backend hot spot.
+</pre></div>
+
+<h3>Path B — one slow backend, least-connections (or P2C) heals it</h3>
+<p>Now replay Move 1's degraded server (400 ms/req, real capacity 20 req/s) — but under a load-aware algorithm instead of round-robin.</p>
+<div class="card calc">
+  <p><b>The self-correction.</b> The sick box's requests don't finish, so its <b>in-flight count climbs</b>: 8 → 20 → 50 → 100 while healthy boxes sit at ~5. Least-connections looks at that count and simply <b>stops choosing it</b>. Power-of-two-choices does the same by accident — any time the sick box is one of the two random picks, it loses the comparison to its healthy rival, so it wins traffic only in the rare case it's picked against another overloaded box. Either way the sick server's arrival rate falls from 140/s toward its true 20/s, the backlog stops growing, and the ~0.35% of traffic that round-robin was killing is now spread over the 285 healthy boxes instead.</p>
+  <p><b>Then health checks finish the job.</b> If the box stays bad, the LB's health check (Move 4) marks it <b>unready</b> and ejects it from the pool entirely (Lesson 34), and Lesson 7's retry sends any request that already failed there to a healthy backend. Load-awareness contained the damage in milliseconds; the health check removes the box in seconds.</p>
+</div>
+
+<h3>Path C — a request arrives mid-deploy (connection draining)</h3>
+<div class="diagram"><pre>
+  Rolling deploy (Lesson 31): backend #58 is being replaced by a new version.
+
+   WRONG (no drain):  kill #58 now.
+      -> its ~5 in-flight requests die mid-flight = 5 user-visible errors,
+         plus every client with an open connection to it gets a reset.
+
+   RIGHT (connection draining, Lessons 31/34):
+   1. #58 DEREGISTERS from the LB pool first -> LB sends it NO NEW requests.
+   2. #58 keeps serving its in-flight requests until they finish (a drain
+      timeout, say 30 s, caps the wait).
+   3. Only when drained (or timeout) does #58 shut down. New version boots,
+      passes its READINESS check, and only THEN joins the pool (Lesson 34:
+      register when ready, not when merely alive).
+
+  Deregister-first, drain, then die -- the exact ordering a crash gets wrong
+  and a graceful shutdown gets right. Zero dropped requests during a deploy.
+</pre></div>
+
+<p>Path A is the balancer doing its quiet everyday job; Path B is it absorbing a partial failure the way round-robin couldn't; Path C is it cooperating with deploys and churn so a routine rollout costs zero errors. All three assume the balancer itself is up. What happens when it isn't?</p>
+
+<h2>Move 4 — Find the first bottleneck: the balancer is the fattest SPOF in the system</h2>
+<p>Look back at the diagram. <b>Every</b> one of the 40,000 requests/second passes through the load balancer. It is, by construction, the one component whose failure is a <b>100% outage</b> — a purer single point of failure than anything in Lessons 7 or 26, because there's no partial version of "the front door is gone." The whole apparatus of health checks, draining, and clever algorithms protects the <i>backends</i>; none of it helps if the thing doing the protecting dies. So the balancer must be made redundant — which immediately creates two new problems.</p>
+
+<div class="diagram"><pre>
+  MAKING THE FRONT DOOR NOT A SINGLE POINT OF FAILURE
+
+  Problem 1: how do clients reach MANY balancers, and skip a dead one?
+     - DNS round-robin: publish N LB IPs; clients pick one. Cheap, but DNS
+       caches are stale (Lesson 34) -> a dead LB's IP lingers for the TTL.
+     - Virtual IP + failover (VRRP/keepalived): one IP, a standby LB grabs it
+       if the active dies. Fast failover, but only 1 active at a time.
+     - Anycast: ONE IP announced from many locations via BGP; the network
+       routes each client to the nearest healthy LB, reroutes if one drops.
+       How large-scale front doors survive an LB (or whole PoP) death.
+
+  Problem 2: each LB sees only ITS OWN connections (no shared global view).
+     -> "least-connections" is least-connections-KNOWN-TO-ME, not global.
+     -> Several LBs can independently pile onto the same "idle" backend
+        (Lesson 2's herd). This is exactly why POWER-OF-TWO-CHOICES wins at
+        scale: random picks don't correlate, so N balancers don't stampede
+        the same box even with zero coordination.
+</pre></div>
+
+<p class="note why"><b>Name the trade-off — redundancy removes the SPOF but destroys the global view.</b> One balancer can, in principle, know the exact load on every backend and route perfectly. The moment you run several balancers for availability (and you must), each sees only the slice of traffic flowing through <i>it</i>, so no balancer has the truth anymore — and any algorithm that depends on a global "best backend" turns into a herd of balancers stampeding stale guesses. <span class="key">You trade the SPOF for a coordination problem, and the winning move is to pick algorithms that don't <i>need</i> coordination: randomized ones (power-of-two-choices) that stay well-balanced precisely because each balancer's choices are independent.</span> Availability forces you toward algorithms that are good <i>without</i> a global view.</p>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — round-robin (or any blind algorithm) in front of servers that can slow down.</b> It feeds a degraded box its full share (140 req/s into a 20 req/s box), building an unbounded queue that fails ~0.35% of all traffic. Use a <b>load-aware</b> algorithm (least-connections, least-latency, P2C) so a sick box's rising in-flight count routes traffic <i>away</i> from it automatically.</li>
+  <li><b>Trap 2 — a health check that probes a <i>shared</i> dependency.</b> If every backend's <code>/healthz</code> pings the same database and that DB blips, <b>every</b> backend fails its check at once and the LB ejects the <b>entire fleet</b> — a correlated total outage (Lesson 34). Health-check what <i>this</i> instance can serve, not a shared resource everyone shares.</li>
+  <li><b>Trap 3 — L4 balancing in front of multiplexed / long-lived connections.</b> One HTTP/2 or gRPC connection carries hundreds of requests; an L4 LB pins them all to one backend chosen once, so load skews hard and a stream can't be rebalanced mid-life. Balance at <b>L7</b> (per request) when connections are long-lived or multiplexed.</li>
+  <li><b>Trap 4 — treating the load balancer as infrastructure that "just works."</b> It's the fattest SPOF you own: every request crosses it. Run several (anycast / VIP failover / DNS), and choose <b>coordination-free</b> algorithms (P2C) so N balancers with no shared view don't herd onto the same backend. And drain connections on deploy (Lesson 31) or every rollout drops in-flight requests.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>The front door decides which of <b>286 servers</b> serves each of <b>40,000 requests/second</b>, and getting it wrong wastes the fleet or takes it down. <b>Estimate</b> exposed the trap in the fairest-sounding rule: round-robin distributes <i>request counts</i> evenly but is blind to backend <i>state</i>, so one server slowed 10× (400 ms, real capacity 20 req/s) still gets fed its full 140 req/s — an unbounded backlog that fails ~0.35% of all traffic, because the balancer tracks turns, not trouble. <b>Model</b> laid out the two orthogonal choices: the <b>layer</b> (L4 forwards whole connections cheaply but pins multiplexed streams to one box; L7 reads each request, spreads them, and can retry — at the cost of parsing and TLS) and the <b>algorithm ladder</b>, each rung buying back the information round-robin discarded — least-connections and least-latency <i>react</i> to load, <b>power-of-two-choices</b> gets near-perfect balance from two random picks with no global scan and no herd (imbalance shrinks from growing like <code>ln N/ln ln N</code> to a near-constant <code>ln ln N</code>), and <b>consistent-hash</b> buys stickiness for warm caches (Lessons 2, 4) at the price of a hot key pinning to one box. <b>Tracing</b> showed all three working: a healthy P2C request, a sick box that a load-aware algorithm heals in milliseconds and a health check ejects in seconds, and a deploy that drops zero requests because the retiring box <b>deregisters, drains, then dies</b> (Lessons 31, 34). The <b>first bottleneck</b> is the balancer itself: every request crosses it, so it's the purest <b>single point of failure</b> in the system (Lessons 7, 26) — and making it redundant (anycast, VIP failover, DNS round-robin) destroys the global view of load, which is exactly why coordination-free randomized algorithms win at scale. The real lesson: <span class="key">balancing perfectly is easy when servers are identical and the balancer is alone; the entire craft is doing it well when servers are sick or churning and no single balancer can see the whole picture — the standing tension between even load distribution and stickiness &amp; simplicity.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson goes underneath the balancer's health checks to how a leaderless cluster keeps agreeing on who's alive:</b></p>
+  <p style="margin:.2rem 0">• <b>Gossip &amp; anti-entropy:</b> keep 1,000 nodes agreeing on membership and 3 replicas agreeing on data with <i>no</i> central coordinator (contrast Lesson 34's registry and Lesson 10's consensus). Epidemic/gossip dissemination and SWIM-style failure detection, Merkle trees to find cheaply <i>which</i> keys diverged between replicas (Dynamo-style repair of Lesson 6's replicas), and read-repair vs background anti-entropy. The trade shifts to <b>convergence speed vs message overhead &amp; staleness.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">load balancer</span>
+    <span class="pill">backend / upstream</span>
+    <span class="pill">Layer 4 (connection)</span>
+    <span class="pill">Layer 7 (request)</span>
+    <span class="pill">round-robin</span>
+    <span class="pill">weighted round-robin</span>
+    <span class="pill">least-connections</span>
+    <span class="pill">least-latency / EWMA</span>
+    <span class="pill">power-of-two-choices</span>
+    <span class="pill">consistent-hash routing</span>
+    <span class="pill">bounded-load hashing</span>
+    <span class="pill">sticky session / affinity</span>
+    <span class="pill">health check</span>
+    <span class="pill">connection draining</span>
+    <span class="pill">anycast / VIP failover</span>
+    <span class="pill">thundering herd</span>
+    <span class="pill">single point of failure</span>
+  </p>
+  <p>That's Lesson 42, built on Lesson 2's cache locality &amp; thundering herd (warm caches want stickiness; the herd is why picking the global "best" backend fails), Lesson 3's <code>% N</code> reshuffle &amp; hot shard (why sticky hashing must be consistent, and how a hot key melts one box), Lesson 4's consistent-hash ring (stickiness that survives churn), Lesson 7's partial failure, retries &amp; SPOF (the slow box and the balancer-as-SPOF), Lesson 26's stateful front door (the LB as everyone's dependency), Lesson 27's fleet sizing &amp; utilization knee (286 servers, 70%, 200 req/s capacity), Lesson 28's unbounded queue (what the slow box builds), and Lesson 34's readiness vs liveness, health checks &amp; graceful shutdown (draining and pool ejection). <b>Ask me follow-ups</b> — e.g. "how does anycast actually reroute around a dead balancer?", "why is power-of-two-choices so much better than one random pick, intuitively?", "when should I terminate TLS at the L7 LB vs pass it through at L4?", "what does bounded-load consistent hashing (Google's algorithm) do exactly?", or "how do service meshes (Envoy/Linkerd) balance per-request at L7 inside the cluster?" When you're ready, say <b>next</b> and we'll go deeper on <i>Gossip &amp; anti-entropy — agreeing on membership and data with no coordinator.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "A fleet of 286 servers (each ~140 req/s, 40 ms/request) sits behind a round-robin load balancer. One server hits a GC pause and its requests now take 400 ms — its real capacity drops to 8 cores / 0.4 s = 20 req/s. What does round-robin do, and why is that the wrong behavior?",
+    options: [
+      {t:"Round-robin keeps sending the sick server its full fair share (~140 req/s) because it counts turns, not backend state — so 140/s arrives while only 20/s drains, the backlog grows ~120/s without bound (Lesson 28), and essentially all ~0.35% of traffic routed there (1/286) fails or times out. The fix is a load-aware algorithm (least-connections / least-latency / power-of-two-choices) whose rising in-flight count on the sick box routes traffic away automatically.",
+       ok:true,
+       fb:"Right. Round-robin distributes request COUNTS evenly, which only equals even LOAD when every backend is identical. The instant one slows down, 'blind to state' means 'feeds the dying box' — an unbounded queue that fails the slice of traffic aimed at it. Load-aware algorithms watch in-flight or latency and stop choosing it."},
+      {t:"Round-robin detects the elevated latency on that server and automatically skips it, so no traffic is lost — this is why round-robin is the safe default in front of servers that can slow down.",
+       ok:false,
+       fb:"Round-robin detects nothing — it has no per-backend state beyond 'whose turn is next.' That statelessness is why it's fast and simple, but it means it cannot tell a healthy box from a dying one. Detecting slowness and routing away from it is exactly what the SMARTER algorithms (least-connections, least-latency, P2C) add, and what round-robin lacks."},
+      {t:"The problem is that 286 isn't enough servers; with a larger fleet each server's share would be under 20 req/s and the slow box could keep up, so round-robin is fine once you scale out.",
+       ok:false,
+       fb:"Scaling the fleet lowers each box's share but doesn't fix the blindness: whatever the per-box rate, round-robin sends the sick server that rate regardless of its degraded 20 req/s capacity, and any excess still backs up and fails. The bug is that round-robin ignores backend state, not that the fleet is too small — a load-aware algorithm heals it at ANY fleet size."}
+    ]
+  },
+  {
+    stem: "Your clients use HTTP/2, which multiplexes hundreds of requests onto a single long-lived connection. A colleague puts a Layer 4 (connection-level) load balancer in front of the fleet 'because it's cheaper — no TLS termination, no parsing.' What goes wrong, and what's the right layer?",
+    options: [
+      {t:"An L4 LB makes ONE decision per connection and pins every byte of it to that backend. Since one HTTP/2 connection carries hundreds of requests, a single chatty client dumps all of them on one server, load skews hard, and a long-lived stream can't be rebalanced mid-life. Balance at L7 (per request): it demultiplexes the stream and spreads the hundreds of requests across the fleet — paying parse + TLS cost to get per-request granularity.",
+       ok:true,
+       fb:"Exactly. L4 balances CONNECTIONS; L7 balances REQUESTS. When modern protocols multiplex many requests onto one connection, those two drift far apart — 'balance the connection' pins a whole batch to one box. Per-request L7 balancing is why service meshes and API gateways operate at Layer 7 despite the extra cost."},
+      {t:"Nothing goes wrong — L4 hashes each request's headers to spread them across backends, so multiplexed requests are distributed evenly while still avoiding the cost of reading the payload.",
+       ok:false,
+       fb:"An L4 balancer by definition does NOT read request headers — it works at the transport layer (IP:port) and never inspects the HTTP payload. It can't see the individual requests multiplexed inside the connection, so it can't spread them. Reading headers to route per-request is precisely what makes a balancer Layer 7."},
+      {t:"L4 is correct here; the fix for skew is to make clients open a fresh TCP connection per request so each gets balanced independently.",
+       ok:false,
+       fb:"That throws away the entire point of HTTP/2 — connection reuse and multiplexing exist to AVOID per-request connection setup (handshake + TLS) cost. Forcing one connection per request re-introduces that overhead at scale. The right fix keeps the multiplexed connection and balances the requests inside it at L7, not the connections at L4."}
+    ]
+  },
+  {
+    stem: "To balance well you consider 'always send to the globally least-loaded backend.' In a system with several load balancers running in parallel (for availability), why is this a trap, and why does power-of-two-choices (pick 2 at random, send to the lighter) beat it?",
+    options: [
+      {t:"Each LB sees only its own traffic, so 'least-loaded' is computed from stale, partial info — and several LBs independently picking the SAME apparently-idle backend stampede onto it together, making it the most-loaded (Lesson 2's thundering herd) and causing oscillation. P2C avoids both: reading 2 random counters is cheap (no global scan), and because each LB's picks are random and uncorrelated, N balancers don't herd onto the same box even with zero coordination — yet the balance is near-optimal (imbalance drops from growing like ln N/ln ln N to a near-constant ln ln N).",
+       ok:true,
+       fb:"Right. 'Global best' needs a global view no single balancer has once you run several for availability, and stale global-best guesses turn into a herd. Randomization is the escape hatch: two independent random picks per request stay well-balanced precisely BECAUSE they don't coordinate — which is what you need when balancers can't share a view."},
+      {t:"Global-least-loaded is fine; the only issue is CPU cost from scanning all 286 backends, and P2C is just a cheaper approximation that gives slightly worse balance as an acceptable tradeoff.",
+       ok:false,
+       fb:"Cost is real but secondary — the deeper problem is the HERD: multiple balancers acting on stale 'who's idle' data stampede the same backend and oscillate, which can be WORSE than random. And P2C's balance isn't 'slightly worse' — two choices is famously near-optimal (the imbalance stops growing with N), often BETTER in practice than stale global-best because it never herds."},
+      {t:"P2C is worse than global-least-loaded and only used when you can't afford the bookkeeping; with enough memory to track all backends' loads centrally, always route to the single least-loaded server.",
+       ok:false,
+       fb:"Even with a perfect central load table, 'always the single least-loaded' concentrates every balancer's next requests onto one box until its number updates — a herd that oscillates. P2C's randomness is a feature, not a fallback: it de-correlates choices so no box gets stampeded, which is exactly why it's the default in large-scale balancers, not a memory-saving compromise."}
+    ]
+  },
+  {
+    stem: "You need the same user to keep hitting the same backend so its in-memory cache stays warm (Lesson 2), and you must run several load balancers because the LB is the system's single point of failure. Which combination is right, and what trap must you avoid?",
+    options: [
+      {t:"Use CONSISTENT-HASH routing (Lesson 4) for stickiness — hash(user) to a point on a ring so adding/removing a backend remaps only ~1/N of users, not almost all of them (avoiding Lesson 3's %N reshuffle that cold-starts every cache at once). For LB redundancy, front the balancers with anycast or a VIP failover so a dead LB is routed around. The trap: a HOT key (a celebrity/whale, Lessons 3/15/40) pins its whole flood onto one backend — fix with bounded-load consistent hashing (cap each backend at (1+ε)× average, spill overflow to the next on the ring).",
+       ok:true,
+       fb:"Exactly. Consistent hashing gives stickiness that survives churn (only ~1/N moves), unlike hash %N which reshuffles nearly everyone. But stickiness and even load pull opposite ways — a hot key melts its one box — so bounded-load hashing caps per-backend load while keeping most of the affinity. And the LB itself, being every request's SPOF, needs anycast/VIP redundancy underneath."},
+      {t:"Use plain hash(user) %N for stickiness (simplest), and run one big powerful load balancer instead of several so there's no coordination problem between balancers.",
+       ok:false,
+       fb:"Two mistakes. hash %N reshuffles nearly ALL users whenever N changes (a server dies or scales in), cold-starting every cache simultaneously — Lesson 3's exact failure, which consistent hashing exists to fix. And 'one big LB' makes the single point of failure worse, not better: every request crosses it, so its death is a 100% outage. You must run several and route around a dead one."},
+      {t:"Skip stickiness entirely and use power-of-two-choices for everything — even load is always more important than cache warmth, and P2C removes any need for consistent hashing or redundancy planning.",
+       ok:false,
+       fb:"P2C gives great balance but CANNOT keep a backend's cache warm — it deliberately spreads a user's requests across boxes, so the local cache the requirement depends on stays cold. When cache locality (or session state) matters, you need affinity, which means consistent-hash routing. And P2C says nothing about LB redundancy — the balancer is still a SPOF you must front with anycast/VIP regardless of algorithm."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
