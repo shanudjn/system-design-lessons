@@ -702,10 +702,30 @@
     thundering herd, L03 %N reshuffle & hot shard, L04 consistent-hash ring, L07 partial failure/retry/SPOF,
     L26 stateful front door, L27 fleet sizing & knee, L28 unbounded queue, L34 readiness/health/drain.
     Trade: even load distribution vs stickiness & simplicity. (Lesson 0042)
-43. Gossip & anti-entropy — keep 1,000 nodes agreeing on membership and 3 replicas agreeing on data
-    without a central coordinator (contrast L34's registry, L10's consensus): epidemic/gossip dissemination
-    (SWIM failure detection), Merkle trees to find which keys diverged cheaply (Dynamo-style repair of L06's
-    replicas), read-repair vs background anti-entropy. Trade: convergence speed vs message overhead & staleness.
+43. ✅ **Gossip & anti-entropy** — a 1,000-node coordinator-free KV store agreeing on TWO things at once:
+    membership (~50 KB roster, tiny/churny) + data (100 GB/replica, huge/rarely-changed). Estimate: all-to-all
+    heartbeats = N² ≈ 1,000,000 msg/s (quadratic wall), a central registry/consensus just rebuilds the SPOF
+    (L26/34/42) → GOSSIP: each node contacts fan-out=3 random peers/round (3,000 msg/round, ~333× less, LINEAR),
+    epidemic spread reaches all 1,000 in ~log₄(1000) ≈ 5 rounds (exponential reach for linear cost, O(log N) to
+    converge). Model by shape: membership via **SWIM** — O(1) detection (ping 1 random peer/period, then k=3
+    INDIRECT ping-reqs before believing a death, rules out flaky link), **suspicion + incarnation refutation**
+    (mark suspect not dead; a GC-paused node re-announces with higher incarnation# → overrides suspicion → no
+    flap, L27 knee/L34 flap), dissemination PIGGYBACKED on pings; data via **Merkle-tree anti-entropy** — leaves
+    hash key-buckets, root hashes 100 GB in 32 B → equal roots prove identical for free, mismatch chased down ONLY
+    the divergent branch (~17 levels, ~1 KB hashes to LOCATE, ~1 MB bucket to SHIP) → cost scales with DIVERGENCE
+    not dataset size (~100M× less than naive 100 GB diff, L29 narrow-before-compute). Two repair triggers:
+    **read-repair** (on quorum-read disagreement, L06, write newest back → fixes HOT keys, misses cold) +
+    background sweep (Merkle → fixes COLD keys) + hinted handoff (transient). Trace: real death converges in
+    seconds; paused node refutes with higher incarnation → not evicted; stale replica repaired on-read AND by
+    Merkle sweep (version compare L06/L35). First wall = **eventually consistent** (L11 AP): always a disagreement
+    window; shrink with faster/wider gossip + more sweeps but NEVER to zero (zero = the coordination gossip avoids)
+    → gossip = "roughly who's alive / roughly the data, cheap, no SPOF, scales" (AP) vs consensus (L10 CP) for
+    exact/instant answers (leader, commit, lock — L22/25) vs central registry (L34, SPOF at scale). Four traps:
+    gossip where you need consensus (2 nodes both hold the lock → double-run); whole-dataset diff not Merkle;
+    hard timeout no suspicion → flap/churn storm; read-repair alone → cold keys never converge. Reuses L06
+    replication/version, L10 consensus (the CP contrast), L11 AP, L27 knee, L29 narrow-before-compute, L34
+    registry/readiness/TTL-flap, L35 vector clocks, L42 routing. Trade: convergence speed vs message overhead &
+    staleness. (Lesson 0043)
 44. Time-series & metrics storage — store L17's observability firehose (millions of points/s): append-heavy
     writes, downsampling/rollups (raw → 1m → 1h) and retention tiers (L39), delta-of-delta + columnar
     compression (L29), the cardinality explosion (L17's ids-on-traces-not-labels), and query-by-time-range.
