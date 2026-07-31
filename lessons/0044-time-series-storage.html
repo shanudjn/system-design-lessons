@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 44 — Time-Series &amp; Metrics Storage: A Million Points a Second, Kept for Years</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 44 · Worked Example</div>
+  <h1>Time-Series &amp; Metrics Storage: A Million Points a Second, Kept for Years</h1>
+  <p class="lead">Lesson 17 built the dashboards that tell you <i>something is slow</i> — the p99 that spiked, the error rate that climbed. But every one of those charts is drawn from numbers that had to be <b>stored</b> first, and the fleet emits them by the <b>million per second</b>, forever. This lesson designs the database underneath the graphs: a <b>time-series database</b>. It looks like it should be easy — the data is just <code>(what, when, value)</code> triples, and they only ever get appended, never updated. That very shape is what makes it both wonderfully compressible and treacherous in one specific way. We'll <b>estimate</b> why the naive "one row per reading" costs half a petabyte a year and how a purpose-built encoding squeezes each reading to under <b>2 bytes</b>. We'll <b>model</b> the two halves every metrics store splits — the <b>series</b> (the label soup that names a metric) from the <b>samples</b> (the timestamp+value stream) — plus the delta-of-delta and XOR tricks that do the squeezing, time-partitioning, and <b>rollups</b>. We'll <b>trace</b> a write landing and a range query reading back "p99 latency for search, last 6 hours." And we'll hit the bottleneck that surprises everyone: the thing that kills a time-series DB is almost never the <i>volume</i> of points — that's bounded and compresses beautifully — it's the <b>cardinality</b> of series, which multiplies, and one careless label can multiply it into the trillions. The trade underneath: <b>resolution &amp; retention vs storage cost.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0044-time-series-storage.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>The observability backend for a platform of <b>10,000 hosts</b> running Lesson 27's fleet, Lesson 26's gateways, Lesson 25's ledger — every service exporting metrics. A <b>metric</b> is a number that changes over time: CPU percent, requests per second, p99 latency, queue depth. Each host exports thousands of them, and a scraper pulls every metric from every host on a fixed interval. Concretely: <b>10 million active time series</b>, each sampled every <b>10 seconds</b>. That's <code>10,000,000 &div; 10 = 1,000,000</code> <b>data points per second</b>, flowing in and never stopping, and dashboards want to read arbitrary time ranges out of it fast — "the last 5 minutes" for an alert, "the last 90 days" for a capacity trend. Two facts define everything: writes are <b>append-only and in time order</b> (a point for "now" never changes an old point), and reads are <b>always by a time range over a chosen set of series</b>. A general database (Lesson 12's B-tree, tuned for random point reads and updates) is the wrong shape for both. We'll build the right one.</p>
+
+<div class="diagram"><pre>
+  ONE METRICS STORE:  1,000,000 data points / second, kept for years
+
+  A DATA POINT = (series, timestamp, value)      A SERIES = metric name + labels
+     cpu_pct{host="h7",dc="iad"}  1600000000  40.2      (the "what")
+
+   INGEST (append-only, time-ordered)            READ (range over chosen series)
+   ------------------------------------          ------------------------------------
+   1,000,000 pts/s  ->  split in two:            "p99 latency, service=search,
+                                                  last 6 h"
+   [1] SERIES INDEX (the labels, the "what")        |
+       stored ONCE per unique series      <---------+  1. label index: which series?
+       inverted index on labels (L12/L16)           |
+                                                     v
+   [2] SAMPLE STREAM (timestamp+value, the "when")   2. time partitions: which blocks?
+       per series, appended to the current             (prune all but the 6 h, L29)
+       time CHUNK, compressed hard:                     |
+         timestamps: delta-of-delta -> ~1 bit           v
+         values:     XOR prev       -> ~1.3 B         3. decompress those blocks,
+       16 B/point  ->  ~1.5 B/point (~11x)              aggregate, return
+
+   OLD CHUNKS ARE IMMUTABLE  ->  compress + ROLL UP (raw 10s -> 1m -> 1h) + DROP
+   whole partitions past retention (O(1) delete, L24/L39). Resolution decays with age.
+
+   The volume of POINTS is bounded (interval x series). The count of SERIES is a
+   PRODUCT of label cardinalities -- and THAT is the wall (add user_id -> trillions).
+</pre></div>
+
+<p class="note"><span class="key">A time-series database stores numeric measurements stamped with a time, optimized for append-only writes in time order and for reading back ranges of time.</span> The two words that will do all the work: a <b>series</b> is one uniquely-labelled metric (e.g. <code>http_requests_total{service="search",status="200"}</code> — the metric name plus a specific set of label key-values); a <b>sample</b> (or data point) is one <code>(timestamp, value)</code> reading of that series. A series is created once and lives a long time; samples pour in forever.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Series (time series)</b> — a metric name plus a specific set of labels. <code>cpu{host="h7"}</code> and <code>cpu{host="h8"}</code> are two different series.</li>
+  <li><b>Sample / data point</b> — one <code>(timestamp, value)</code> reading belonging to a series.</li>
+  <li><b>Label (dimension / tag)</b> — a key=value pair on a series (<code>host</code>, <code>region</code>, <code>status</code>) you filter and group by.</li>
+  <li><b>Cardinality</b> — how many <i>distinct</i> series exist. It is the <b>product</b> of every label's number of possible values.</li>
+  <li><b>Scrape / sample interval</b> — how often each series is measured (we use 10 s). It fixes the point rate.</li>
+  <li><b>Chunk / time partition</b> — samples grouped by a time window (e.g. 2 hours). Once its window passes, a chunk is <b>immutable</b> — never written again.</li>
+  <li><b>Delta-of-delta</b> — store not the timestamp, nor even its gap from the last, but the <i>change in the gap</i>. For a regular stream that change is zero, and zero packs into one bit.</li>
+  <li><b>XOR encoding</b> — store a value as its bitwise difference from the previous value; slow-moving numbers differ in only a few bits, so most of each value is zeros you don't store.</li>
+  <li><b>Downsampling / rollup</b> — replace many fine-grained points with one coarse point holding an aggregate (min/max/sum/count), trading resolution for size.</li>
+  <li><b>Retention</b> — how long data of a given resolution is kept before it's dropped.</li>
+</ul>
+
+<h2>Move 1 — Estimate: why one row per reading is a half-petabyte-a-year mistake</h2>
+<p>The obvious design is a table: <code>(series_labels, timestamp, value)</code>, one row per reading, in the relational store from Lesson 12. Let's price it before we build anything else, because the numbers decide the whole architecture.</p>
+
+<div class="card calc">
+  <p><b>The naive row.</b> Store the full label string on every reading: a realistic label set like <code>http_requests_total{service="search",region="us-east",status="200",endpoint="/q"}</code> is ~200 bytes, plus a timestamp (8 B) and a value (8 B). At <code>1,000,000</code> points/s that's <code>1,000,000 &times; 216 B &asymp; 216 MB/s &asymp; 18.7 TB/day</code>. That's not a database, that's a landfill — and it's mostly the <i>same label string written a million times a second</i>.</p>
+  <p><b>First fix — split the "what" from the "when" (Lesson 20's plane split).</b> A series' labels never change. Store them <b>once</b> in a series index that maps the label set to a small integer <code>series_id</code>, and let each sample carry only <code>(series_id, timestamp, value)</code>. Now a raw sample is timestamp (8 B) + value (8 B) = <b>16 B</b> (the tiny <code>series_id</code> is implied by which stream you're appending to). Cost drops to <code>1,000,000 &times; 16 B = 16 MB/s = 1.38 TB/day &asymp; 505 TB/year</code>. Better by 13&times;, but still half a petabyte a year for one platform's metrics.</p>
+  <p><b>Second fix — compress the samples for what they actually are.</b> Here's the gift in the data: samples arrive at a <i>regular interval</i> and values <i>move slowly</i>. A purpose-built encoding (below) squeezes each 16 B point to <b>under 2 bytes</b>. At <code>~1.5 B/point</code>: <code>1,000,000 &times; 1.5 B = 1.5 MB/s = 130 GB/day &asymp; 47 TB/year</code> — an <b>~11&times;</b> cut on top of the split, and the number that makes the whole thing affordable.</p>
+</div>
+
+<p class="note why"><b>Why a general-purpose database can't do this.</b> A B-tree (Lesson 12) is built for random reads and in-place updates: it scatters rows, leaves gaps for inserts, and stores each value independently. Metrics never update and always append at "now," so all that machinery is dead weight — and storing each value independently forfeits the 11&times; compression that only exists <i>because</i> consecutive points are nearly identical. <span class="key">The time-series shape (append-only, time-ordered, slow-moving) is exactly the shape a normal database is built to <i>not</i> assume — which is why metrics get their own storage engine.</span></p>
+
+<h3>The compression, worked out by hand</h3>
+<p>Two independent tricks, one for the timestamp column and one for the value column — the same "store columns, not rows, and encode each column for its pattern" idea as Lesson 29's warehouse, aimed at a stream.</p>
+
+<div class="card calc">
+  <p><b>Timestamps → delta-of-delta.</b> Our stream ticks every 10,000 ms. Watch what's left to store:</p>
+  <p style="margin:.3rem 0">
+  <code>t0 = 1,600,000,000,000</code> → store in full (64 bits, once per chunk).<br>
+  <code>t1 = t0 + 10,000</code> → the <b>delta</b> is 10,000 (store ~14 bits, once).<br>
+  <code>t2 = t1 + 10,000</code> → delta is again 10,000, so the <b>delta-of-delta</b> is <code>10,000 − 10,000 = 0</code> → store a single <b>0 bit</b>.<br>
+  <code>t3, t4, …</code> → still perfectly regular → each is one more <b>0 bit</b>.</p>
+  <p>Across a 20-minute chunk of 120 points, the timestamps cost <code>64 + 14 + 118&times;1 &asymp; 196 bits &asymp; 25 bytes for 120 timestamps &asymp; 0.2 B each</code> — versus 8 B each stored plainly, a <b>40&times;</b> shrink. A scrape that runs a little early or late just makes one non-zero delta-of-delta; regularity is the common case and it's nearly free.</p>
+  <p><b>Values → XOR with the previous value.</b> A CPU gauge reads 40.0, 40.0, 40.25, 40.25. Store <code>v0</code> in full (64 bits), then each next value as <code>vₙ XOR vₙ₋₁</code>: identical values XOR to <b>all zeros → one bit</b> ("same as before"); a small change flips only a few bits in the middle of the float, and you store just that window, skipping the run of leading and trailing zero bits. Slow-moving gauges land around <b>~1.3 bytes per value</b>.</p>
+  <p><b>Together:</b> ~0.2 B timestamp + ~1.3 B value ≈ <b>~1.5 B/point</b>. (Facebook's Gorilla, the design this comes from, reports ~1.37 bytes per point averaged over real production metrics — a ~12&times; cut over the 16 B raw pair.)</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — compression leans on regularity.</b> Both tricks pay off in proportion to how <i>boring</i> the data is: a perfectly regular interval and a slow-moving value compress to a bit or two; a jittery interval or a wildly noisy value stores closer to the full 16 B. You don't choose this per point — you choose it by <i>what you measure and how often</i>. <span class="key">The encoding is free money for smooth operational metrics and buys almost nothing for random data — which is another reason high-entropy identifiers do not belong in this store.</span></p>
+
+<h2>Move 2 — Model: series on one side, a compressed time-partitioned stream on the other</h2>
+<p>The estimate already forced the core split. Now give each half its real structure.</p>
+
+<h3>The series index — the "what" (an inverted index on labels)</h3>
+<p>Every unique label set gets one <code>series_id</code>. To answer "give me every series where <code>service="search"</code>," you need to go from a label to the set of series that carry it — which is exactly Lesson 12/16's <b>inverted index</b>: a posting list per <code>label=value</code> naming the matching series ids. A query with several label matchers <b>intersects</b> the posting lists (Lesson 16's AND), yielding the handful of series to actually read. This index is small <i>if</i> cardinality is sane (10M series × ~a few hundred bytes ≈ a few GB) — and it is the exact thing that explodes in Move 4.</p>
+
+<h3>The sample store — the "when" (chunks by time, immutable once past)</h3>
+<p>Samples for a series are appended, in time order, into the <b>current time chunk</b> (say a 2-hour window). Two properties fall out and both matter enormously:</p>
+<ul>
+  <li><b>Append-only + time-ordered</b> means the delta-of-delta / XOR encoders work: each point only needs the one before it. The newest chunk lives partly <i>in memory</i> (the encoder's working buffer per active series), then is flushed to disk compressed.</li>
+  <li><b>Once its window passes, a chunk is immutable</b> — no metric ever rewrites 3 pm's data at 5 pm. Immutable chunks can be compressed hard, copied to cheaper tiers (Lesson 39), rolled up, and — the payoff — <b>deleted whole</b> when they age out. Retention isn't a <code>DELETE WHERE timestamp &lt; …</code> scanning a billion rows; it's <b>dropping a partition file</b>, an O(1) operation (Lesson 24's partition-and-drop).</li>
+</ul>
+<p>Because reads are always a time range, chunking by time is the same <b>partition pruning</b> as Lesson 29: a "last 6 hours" query touches ~3 two-hour chunks and skips every older one without reading it.</p>
+
+<h3>Rollups — trading resolution for size as data ages</h3>
+<p>Nobody inspects last March at 10-second granularity; they want the trend. So <b>downsample</b>: replace each window of raw points with one <b>rollup point</b> holding aggregates (min, max, sum, count — enough to recompute avg and to draw a band). A rollup runs as a background job over immutable chunks.</p>
+<div class="card calc">
+  <p><b>Price the win.</b> A 1-hour rollup replaces <code>3600 / 10 = 360</code> raw points with one point. Even storing 4 aggregates (so ~4&times; the bytes of a single point), that's <code>360 / 4 = <b>90&times;</b></code> smaller per unit of time. So instead of 47 TB/year of raw:</p>
+  <table>
+    <tr><th>Resolution</th><th>Kept for</th><th>Rough size</th><th>Answers</th></tr>
+    <tr><td>raw 10 s</td><td>7 days</td><td><code>~0.9 TB</code></td><td>this morning's 2-min latency spike</td></tr>
+    <tr><td>1-min rollup</td><td>30 days</td><td><code>~2 TB</code></td><td>last week's daily pattern</td></tr>
+    <tr><td>1-hour rollup</td><td>2 years</td><td><code>~1 TB</code></td><td>this quarter vs last year's growth</td></tr>
+  </table>
+  <p>Keeping <i>everything</i> at 10 s for 2 years would be <code>~95 TB</code>; the tiered scheme above is <code>~4 TB</code> — a <b>~24&times;</b> cut — and you still answer every real question, because the questions you ask about old data are coarse.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — resolution &amp; retention vs storage cost.</b> Three knobs set the bill: how <i>often</i> you sample (interval), how <i>fine</i> you keep it (rollup granularity), and how <i>long</i> you keep each grain (retention). Turn any up and you see more, pay more. The one you can never undo is <b>resolution lost to a rollup</b>: <span class="key">a 1-hour rollup that stored an average has permanently erased the 2-minute p99 spike inside that hour — Lesson 17's whole point (the tail hides in the mean) reappears as a storage decision.</span> That's why you keep raw data at full resolution for a short recent window (where you debug incidents) and only roll up the old data (where you study trends) — matching each age of data to the questions actually asked of it.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>One write in, one range query out.</p>
+
+<h3>Path A — a sample lands</h3>
+<div class="diagram"><pre>
+  Scraper reports:  http_requests_total{service="search",status="200"} = 84213  @ t=1600000000
+
+   1. Resolve the SERIES. Look up the label set in the series index.
+        seen before?  -> reuse series_id 5591
+        new label set? -> mint a new series_id, add posting-list entries for
+                          service="search" and status="200"  (this is the
+                          cardinality cost -- a NEW series is the expensive event,
+                          a new SAMPLE of an existing series is nearly free)
+   2. Append the SAMPLE to series 5591's current in-memory chunk:
+        timestamp -> delta-of-delta vs the last point  (regular -> ~1 bit)
+        value     -> XOR vs the last value             (slow move -> ~1.3 B)
+   3. Also append to a write-ahead log so an unflushed in-memory chunk survives a
+      crash (durability, L38's log). When the 2-hour window closes, the chunk is
+      compressed, flushed to disk, and marked IMMUTABLE.
+
+  Cost of a sample for an EXISTING series: a couple of bytes + a couple of bits.
+  Cost of a sample that CREATES a series: an index insert + a fresh in-RAM buffer.
+</pre></div>
+
+<h3>Path B — "p99 latency for search over the last 6 hours"</h3>
+<div class="diagram"><pre>
+  Query:  quantile(0.99, http_request_duration{service="search"}[now-6h : now])
+
+   1. SELECT SERIES (series index, L12/L16 inverted index):
+        posting list for service="search"  ->  intersect with the metric name
+        ->  say 40 series (one per endpoint/instance).  NOT a scan of 10M series.
+
+   2. PRUNE BY TIME (partition pruning, L29):
+        6 hours -> the last ~3 two-hour chunks per series.  Every older chunk on
+        disk is skipped without being read.  ~120 chunks touched, not the year.
+
+   3. SCAN + DECODE + AGGREGATE:
+        decompress those chunks (delta-of-delta + XOR reverse), walk the points in
+        the range, feed them to the p99 estimator.  Reading FEWER BYTES is the whole
+        game (L29): compressed 6 h of 40 series is a few MB, not the 47 TB pile.
+
+   4. If the range were "last 90 days", step 3 reads the 1-min / 1-hour ROLLUPS
+      instead of raw -- coarser points, far fewer of them, same query shape.
+</pre></div>
+<p>Path A shows why creating a series is the costly event and sampling an existing one is nearly free; Path B shows the read is "narrow to the right series, prune to the right time window, decode only those bytes" — the label index picks the <i>what</i>, time-partitioning picks the <i>when</i>, and rollups pick the <i>grain</i>. Every one of those steps is cheap <i>as long as the series count stays sane</i>. That "as long as" is the whole ballgame.</p>
+
+<h2>Move 4 — Find the first bottleneck: cardinality, not volume</h2>
+<p>Everything so far made the <b>volume</b> of points cheap: it's bounded (<code>series &times; 1/interval</code>), it compresses 11&times;, and it rolls up and drops on a schedule. So the thing that takes these systems down is almost never "too many points." It's <b>too many series</b> — and series count behaves completely differently, because it's a <b>product</b>.</p>
+
+<div class="card calc">
+  <p><b>A sane metric.</b> <code>http_requests_total{service, region, status, endpoint}</code> with <code>service</code>=50, <code>region</code>=5, <code>status</code>=15, <code>endpoint</code>=200 possible values → <code>50 &times; 5 &times; 15 &times; 200 = 750,000</code> series. Fine. The point <i>rate</i> is capped by the scrape interval no matter how busy those endpoints get.</p>
+  <p><b>One innocent label.</b> A developer adds <code>user_id</code> to "see per-user request rates." There are 10 million users. Cardinality is a product, so:</p>
+  <p style="margin:.3rem 0"><code>750,000 &times; 10,000,000 = 7,500,000,000,000</code> — <b>7.5 trillion series.</b></p>
+  <p>Now recall what a <i>series</i> costs, from Path A. Each one needs (a) an entry in the series index and posting lists — call it ~100 B → <code>7.5&times;10¹² &times; 100 B = <b>750 TB</b></code> just to index the series, and (b) its own in-RAM encoder buffer for the active chunk — even at a few hundred bytes each, 7.5 trillion of them is impossibly beyond any machine's memory. <span class="key">The samples were never the problem; the <i>series index and per-series memory</i> are, and both scale with cardinality — which one high-cardinality label multiplied into the trillions.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off — dimensions vs cardinality.</b> Every label you add lets you slice the data a new way — and multiplies the series count by that label's number of values. A low-cardinality label (<code>status</code>: ~15 values) is a bargain; an <i>unbounded</i> one (<code>user_id</code>, <code>request_id</code>, <code>trace_id</code>, an email, a full URL with query params) is a bomb, because its value count grows without limit and multiplies everything beside it. <span class="key">This is Lesson 17's rule made physical: <b>identifiers go on traces and logs, never on metric labels.</b></span> A metric answers "how many / how fast, sliced by a few bounded dimensions"; the moment you need "which specific user/request," that's a trace or a log query, not a metric — and mixing them melts the metrics store.</p>
+
+<div class="card">
+  <p style="margin:.2rem 0"><b>How real systems keep cardinality bounded:</b></p>
+  <p style="margin:.2rem 0">• <b>Keep unbounded identifiers out of labels.</b> Aggregate them away at emit time (count requests <i>per service</i>, not per user). If you need to jump from a metric to an example request, attach an <b>exemplar</b> — a single trace ID hung off the metric — instead of making the ID a label (Lesson 17's traces).</p>
+  <p style="margin:.2rem 0">• <b>Enforce limits at ingest.</b> Cap series per metric, allowlist which labels may exist, and drop or alert on a metric whose cardinality suddenly explodes (usually a bug — a UUID or a raw path accidentally used as a label).</p>
+  <p style="margin:.2rem 0">• <b>Pre-aggregate the dimensions you actually query.</b> If you only ever look at request rate by <code>service</code>, record it that way and never carry <code>endpoint</code> at all.</p>
+  <p style="margin:.2rem 0; color:var(--muted)">The discipline is the same as Lesson 40's noisy-neighbor: the shared resource here is the series index and the ingesters' memory, and one careless tenant (a bad label) can exhaust it for everyone.</p>
+</div>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — a high-cardinality label.</b> Putting <code>user_id</code>, <code>request_id</code>, <code>trace_id</code>, a session token, an email, or a full URL into a metric label. Cardinality is a product, so one unbounded label multiplies the whole series count into the billions or trillions, blowing up the index and the ingesters' memory — while the sample <i>volume</i> looks perfectly fine. Identifiers belong on traces/logs (Lesson 17), linked by an exemplar if you need the jump.</li>
+  <li><b>Trap 2 — storing metrics in a general-purpose (row) database.</b> A B-tree is built for updates and random reads and stores each value independently, forfeiting the 11&times; delta-of-delta/XOR compression that only exists because consecutive points are nearly identical — and turning retention into a billion-row <code>DELETE</code> instead of dropping an immutable partition. Use a storage engine that assumes append-only, time-ordered, slow-moving data.</li>
+  <li><b>Trap 3 — one resolution and retention for everything.</b> Keeping raw 10-second data for two years is ~24&times; the cost of a tiered scheme and answers no question you actually ask of old data; keeping <i>only</i> hourly rollups means the 2-minute incident spike you need to debug this morning was already averaged away. Match each age of data to its real questions: raw recent, rolled-up old.</li>
+  <li><b>Trap 4 — rolling up before you know the questions.</b> A rollup is lossy and irreversible — if you only stored the <i>average</i>, you can never recover the max or the p99 for that window. Store the aggregates you'll need (min/max/sum/count, and quantile sketches if you query percentiles) <i>before</i> the raw data ages out, because once it's gone the resolution is gone (Lesson 21's "a sketch tells you how many, never which," applied to time).</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>A metrics backend ingesting <b>1,000,000 data points/second</b> (10M series × a 10-second interval) and keeping them for years. <b>Estimate</b> killed the naive design twice: one row per reading with inline labels is <code>~216 MB/s ≈ 18.7 TB/day</code> (the same label string written a million times a second), so first <b>split the series from the samples</b> — store each label set once, and a sample becomes a bare <code>(timestamp, value)</code> = 16 B → <code>1.38 TB/day</code> — then <b>compress the samples for what they are</b>: <b>delta-of-delta</b> timestamps (a regular interval → ~1 bit each) and <b>XOR</b> values (slow-moving → ~1.3 B each) crush 16 B to <b>~1.5 B/point</b> (Gorilla's ~1.37), landing at <code>130 GB/day ≈ 47 TB/year</code>, an ~11&times; cut. <b>Model</b> gave each half its shape: the <b>series</b> live in an inverted label index (Lesson 12/16) that intersects posting lists to pick which series a query touches, and the <b>samples</b> live in time-ordered <b>chunks</b> that go <i>immutable</i> once their window passes — which is what lets old chunks compress hard, <b>roll up</b> (raw 10 s → 1 min → 1 hour, a ~90&times; shrink per rollup level), and get <b>dropped whole</b> at retention (O(1), not a billion-row delete). <b>Tracing</b> showed a sample landing (creating a series is the costly event; sampling an existing one is a couple of bytes and bits) and a range query narrowing by label index, pruning by time partition (Lesson 29), and decoding only those few MB. The <b>first bottleneck</b> is the counter-intuitive heart of the lesson: the <b>volume</b> of points is bounded and cheap, but the <b>cardinality</b> of series is a <i>product</i> of label values, so one unbounded label (<code>user_id</code> over 10M users) explodes 750k series into <b>7.5 trillion</b> — <code>~750 TB</code> of index and unbounded RAM — while the sample rate still looks fine. The real lesson: <span class="key">a time-series database is easy in the dimension everyone worries about (write volume, solved by splitting and compressing) and fragile in the one they don't (series cardinality, a multiplicative wall) — so keep identifiers off labels, keep raw data only as long as you debug it and rollups as long as you study trends, and remember every rollup permanently trades resolution for cost. The standing tension: resolution &amp; retention vs storage cost.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson leaves storage and goes back out over the wire — this time to endpoints you don't own:</b></p>
+  <p style="margin:.2rem 0">• <b>Webhooks &amp; outbound event delivery:</b> deliver "your order shipped" to thousands of third-party endpoints you can't control or trust. At-least-once delivery with retries and backoff (Lessons 7/9), a <b>signature</b> so the receiver can verify it's really from you (Lesson 30), an <b>idempotency key</b> so the receiver can dedup your retries (Lesson 13), the slow-or-dead endpoint handled by a circuit breaker + DLQ (Lessons 7/9), and ordering guarantees. The trade shifts to <b>delivery reliability vs the burden you push onto the receiver.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">time-series database</span>
+    <span class="pill">series</span>
+    <span class="pill">sample / data point</span>
+    <span class="pill">label / dimension</span>
+    <span class="pill">cardinality</span>
+    <span class="pill">scrape / sample interval</span>
+    <span class="pill">series index (inverted index)</span>
+    <span class="pill">chunk / time partition</span>
+    <span class="pill">delta-of-delta</span>
+    <span class="pill">XOR encoding</span>
+    <span class="pill">Gorilla</span>
+    <span class="pill">downsampling / rollup</span>
+    <span class="pill">retention</span>
+    <span class="pill">partition pruning</span>
+    <span class="pill">exemplar</span>
+  </p>
+  <p>That's Lesson 44, built on Lesson 12/16's inverted index (the label lookup that picks which series a query reads), Lesson 17's observability firehose and its "ids on traces, never on metric labels" rule (which becomes this lesson's cardinality wall), Lesson 20's metadata/data-plane split (series vs samples), Lesson 29's columnar encoding &amp; partition pruning (the compression and the time-range read), Lesson 24's partition-and-drop and Lesson 39's tiers/retention (dropping whole chunks as data ages), Lesson 21's "a sketch tells you how many, never which" (rollups are lossy in the same way), and Lesson 40's noisy-neighbor discipline (a bad label exhausts a shared resource). <b>Ask me follow-ups</b> — e.g. "how exactly does Gorilla's XOR encoding pick which bits to store?", "how do you compute p99 over rolled-up data if you only kept min/max/sum/count?", "what's the difference between a counter, a gauge, and a histogram for storage?", "how do Prometheus/InfluxDB/TimescaleDB differ in how they store series?", or "how do exemplars link a metric back to one trace without becoming a label?" When you're ready, say <b>next</b> and we'll go deeper on <i>Webhooks &amp; outbound event delivery — delivery reliability vs the burden pushed onto the receiver.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "A teammate proposes storing all metrics in the existing Postgres orders database — 'it's just a table of (labels, timestamp, value) rows.' At 1,000,000 points/second, why is a purpose-built time-series engine worth it instead?",
+    options: [
+      {t:"Metrics are append-only, time-ordered, and slow-moving, and a purpose-built engine exploits all three: it stores the labels once as a series (not on every row), and compresses each sample with delta-of-delta timestamps (~1 bit for a regular interval) and XOR values (~1.3 B for a slow-moving number), cutting a 16 B pair to ~1.5 B — an ~11× win that only exists because consecutive points are nearly identical. A B-tree stores each value independently and is built for updates and random reads, so it forfeits that compression and turns retention into a billion-row DELETE instead of dropping an immutable partition.",
+       ok:true,
+       fb:"Right. The whole advantage comes from assuming the shape a general database is built to NOT assume. Storing values independently (as a row store does) throws away the 11× compression, and without time-partitioned immutable chunks, retention becomes an expensive scan-and-delete instead of an O(1) partition drop."},
+      {t:"Postgres literally cannot store timestamps or floating-point numbers, so a special database is required to hold metric data at all.",
+       ok:false,
+       fb:"Of course it can store them — the issue isn't capability, it's cost and shape. A row store CAN hold metrics; it just does so ~11× larger (no delta-of-delta/XOR compression), slower to query by range, and painfully to expire, because it's optimized for updates and random reads, not append-only time-ordered streams."},
+      {t:"A time-series engine avoids compression entirely, storing every point in full so queries never have to decode anything — that's what makes it fast.",
+       ok:false,
+       fb:"Backwards — the time-series engine's speed and affordability come FROM aggressive compression (delta-of-delta + XOR to ~1.5 B/point), and reading fewer bytes is exactly what makes range scans fast (Lesson 29). Storing every point in full is the naive 16 B design that costs half a petabyte a year."}
+    ]
+  },
+  {
+    stem: "Your metrics store runs happily at 1,000,000 points/second. A developer adds a `user_id` label to one metric to see per-user request rates, across 10 million users. The point rate barely changes, yet ingesters start running out of memory and the series index balloons. Why?",
+    options: [
+      {t:"Cardinality — the number of distinct series — is the PRODUCT of every label's value count, so adding a 10-million-value label multiplies the existing series count (say 750,000) into ~7.5 trillion series. Each series carries fixed overhead independent of its sample rate: an entry in the series/label index (~750 TB at that count) and an in-RAM encoder buffer for its active chunk. The sample VOLUME is bounded by the scrape interval and looks fine; the SERIES COUNT is what exploded, and it's what the index and memory scale with.",
+       ok:true,
+       fb:"Exactly. Volume is bounded (series × 1/interval) and compresses away; cardinality is multiplicative and each new series has fixed per-series cost that no sample compression touches. One unbounded label multiplies everything beside it — the classic time-series failure, and Lesson 17's 'ids on traces, never on metric labels' made physical."},
+      {t:"The `user_id` values are long strings, so each SAMPLE now stores far more bytes — the problem is sample size, and it would go away if user IDs were shorter integers.",
+       ok:false,
+       fb:"The label is stored once per SERIES, not on every sample, so sample size is nearly unchanged — and shorter IDs wouldn't help, because the problem is the NUMBER of distinct series (7.5 trillion), not the bytes per label. Even 8-byte integer user IDs across 10M users multiply the series count identically."},
+      {t:"The ingesters are simply under-provisioned; doubling their memory and CPU will absorb the new label with no other change needed.",
+       ok:false,
+       fb:"You can't buy your way out of a multiplicative explosion — 7.5 trillion series would need ~750 TB of index and far more RAM than any fleet has, and it keeps growing with users. The fix isn't more hardware, it's keeping the unbounded identifier OUT of labels (aggregate it away, or attach an exemplar/trace ID) so cardinality stays bounded."}
+    ]
+  },
+  {
+    stem: "To control storage cost you downsample old data: raw 10-second points are rolled up into 1-hour points after a week. Three months later, an incident review needs to see a latency spike that lasted about 2 minutes during a night last month. What does the rollup design mean for this, and how should it have been set up?",
+    options: [
+      {t:"A rollup is lossy and irreversible: a 1-hour point that stored an average has permanently erased any 2-minute spike inside that hour — the resolution is simply gone. The right setup keeps RAW, full-resolution data for a recent window long enough to debug incidents (where you need fine detail), and only rolls up OLDER data (where you study coarse trends); and it stores min/max/sum/count — not just avg — in each rollup so at least the peak within a window survives. Match each age of data to the questions actually asked of it.",
+       ok:true,
+       fb:"Right. This is Lesson 17's 'the tail hides in the mean' as a storage decision: an averaged rollup hides the spike. Keep raw data as long as you debug at fine grain, roll up only what you'll only ever view coarsely, and store max (not just avg) so a peak isn't fully erased. Rolling up is a one-way trade of resolution for cost."},
+      {t:"No problem — rollups are reversible, so you can reconstruct the original 10-second points from the 1-hour aggregates whenever a finer view is needed.",
+       ok:false,
+       fb:"Rollups are NOT reversible: aggregating 360 raw points into one destroys the individual points forever. From a 1-hour average (or even min/max/sum/count) you cannot recover the exact shape of a 2-minute spike. Once the raw data ages out, that resolution is permanently gone — which is exactly why you keep raw data for a recent window."},
+      {t:"Just lower the retention on rollups and raise it on raw data — keep raw 10-second points for 10 years and you never lose resolution, at no meaningful cost.",
+       ok:false,
+       fb:"Keeping raw 10-second data for years is the exact cost explosion rollups exist to avoid (~24× more than a tiered scheme in the lesson, and it grows without bound). The point isn't to keep everything at full resolution forever — it's to keep raw data only as long as you actually debug at that grain, and roll up the rest. There's a real cost, which is why resolution vs cost is the whole trade."}
+    ]
+  },
+  {
+    stem: "A dashboard runs `p99 latency for service=search over the last 6 hours` against a store holding a year of data across 10 million series. Why is this fast, and which structures make it so?",
+    options: [
+      {t:"Two independent narrowings. First the series index (an inverted index on labels, Lesson 12/16) intersects the posting lists for the metric and `service=search`, yielding ~40 series instead of scanning 10M. Then time-partitioning prunes to the ~3 two-hour chunks per series covering the 6 hours, skipping every older chunk on disk without reading it (Lesson 29's partition pruning). Only those few MB of compressed points get decoded and aggregated — reading fewer bytes is the whole game.",
+       ok:true,
+       fb:"Exactly. The label index picks the WHAT (which series), time-partitioning picks the WHEN (which chunks), and only that intersection is decompressed. It's Lesson 29's funnel — prune, then project, then scan — applied to a streaming metrics store, and it's why the year of data on disk is irrelevant to a 6-hour query."},
+      {t:"The engine scans all 10 million series and all of the last year's data every time, but it's fast because everything is held in RAM and RAM is quick.",
+       ok:false,
+       fb:"No engine holds a year of a million-point-per-second stream in RAM (~47 TB), and scanning all 10M series for a 40-series answer would be enormously wasteful. The speed comes from NOT scanning everything: the label index narrows to ~40 series and time-partition pruning narrows to ~3 chunks each, so only a few MB are ever read."},
+      {t:"It's fast only because p99 is cheap to compute; the same query returning raw points instead of a percentile would have to read the entire year of data.",
+       ok:false,
+       fb:"The aggregate being p99 isn't what makes it fast — the label-index narrowing and time-partition pruning do, and they apply identically whether you return raw points or a percentile. A 'last 6 hours' query reads ~3 chunks per matching series regardless of the aggregation; the time range and the series filter bound the work, not the choice of function."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

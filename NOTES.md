@@ -726,10 +726,24 @@
     replication/version, L10 consensus (the CP contrast), L11 AP, L27 knee, L29 narrow-before-compute, L34
     registry/readiness/TTL-flap, L35 vector clocks, L42 routing. Trade: convergence speed vs message overhead &
     staleness. (Lesson 0043)
-44. Time-series & metrics storage — store L17's observability firehose (millions of points/s): append-heavy
-    writes, downsampling/rollups (raw → 1m → 1h) and retention tiers (L39), delta-of-delta + columnar
-    compression (L29), the cardinality explosion (L17's ids-on-traces-not-labels), and query-by-time-range.
-    Trade: resolution & retention vs storage cost.
+44. ✅ **Time-series & metrics storage** — store L17's observability firehose: 10M active series × a 10-s
+    scrape = 1M data points/s, kept for years. Estimate kills the naive row twice — inline labels ~216 MB/s
+    ≈ 18.7 TB/day (same label string written 1M×/s) → SPLIT series from samples (labels stored once, sample =
+    bare 16 B timestamp+value → 1.38 TB/day) → COMPRESS for the shape: delta-of-delta timestamps (regular
+    interval → ~1 bit) + XOR values (slow-moving → ~1.3 B) crush 16 B → ~1.5 B/point (Gorilla ~1.37) → 130 GB/day
+    ≈ 47 TB/yr (~11×). Model = series index (L12/16 inverted index, posting-list intersection picks which series
+    a query reads) + samples in time-ordered CHUNKS that go immutable once past → compress hard, ROLL UP (raw 10s
+    → 1m → 1h, ~90×/level, lossy+irreversible) + DROP whole partitions at retention (O(1), not a billion-row
+    DELETE, L24/39). Trace a write (creating a series = the costly event; sampling an existing one ≈ a couple
+    bytes+bits) and a range query (label index → time-partition prune L29 → decode only a few MB). First wall =
+    cardinality, NOT volume: point rate is bounded (series ÷ interval) + compresses away, but series count is a
+    PRODUCT of label cardinalities → one user_id label over 10M users explodes 750k series → 7.5 TRILLION (~750 TB
+    index + unbounded RAM) while sample rate looks fine → keep identifiers OFF labels (L17 ids-on-traces; exemplars
+    to jump), cap/allowlist labels at ingest, pre-aggregate. Four traps: high-cardinality label; metrics in a row
+    store (forfeits the 11× compression, DELETE-not-drop); one resolution/retention for all; rollup before you
+    know the questions (store min/max/sum/count, not just avg). Reuses L12/16 inverted index, L17 firehose+cardinality
+    rule, L20 metadata/data split, L21 lossy-summary, L24 partition-drop, L29 columnar/pruning, L39 tiers/retention,
+    L40 noisy-neighbor. Trade: resolution & retention vs storage cost. (Lesson 0044)
 45. Webhooks & outbound event delivery — deliver "your order shipped" to thousands of third-party endpoints
     you don't control: at-least-once + retries with backoff (L07/09), a signature so the receiver can trust it
     (L30), an idempotency key so the receiver can dedup (L13), the slow/dead endpoint (circuit breaker + DLQ,
