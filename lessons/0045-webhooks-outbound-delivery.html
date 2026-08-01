@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 45 — Webhooks &amp; Outbound Delivery: Telling Ten Thousand Strangers' Servers, Reliably</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 45 · Worked Example</div>
+  <h1>Webhooks &amp; Outbound Delivery: Telling Ten Thousand Strangers' Servers, Reliably</h1>
+  <p class="lead">Every delivery lesson so far pushed a message to a server <i>we own</i> — Lesson 9's queue, Lesson 26's phone, Lesson 33's outbox feeding our own search and warehouse. This lesson pushes it to a server we <b>don't</b> own and can't fix: a merchant's endpoint, a partner's integration, some developer's laptop tunnel. A <b>webhook</b> is an HTTP callback — when something happens on our platform (<code>order.shipped</code>, <code>payment.succeeded</code>), we <code>POST</code> a small JSON event to a URL the customer registered, so their system learns about it without polling us. That single reversal — <i>we</i> call <i>them</i> — changes every rule. Their endpoint can be slow, flaky, down for six hours, or an impostor's. We'll <b>estimate</b> why delivering these calls inline from our own pipeline hands our availability to strangers, and how one dead endpoint ties up thousands of threads. We'll <b>model</b> the async delivery system every webhook provider (Stripe, GitHub, Shopify) builds: a durable outbound queue, workers, <b>signatures</b> so the receiver can trust the call, <b>idempotency keys</b> so they can dedup our retries, and <b>exponential backoff</b> so we don't hammer a broken server. We'll <b>trace</b> a clean delivery, a retried one, and the ambiguous timeout that makes duplicates unavoidable. And we'll hit the bottleneck that defines the whole design: a <b>single slow or dead endpoint</b> that, left unisolated, starves delivery for everyone else. The trade underneath: <b>delivery reliability vs the burden we push onto the receiver.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0045-webhooks-outbound-delivery.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>Our platform is the e-commerce backend from Lessons 12/24/25/33. Merchants build their own tools on top of us, and they don't want to poll <code>GET /orders?updated_since=…</code> every few seconds (Lesson 26 already priced polling as mostly waste). Instead each merchant <b>registers a webhook</b>: "when an order of mine ships, <code>POST</code> the event to <code>https://merchant.example/hooks</code>." Concretely: <b>50,000 registered endpoints</b>, and Lesson 33's outbox already emits <b>5,000 domain events/second</b>. Each event matches, on average, <b>2 subscriptions</b> (the merchant plus a fulfillment partner) → <b>10,000 delivery attempts/second</b> we owe to servers scattered across the internet. Two facts define everything, and both are the opposite of Lesson 9's internal queue: the receiver is <b>outside our control</b> (any latency, any downtime, no SLA we can enforce), and the receiver <b>needs the event</b> (it's their only signal that the order shipped — dropping it silently is a bug they can't detect). So we can neither block on them nor give up on them. We'll build the system that squares that circle.</p>
+
+<div class="diagram"><pre>
+  ONE WEBHOOK SYSTEM:  5,000 events/s -> ~10,000 outbound POSTs/s to 50,000
+  endpoints we neither control nor trust.
+
+  OUR SIDE (durable, fast)                    |  THEIR SIDE (slow, flaky, untrusted)
+  --------------------------------------------|-------------------------------------
+  event happens (order.shipped)               |
+     |                                        |
+     v                                        |
+  [1] OUTBOX / event log (L33) --- durable, the source of truth
+     |
+     v   fan-out: match event -> subscriptions
+  [2] DELIVERY QUEUE  (one attempt = one job: event_id, sub_id, url, payload)
+     |
+     v
+  [3] DELIVERY WORKERS  ----sign + POST (30s timeout)---->  merchant.example/hooks
+     |    ^                                                     |
+     |    |  2xx? mark DELIVERED                                v
+     |    |  else: schedule RETRY (backoff + jitter)      verify signature,
+     |    |                                                dedup on event_id,
+     v    |                                                return 2xx fast
+  [4] give up after ~24h -> DEAD-LETTER QUEUE + merchant dashboard "replay"
+
+  We can't BLOCK on them (their downtime would become ours) and we can't
+  DROP (they need every event) -> retry until 2xx. Retries -> duplicates ->
+  the receiver must dedup. At-least-once on OUR side buys idempotency work
+  on THEIRS. That hand-off is the whole trade.
+</pre></div>
+
+<p class="note"><span class="key">A webhook is an HTTP request our system makes to a URL the customer registered, to notify them of an event as it happens — a server-to-server callback that replaces polling.</span> Two words we'll lean on: a <b>subscription</b> is one registered <code>(endpoint URL, which event types, a shared secret)</code>; a <b>delivery</b> is one attempt to <code>POST</code> one event to one subscription's URL. An event may cause many deliveries; a delivery may take many attempts.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Webhook / callback</b> — an HTTP request <i>we</i> send <i>outbound</i> to the customer's server when an event occurs (the inverse of them calling our API).</li>
+  <li><b>Subscription</b> — a registered endpoint URL + the event types it wants + a per-endpoint shared secret.</li>
+  <li><b>Delivery attempt</b> — one <code>POST</code> of one event to one endpoint; it succeeds only on a <code>2xx</code> response.</li>
+  <li><b>At-least-once delivery</b> — we keep retrying until we see a <code>2xx</code>, so an event is never lost — but may arrive more than once (Lesson 9).</li>
+  <li><b>Idempotency key</b> — a stable unique id on the event (we use <code>event_id</code>) the receiver stores, so a repeat delivery is recognized and ignored (Lesson 13).</li>
+  <li><b>HMAC signature</b> — a keyed hash of the request body using the shared secret, sent in a header, so the receiver can prove the request really came from us and wasn't tampered with (Lesson 30).</li>
+  <li><b>Exponential backoff + jitter</b> — wait longer after each failure (1s, 2s, 4s, …), with a random spread, so a broken endpoint isn't hammered and a fleet of them doesn't retry in lockstep (Lesson 7).</li>
+  <li><b>Dead-letter queue (DLQ)</b> — where a delivery lands after retries are exhausted, so it's parked for inspection/replay instead of lost (Lesson 9).</li>
+  <li><b>Circuit breaker</b> — after an endpoint fails repeatedly, stop calling it for a while and fail fast, so a dead endpoint stops consuming workers (Lesson 7).</li>
+</ul>
+
+<h2>Move 1 — Estimate: why delivering inline hands your uptime to strangers</h2>
+<p>The naive design writes itself: when an order ships, in the very same code path that finalizes the shipment, look up the subscriptions and <code>POST</code> to each. No queue, no workers — just call them. Let's price it, because the cost is not CPU or storage this time. It's a coupling you didn't mean to buy.</p>
+
+<div class="card calc">
+  <p><b>Internal calls are fast; third-party endpoints are not.</b> An internal service (Lesson 27) answers in ~40 ms at p99. A stranger's webhook endpoint has no such budget: it might be a healthy 100 ms, a struggling 3 s, or a <i>dead</i> one that accepts your TCP connection and then never responds until your <b>30-second timeout</b> fires (Lesson 7's partial failure — the connection opens, so you can't fail fast). You are now as slow as the slowest server you don't own.</p>
+  <p><b>Little's Law turns their downtime into your thread exhaustion (Lesson 13).</b> Suppose our event pipeline processes 5,000 events/s, and each ships ~2 inline <code>POST</code>s. Even when everyone is healthy at 300 ms/call, the pipeline holds <code>L = &lambda;W = 10,000/s &times; 0.3 s = 3,000</code> in-flight calls at all times — 3,000 threads doing nothing but waiting on the network. Now let just <b>1%</b> of endpoints go dark. That's <code>100/s</code> deliveries hitting the 30 s timeout: <code>L = 100/s &times; 30 s = <b>3,000</b></code> threads frozen on dead endpoints alone — and they don't drain, they accumulate, because new dead calls arrive as fast as old ones time out. The pool fills, healthy events queue behind zombie calls, and <span class="key">a checkout pipeline goes down because a merchant we've never met forgot to renew a TLS certificate.</span></p>
+  <p><b>The fix is the oldest one in the course: decouple with a queue (Lessons 5/9).</b> The event pipeline does one fast, durable thing — commit the event and enqueue a delivery job — and returns in microseconds. A separate fleet of <b>delivery workers</b> drains the queue and makes the slow, flaky outbound calls, fully isolated from the pipeline that produced the event. Their downtime is now the workers' problem, and the workers are built to absorb it.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — synchronous coupling vs asynchronous decoupling.</b> Delivering inline is simpler and gives an instant "did it arrive?" answer — but it welds your availability to the availability of every endpoint you call (Lesson 7's cascade). Delivering async costs you a queue, workers, and a delivery-status system to track what actually landed — but it draws a hard wall between "the event happened" (durable, ours, fast) and "the notification arrived" (best-effort, theirs, eventually). <span class="key">A webhook is fundamentally an asynchronous promise, so build it asynchronously; the moment you make it synchronous you've imported 50,000 strangers' uptime into your own.</span></p>
+
+<h2>Move 2 — Model: a durable outbound pipe with trust, dedup, and patience built in</h2>
+<p>The queue decoupled us. Now give the delivery path the four properties a stranger on the other end forces on us.</p>
+
+<h3>At-least-once, because the receiver can't afford a lost event</h3>
+<p>Internally we sometimes tolerate a dropped message. Here we can't: the webhook is the merchant's <i>only</i> signal the order shipped, and a silent drop is invisible to them until a customer complains. So a delivery is done only when the endpoint returns a <code>2xx</code>; any timeout, <code>5xx</code>, or connection error means <b>retry</b>. That is <b>at-least-once delivery</b> (Lesson 9), and it has an unavoidable consequence: because a timeout is ambiguous (the receiver may have processed it and only the <i>response</i> was lost — Lesson 7), our retry can deliver the same event <b>twice</b>. We cannot fix that on the wire (there is no exactly-once, Lesson 9). We can only make the duplicate <i>harmless</i> — on the receiver's side.</p>
+
+<h3>Idempotency key, so our retries don't double-charge the receiver</h3>
+<p>Every event carries a stable <code>event_id</code>, sent in a header (e.g. <code>Webhook-Id: evt_9f3…</code>) and unchanged across every retry of that event. The contract we publish to integrators is Lesson 13 verbatim, pointed outward: <span class="key">store the id you've processed; if you see it again, acknowledge with a <code>2xx</code> and do nothing.</span> This is the first piece of the burden we push onto the receiver — and it's why the <code>event_id</code> must be identical on retries (a fresh id per attempt would defeat their dedup and re-run their side effect).</p>
+
+<h3>Signature, so the receiver can trust the call is really from us</h3>
+<p>Our <code>POST</code> arrives at a public URL. From the receiver's side it is indistinguishable from an attacker's <code>POST</code> forging <code>{"event":"payment.succeeded","amount":9999}</code> — unless we prove it's us. We do it with an <b>HMAC signature</b> (Lesson 30): each subscription has a <b>shared secret</b>, and we send a keyed hash of the exact body.</p>
+<div class="card calc">
+  <p><b>Worked signature.</b> For subscription secret <code>whsec_K</code>, timestamp <code>t</code>, and raw body <code>B</code>:</p>
+  <p style="margin:.3rem 0"><code>signature = HMAC&#8209;SHA256( key = whsec_K, message = t + "." + B )</code></p>
+  <p>and we send a header <code>Webhook-Signature: t=1690000000, v1=&lt;hex&gt;</code>. The receiver recomputes the same HMAC with their copy of the secret and compares it in <b>constant time</b> (a byte-by-byte early-exit compare leaks the answer via timing). Two properties fall out: <b>authenticity</b> — only someone holding the secret could produce a matching hash, so a forged body fails — and <b>integrity</b> — flip one byte of <code>B</code> and the recomputed hash won't match (Lesson 30's AEAD idea, applied to a request). Signing the <b>timestamp too</b> lets the receiver reject anything older than, say, 5 minutes, so a captured request can't be <b>replayed</b> later.</p>
+  <p style="color:var(--muted); margin:.4rem 0 0">Why HMAC and not "just put an API key in a header"? A static bearer token proves nothing about the <i>body</i> — anyone who ever saw it can forge any payload. The HMAC binds the sender's secret <i>to this exact message</i>, and the secret never travels on the wire.</p>
+</div>
+
+<h3>Backoff + jitter + a deadline, so we're patient without being a hammer</h3>
+<p>A failed delivery retries — but not immediately and not forever. We use <b>exponential backoff</b> (Lesson 7): wait 1 s, then 2 s, 4 s, 8 s… doubling, capped at 1 hour, and we keep trying for a <b>24-hour</b> window before we give up. And we add <b>jitter</b> — multiply each delay by a random factor around 0.5–1.5 — for a reason Lesson 26 already taught: if a popular cloud region blips and 5,000 endpoints fail in the same second, un-jittered backoff has all 5,000 retry at <i>exactly</i> 1 s, then 2 s, then 4 s — a synchronized thundering herd that hammers those endpoints (and our own workers) in lockstep the instant they recover.</p>
+<div class="card calc">
+  <p><b>The retry schedule, counted out.</b> Doubling from 1 s until the 1-hour cap: <code>1 + 2 + 4 + 8 + … + 2048 = 4095 s &asymp; 68 minutes</code> across the first <b>~12 attempts</b>. After that the delay is pinned at 1 hour, so the remaining ~23 hours of the window add <b>~23 more attempts</b> — roughly <b>35 attempts over 24 hours</b>. A brief blip is absorbed in seconds; a multi-hour outage still gets many patient chances; and a truly dead endpoint is retried a bounded number of times, not infinitely.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — persistence vs the load your retries impose.</b> More attempts over a longer window means fewer events lost to a temporary outage — and more wasted requests hammering an endpoint that's genuinely gone, plus a bigger backlog of pending deliveries you must store. Backoff spends the retries where they help (early, when a blip might already be over) and grows sparse where they don't; jitter spreads them so recovery isn't a stampede; the 24-hour deadline caps the waste. <span class="key">Every knob here is set against a server whose behavior you can't see and can't fix, so you tune for the flaky common case, not the dead one.</span></p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>One clean delivery, one retried delivery, and the ambiguous timeout that makes idempotency non-optional.</p>
+
+<h3>Path A — a clean delivery</h3>
+<div class="diagram"><pre>
+  Event:  order.shipped  event_id=evt_9f3a  for merchant M (sub_id=771)
+
+   1. Fan-out: match the event to subscriptions -> one delivery job:
+        { event_id: evt_9f3a, sub_id: 771, url: https://M.example/hooks,
+          payload: {...}, attempt: 1 }
+      enqueue it (durable). The event pipeline is now DONE -- microseconds.
+   2. A delivery worker claims the job (visibility timeout, L05 -- if the worker
+      dies mid-POST the job reappears for another worker, no delivery lost).
+   3. Sign:  sig = HMAC-SHA256(whsec_771, t + "." + body)
+      POST https://M.example/hooks
+        Webhook-Id: evt_9f3a
+        Webhook-Signature: t=1690000000, v1=8a1f...
+        body: {"type":"order.shipped","data":{...}}
+      with a 30 s timeout.
+   4. M verifies the signature, checks it hasn't seen evt_9f3a, does its work,
+      records evt_9f3a, returns 200 FAST (it should ACK first, work async -- see
+      Path C). Worker marks the delivery DELIVERED. Done in one attempt.
+</pre></div>
+
+<h3>Path B — a failing endpoint, retried then dead-lettered</h3>
+<div class="diagram"><pre>
+  Same event, but M.example is returning 503 (overloaded) or timing out.
+
+   attempt 1  -> 503   -> schedule retry in ~1 s   (x jitter)
+   attempt 2  -> 503   -> ~2 s
+   attempt 3  -> timeout -> ~4 s
+   ...doubling... capped at 1 h after ~12 attempts (~68 min in)
+   ...hourly for the rest of the 24 h window...
+   attempt ~35 -> still failing at t = 24 h
+        -> STOP. Move the delivery to the DEAD-LETTER QUEUE.
+        -> surface it on M's dashboard: "3,412 deliveries failed, [Replay all]".
+           M fixes their endpoint, clicks replay -> we re-enqueue from the DLQ.
+
+  Note what we do NOT do: we never drop it silently, and we never retry
+  forever (that's an unbounded backlog + a hammer on a dead server). The DLQ
+  is the honest middle -- parked, visible, replayable.
+</pre></div>
+
+<h3>Path C — the ambiguous timeout (why the receiver MUST dedup)</h3>
+<div class="diagram"><pre>
+   Worker POSTs evt_9f3a  ---->  M receives it, ships the confirmation email,
+                                 records evt_9f3a...  then its response packet
+   worker's 30 s timeout fires  X----  is lost / arrives after we gave up.
+
+   Worker saw NO 2xx  ->  it MUST assume failure  ->  retry evt_9f3a.
+   M receives evt_9f3a a SECOND time.
+        - No dedup:  a SECOND confirmation email. Duplicate side effect.
+        - With dedup: "seen evt_9f3a already" -> return 200, do nothing. Safe.
+
+   We cannot tell "lost request" from "lost response" from our side (L07). So
+   at-least-once is the best the wire allows, and the idempotency key is what
+   converts our unavoidable duplicate into the receiver's harmless no-op (L13).
+</pre></div>
+<p>Path A is the 99% we design <i>around</i> but not <i>for</i>; Path B is the reliability machinery (retry, backoff, DLQ, replay) that earns the word "reliable"; Path C is the one that proves why the signature and the idempotency key aren't optional polish — they're the contract that makes "at-least-once from us" survivable "exactly-once effect on them" (Lesson 13). Every piece works <i>as long as one broken endpoint can't take the delivery fleet down with it.</i> That "as long as" is the wall.</p>
+
+<h2>Move 4 — Find the first bottleneck: one dead endpoint starving everyone</h2>
+<p>The queue isolated delivery from the <i>event pipeline</i>. But now all 10,000 deliveries/s share one delivery queue and one worker fleet — and a shared resource is a shared fate (Lesson 40). Watch what a single dead endpoint does to it.</p>
+
+<div class="card calc">
+  <p><b>Size the healthy fleet.</b> At 10,000 deliveries/s and a 300 ms average call, Little's Law says the fleet must sustain <code>L = 10,000 &times; 0.3 = 3,000</code> concurrent in-flight calls. Fine — that's the baseline it's built for.</p>
+  <p><b>Now one big merchant goes dark.</b> Say that merchant receives <b>500 deliveries/s</b>, and its endpoint now accepts connections and hangs until the 30 s timeout. With no isolation, those deliveries sit in-flight for the full 30 s each: <code>L = 500/s &times; 30 s = <b>15,000</b></code> concurrent calls consumed by a <i>single</i> endpoint — <b>5&times; the entire healthy baseline.</b> The worker fleet fills with zombie calls to one dead server; deliveries to 49,999 healthy endpoints queue behind them and go late. <span class="key">This is head-of-line blocking (Lesson 9's poison message) and the noisy neighbor (Lesson 40) in one: one broken receiver, hurting everyone, breaking no rule.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off — shared throughput vs isolation.</b> One big queue and one worker pool is the cheapest, highest-throughput design — until any single endpoint's slowness becomes global slowness. The fix is to spend some of that efficiency on walls, exactly as Lessons 7/40 did: put a <b>circuit breaker</b> per endpoint, and <b>bulkhead</b> each endpoint's share of the workers.</p>
+
+<div class="card">
+  <p style="margin:.2rem 0"><b>How real webhook systems keep one endpoint from sinking the fleet:</b></p>
+  <p style="margin:.2rem 0">• <b>Per-endpoint circuit breaker (Lesson 7).</b> Track consecutive failures per subscription. After a threshold (say 5 in a row), <b>open the breaker</b>: stop calling that endpoint entirely, park its deliveries on its own delayed-retry track, and send just <i>one</i> probe request periodically to see if it's back. A dead endpoint now consumes ~0 in-flight slots instead of 15,000 — the single highest-leverage fix.</p>
+  <p style="margin:.2rem 0">• <b>Per-endpoint concurrency cap (bulkhead, Lessons 7/40).</b> Never let one subscription hold more than, say, a few dozen in-flight calls. Its own backlog can grow, but it can't reach past its lane to starve others — the greed is paid by the greedy.</p>
+  <p style="margin:.2rem 0">• <b>Separate first-attempt and retry paths.</b> Keep fresh deliveries on a fast queue and route backed-off retries to a delay queue, so a flood of one endpoint's retries never blocks first attempts for everyone else (Lesson 9's partitioning).</p>
+  <p style="margin:.2rem 0; color:var(--muted)">The through-line: the delivery fleet is a shared pot, and the internet guarantees some tenant of it is always broken — so wall every endpoint off by default.</p>
+</div>
+
+<h3>The other wall: ordering, which at-least-once quietly breaks</h3>
+<p>Retries and backoff mean deliveries <i>reorder</i>: if <code>order.placed</code> fails and retries while <code>order.updated</code> for the same order sails through, the receiver sees the update before the create. You could force per-subscription (or per-order) ordering with a single-flight partition (Lesson 9) — but then a stuck delivery blocks every later event for that key, and you've re-created the head-of-line wall on purpose. So most webhook systems <b>don't promise ordering</b>. Instead they make each event <b>self-describing</b>: carry the full current state (or a monotonically increasing <code>version</code>/<code>sequence</code> and a timestamp) so the receiver can ignore a stale event it has already superseded — pushing ordering, like dedup, onto the receiver (Lessons 35/37's "let the reader resolve it").</p>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — delivering inline / synchronously.</b> Calling the endpoint from the request or event-processing thread welds your availability to theirs: one dead endpoint at a 30 s timeout ties up thousands of threads (Little's Law) and stalls the pipeline that produced the event. Always decouple through a durable queue and a separate worker fleet (Lessons 5/9).</li>
+  <li><b>Trap 2 — no signature (or a static token instead of an HMAC).</b> A public webhook URL will receive forged <code>POST</code>s; without an HMAC over the body the receiver can't tell your event from an attacker's, and a bearer token that leaks lets anyone forge any payload. Sign the body (and the timestamp, to stop replay) with a per-subscription secret, compared in constant time (Lesson 30).</li>
+  <li><b>Trap 3 — assuming exactly-once, or a fresh id per retry.</b> At-least-once plus the ambiguous timeout guarantees the receiver sometimes gets an event twice; if the <code>event_id</code> changes per attempt, their dedup can't work and your retry re-runs their side effect (a second charge, a second email). Send a stable idempotency key and publish "dedup on it" as the contract (Lesson 13).</li>
+  <li><b>Trap 4 — one shared queue/pool with no per-endpoint isolation.</b> Without a circuit breaker and a concurrency cap per endpoint, a single slow or dead receiver consumes the whole delivery fleet (head-of-line blocking + noisy neighbor) and everyone's webhooks go late. Break the circuit on a dead endpoint and bulkhead each one's share (Lessons 7/9/40).</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>An outbound webhook system delivering <b>~10,000 events/second</b> (5,000 domain events, ~2 subscriptions each) to <b>50,000 endpoints we don't own or trust</b>. <b>Estimate</b> killed the naive inline design: a third-party endpoint has no latency budget, and a dead one hangs to a 30 s timeout, so delivering from the event pipeline itself ties up <code>L = &lambda;W</code> thousands of threads on strangers' dead servers (<code>100/s &times; 30 s = 3,000</code> frozen on the 1% that are down) and takes your own checkout pipeline down with a merchant's expired certificate — so <b>decouple through a durable queue and a separate worker fleet</b> (Lessons 5/9). <b>Model</b> gave the delivery path the four things a stranger forces on you: <b>at-least-once</b> (retry until <code>2xx</code>, because the receiver can't detect a silent drop), an <b>idempotency key</b> (a stable <code>event_id</code> so their dedup makes your unavoidable duplicate a no-op — Lesson 13), an <b>HMAC signature</b> over body+timestamp (so they can prove it's you and reject forgeries and replays — Lesson 30), and <b>exponential backoff + jitter</b> over a 24-hour window (~35 patient attempts, spread so a recovering fleet isn't a thundering herd — Lessons 7/26), ending in a <b>dead-letter queue</b> with dashboard replay rather than a silent drop or an infinite hammer. <b>Tracing</b> showed the clean one-attempt delivery, the failing endpoint retried and dead-lettered, and the ambiguous timeout (request lost? response lost? — you can't tell, Lesson 7) that makes the idempotency key non-negotiable. The <b>first bottleneck</b> is the shared delivery fleet: one dead endpoint taking 500 deliveries/s to a 30 s timeout consumes <code>500 &times; 30 = <b>15,000</b></code> in-flight slots — 5&times; the entire healthy baseline — head-of-line blocking (Lesson 9) and the noisy neighbor (Lesson 40) at once, fixed by a <b>per-endpoint circuit breaker</b> (a dead endpoint drops to ~0 slots) and a <b>per-endpoint concurrency bulkhead</b> (Lesson 7), plus giving up on strict ordering in favor of self-describing, versioned events the receiver can order itself. The real lesson: <span class="key">a webhook inverts who calls whom, and that one flip means you can't block on the other side and can't drop their event, so reliability becomes retries, retries become duplicates, and duplicates become a burden — dedup, signature verification, ordering — that you deliberately push onto the receiver. Every reliability guarantee you add on your side is a piece of work the integrator must do on theirs. The standing tension: delivery reliability vs the burden pushed onto the receiver.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next lesson stays with jobs that must fire reliably — but on a clock, and exactly once across a fleet:</b></p>
+  <p style="margin:.2rem 0">• <b>Distributed job scheduling:</b> run thousands of cron jobs across many servers so each fires <i>once</i> at the right time — a <b>leader or lease</b> to stop two nodes double-firing the same job (Lessons 10/22), <b>sharding the schedule</b> for throughput, <b>missed-fire catch-up</b> after an outage, <b>clock skew</b> across nodes (Lesson 35), and <b>idempotent jobs</b> so a retry is harmless (Lesson 13). The trade shifts to <b>timeliness vs exactly-once execution.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">webhook / callback</span>
+    <span class="pill">subscription</span>
+    <span class="pill">delivery attempt</span>
+    <span class="pill">at-least-once delivery</span>
+    <span class="pill">idempotency key</span>
+    <span class="pill">HMAC signature</span>
+    <span class="pill">shared secret</span>
+    <span class="pill">replay protection</span>
+    <span class="pill">exponential backoff + jitter</span>
+    <span class="pill">dead-letter queue</span>
+    <span class="pill">circuit breaker</span>
+    <span class="pill">bulkhead</span>
+    <span class="pill">head-of-line blocking</span>
+    <span class="pill">self-describing event</span>
+  </p>
+  <p>That's Lesson 45, built on Lesson 5/9's producer→queue→workers decoupling and at-least-once delivery / DLQ (the outbound pipe), Lesson 7's partial failure, timeouts, backoff+jitter, circuit breaker and bulkhead (the machinery for a server you can't trust), Lesson 13's idempotency key and the ambiguous timeout (the receiver-side dedup), Lesson 26's polling-is-waste and lockstep-reconnect-storm (why push, and why jitter), Lesson 30's HMAC/authenticity/integrity (the signature), Lesson 33's outbox as the durable event source, Lesson 35/37's "let the reader resolve ordering" (self-describing versioned events), and Lesson 40's noisy-neighbor discipline (one endpoint can't own the fleet). <b>Ask me follow-ups</b> — e.g. "how should the receiver verify the signature safely, step by step?", "why ACK fast and process the webhook asynchronously on the receiver's side?", "how do Stripe/GitHub actually structure their retry schedules and event ids?", "when should I offer ordered delivery, and how (per-key partitions)?", or "how do I let a merchant test their endpoint and replay failed deliveries?" When you're ready, say <b>next</b> and we'll go deeper on <i>Distributed job scheduling — timeliness vs exactly-once execution.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your platform emits order events and POSTs them to merchants' webhook URLs directly from the code path that finalizes the order, with a 30-second HTTP timeout. Traffic is fine for weeks, then one afternoon your order pipeline slows to a crawl and healthy orders start timing out — even though your own servers and database look idle. What happened, and what's the fix?",
+    options: [
+      {t:"Delivering inline welds your pipeline's availability to endpoints you don't control. A dead endpoint accepts the connection and hangs to the 30 s timeout, so by Little's Law each 1% of endpoints that go dark ties up L = rate × 30 s worth of threads (e.g. 100/s × 30 s = 3,000) that never drain — the pool fills with zombie calls to strangers' servers and healthy events queue behind them. The fix is to decouple: the pipeline durably enqueues a delivery job and returns immediately, and a separate worker fleet makes the slow outbound calls in isolation.",
+       ok:true,
+       fb:"Right. The scarce resource isn't CPU or DB — it's threads blocked on the network waiting for servers you can't fix. Inline delivery imports every endpoint's downtime into your own pipeline (Lesson 7's cascade). A queue plus a dedicated worker fleet draws the wall between 'the event happened' (yours, fast, durable) and 'it was delivered' (theirs, eventually)."},
+      {t:"The merchants' endpoints are returning malformed JSON, which is corrupting your order records as you parse their responses — validate their response bodies before saving and the slowdown disappears.",
+       ok:false,
+       fb:"A webhook is fire-and-notify: you don't parse the receiver's response body into your records, you only care about the status code. The slowdown isn't about response content — it's that inline calls to slow/dead endpoints hold your threads for up to 30 s each, exhausting the pool. Validating bodies wouldn't free a single blocked thread."},
+      {t:"You're being rate-limited by the merchants' servers; add a global delay between all outbound POSTs so you never trip their limits, and throughput recovers.",
+       ok:false,
+       fb:"A global delay makes it worse — it slows every delivery to pace the slowest, and it still leaves the calls inline in your pipeline holding threads. The problem is coupling and blocked threads on dead endpoints, not your aggregate send rate. Decouple with a queue and isolate slow endpoints per-endpoint (circuit breaker/bulkhead), don't throttle everyone globally."}
+    ]
+  },
+  {
+    stem: "A merchant integrating your webhooks asks: 'Your docs say you sign every request with HMAC AND that I must dedup on the event id. Isn't that redundant — doesn't the signature already stop duplicates?' What's the right answer?",
+    options: [
+      {t:"They solve different problems. The HMAC signature proves AUTHENTICITY and INTEGRITY — that the request really came from you (only the secret holder can produce a matching hash) and wasn't tampered with — so it rejects forgeries, not duplicates. The idempotency key solves DUPLICATES: because delivery is at-least-once and a timeout is ambiguous (your request may have been processed and only the response lost), you will legitimately re-send the same signed event, and each retry has a valid signature. Only storing the event id and ignoring a repeat makes that harmless.",
+       ok:true,
+       fb:"Exactly. A retried delivery is a genuine, correctly-signed request — the signature passes every time. Authenticity (is it really from you?) and idempotency (have I already handled this exact event?) are orthogonal: one guards against attackers, the other against your own unavoidable at-least-once retries (Lessons 30 and 13)."},
+      {t:"Yes, it's redundant — the signature is computed over the body including the event id, so two identical requests produce the same signature, and the receiver can just reject any request whose signature it has seen before.",
+       ok:false,
+       fb:"Rejecting repeated signatures IS deduping on the event — you've just renamed the idempotency key. And it doesn't make the signature's job (authenticity) redundant: a first-time forged request has never-before-seen bytes and would pass a 'have I seen this signature' check while failing the HMAC. The two mechanisms guard different threats; you need both."},
+      {t:"The signature is what's redundant: if the receiver dedups on the event id, an attacker replaying a captured request would be ignored as a duplicate anyway, so you can drop HMAC verification entirely.",
+       ok:false,
+       fb:"Backwards and dangerous. Dedup only ignores ids you've ALREADY seen — an attacker forging a BRAND-NEW event id (a fake payment.succeeded) sails straight past dedup, and without the HMAC the receiver has no way to know it's fake. The signature is exactly what stops a forged or replayed request from being trusted in the first place."}
+    ]
+  },
+  {
+    stem: "Your delivery fleet is sized for 10,000 deliveries/s at ~300 ms each (about 3,000 concurrent calls). One large merchant taking 500 deliveries/s has its endpoint go dark — it accepts connections but never responds until your 30 s timeout. Suddenly deliveries to all 50,000 other endpoints are running minutes late. Why, and what's the highest-leverage fix?",
+    options: [
+      {t:"That one dead endpoint's calls each occupy an in-flight slot for the full 30 s, so it consumes L = 500/s × 30 s = 15,000 concurrent slots — about 5× the entire healthy fleet's capacity. Workers fill with zombie calls to one server and everyone else's deliveries queue behind them (head-of-line blocking + noisy neighbor). The highest-leverage fix is a per-endpoint circuit breaker: after N consecutive failures, stop calling it, park its deliveries on their own retry track, and send only occasional probes — dropping its slot usage from 15,000 to ~0.",
+       ok:true,
+       fb:"Right. A shared fleet means a shared fate: an endpoint that hangs to timeout ties up slots proportional to its rate × the timeout, which can dwarf the whole healthy baseline. The circuit breaker is the single biggest lever — it stops spending any capacity on a known-dead endpoint (Lessons 7/40). A per-endpoint concurrency cap (bulkhead) backs it up."},
+      {t:"The fleet ran out of memory buffering the dead merchant's payloads; give the workers more RAM and the other deliveries will flow again.",
+       ok:false,
+       fb:"It's not a memory problem — it's a concurrency/thread-slot problem. The dead endpoint's calls are alive and waiting on the network for 30 s each, occupying the fleet's limited in-flight slots. More RAM doesn't free a slot held by a socket waiting on a timeout. You need to STOP making those calls (circuit breaker) and cap any one endpoint's share (bulkhead)."},
+      {t:"Lower the timeout for all endpoints from 30 s to 1 s; then even the dead endpoint's calls return quickly and stop clogging the fleet.",
+       ok:false,
+       fb:"A global 1 s timeout would cut the dead endpoint's slot usage, but it also declares every legitimately slow-but-healthy endpoint (a 2–3 s responder under load) a failure, causing needless retries and duplicates for well-behaved receivers. Isolate the bad endpoint specifically (circuit breaker + per-endpoint cap) rather than punishing all 50,000 with a hair-trigger timeout."}
+    ]
+  },
+  {
+    stem: "A merchant complains: 'Sometimes I receive order.updated for an order BEFORE order.created, which breaks my code.' Your system retries failed deliveries with backoff. What's going on, and what's the standard way to handle it?",
+    options: [
+      {t:"At-least-once delivery with retries reorders events: if order.created fails and backs off while order.updated for the same order succeeds immediately, the receiver sees them out of order. Rather than force global ordering (a per-key single-flight partition, which makes a stuck delivery block every later event for that key — the head-of-line wall on purpose), most webhook systems don't promise order and instead make events self-describing: carry the full current state or a monotonic version/sequence + timestamp, so the receiver can detect and ignore an event it has already superseded.",
+       ok:true,
+       fb:"Exactly. Independent retries mean delivery order ≠ event order. You CAN enforce ordering with per-key partitions, but that reintroduces head-of-line blocking (one stuck delivery stalls the key's whole stream). The cheaper, more robust answer pushes ordering to the receiver: version each event so a stale one is recognizable and skippable (Lessons 35/37)."},
+      {t:"Your event ids are being generated out of order; switch to strictly increasing ids and the deliveries will arrive in the correct sequence automatically.",
+       ok:false,
+       fb:"The ids aren't the problem — the DELIVERIES arrive out of order because each is retried independently, regardless of how its id is generated. A monotonic id/version actually IS part of the fix, but it works by letting the RECEIVER detect a stale event, not by making the network deliver retries in order. Delivery order and id order are separate things."},
+      {t:"This is impossible if retries use backoff, so it must be a bug in the merchant's server logging the wrong timestamps — there's nothing to change on your side.",
+       ok:false,
+       fb:"It's not impossible — it's the expected consequence of independent at-least-once retries: a created event that failed once and backed off can easily land after an updated event that succeeded first try. Blaming the receiver ignores that your system genuinely delivers out of order. The fix is on your side (self-describing/versioned events) or, if strict order is required, per-key ordered partitions with their head-of-line cost."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

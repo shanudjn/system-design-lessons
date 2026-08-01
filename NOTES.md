@@ -744,10 +744,31 @@
     know the questions (store min/max/sum/count, not just avg). Reuses L12/16 inverted index, L17 firehose+cardinality
     rule, L20 metadata/data split, L21 lossy-summary, L24 partition-drop, L29 columnar/pruning, L39 tiers/retention,
     L40 noisy-neighbor. Trade: resolution & retention vs storage cost. (Lesson 0044)
-45. Webhooks & outbound event delivery — deliver "your order shipped" to thousands of third-party endpoints
-    you don't control: at-least-once + retries with backoff (L07/09), a signature so the receiver can trust it
-    (L30), an idempotency key so the receiver can dedup (L13), the slow/dead endpoint (circuit breaker + DLQ,
-    L07/09), and ordering guarantees. Trade: delivery reliability vs the burden pushed onto the receiver.
+45. ✅ **Webhooks & outbound event delivery** — deliver "order.shipped" to 50,000 endpoints we neither
+    control nor trust (5k events/s × ~2 subs = ~10k POSTs/s). The reversal (WE call THEM) breaks every rule:
+    can't BLOCK (their downtime becomes ours) and can't DROP (they need every event). Estimate kills inline
+    delivery: a dead endpoint hangs to a 30s timeout → Little's Law, 1% down = 100/s × 30s = 3,000 threads
+    frozen on strangers' servers, never draining → your checkout pipeline dies from a merchant's expired cert
+    → DECOUPLE via durable queue + separate worker fleet (L05/09). Model the four things a stranger forces:
+    **at-least-once** (retry till 2xx, a silent drop is invisible to them), **idempotency key** (stable
+    event_id in a header so their dedup makes your unavoidable duplicate a no-op, L13 outward), **HMAC
+    signature** over timestamp+body with a per-sub shared secret (authenticity + integrity + replay-reject via
+    the signed timestamp, constant-time compare — NOT a static bearer token, L30), **backoff + jitter** (1,2,
+    4…s capped 1h, ~12 attempts in the first 68 min then hourly to 24h ≈ 35 attempts; jitter breaks the
+    recovering-fleet thundering herd L07/26) ending in a **DLQ** + dashboard replay (never silent-drop, never
+    infinite-hammer). Trace clean / failing-then-dead-lettered / the ambiguous timeout (request lost vs
+    response lost — indistinguishable L07, which is WHY the idempotency key is non-negotiable). First wall =
+    the shared delivery fleet: one dead endpoint at 500 deliveries/s × 30s = **15,000** in-flight slots (5×
+    the healthy 3,000 baseline) = head-of-line blocking (L09) + noisy neighbor (L40) at once → **per-endpoint
+    circuit breaker** (dead → ~0 slots, the top lever) + **per-endpoint concurrency bulkhead** (L07) +
+    separate first-attempt/retry paths. Second wall = ordering: independent retries reorder events → don't
+    promise order, make events **self-describing** (version/sequence + timestamp, receiver skips superseded,
+    L35/37) rather than per-key partitions (which rebuild head-of-line on purpose). Four traps: inline
+    delivery; no signature / static token; assume exactly-once or fresh id per retry; one shared pool with no
+    per-endpoint isolation. Reuses L05/09 queue+DLQ+at-least-once, L07 timeout/backoff/breaker/bulkhead, L13
+    idempotency+ambiguous timeout, L26 polling-waste+jitter, L30 HMAC, L33 outbox source, L35/37 reader-side
+    ordering, L40 noisy neighbor. Trade: delivery reliability vs the burden pushed onto the receiver.
+    (Lesson 0045)
 46. Distributed job scheduling — run thousands of cron jobs across a fleet, each firing once at the right
     time: leader/lease to avoid double-fire (L10/22), sharding the schedule for throughput, missed-fire
     catch-up after an outage, clock skew across nodes (L35), and idempotent jobs so a retry is harmless (L13).
