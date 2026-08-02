@@ -769,10 +769,53 @@
     idempotency+ambiguous timeout, L26 polling-waste+jitter, L30 HMAC, L33 outbox source, L35/37 reader-side
     ordering, L40 noisy neighbor. Trade: delivery reliability vs the burden pushed onto the receiver.
     (Lesson 0045)
-46. Distributed job scheduling — run thousands of cron jobs across a fleet, each firing once at the right
-    time: leader/lease to avoid double-fire (L10/22), sharding the schedule for throughput, missed-fire
-    catch-up after an outage, clock skew across nodes (L35), and idempotent jobs so a retry is harmless (L13).
-    Trade: timeliness vs exactly-once execution.
+46. ✅ **Distributed job scheduling** — 1,000,000 cron jobs across a fleet, each firing ONCE at the right
+    time (~23 fires/s avg but spiky). One `cron` box fails 3 ways: SPOF (a midnight outage silently drops
+    every midnight fire — no retrier, it's the thing that's down), throughput ceiling (200k × 0.5 ms = 100 s
+    to dispatch the midnight batch serially → 2 min late on the happy path), and the herd (200k jobs written
+    `0 0 * * *` come due in ONE tick = ~8,600× the average). Distributing buys "on time" (shard by hash(job_id),
+    L03/04, per-shard lease failover L10/22) but REINTRODUCES the double-fire, so buy "once" back. Model =
+    split **dispatcher** (decide what's due + enqueue, never run inline — a slow job must not stall the tick,
+    L09 head-of-line) from **workers** (execute, L05/09); the **atomic claim** (conditional UPDATE = L06 CAS)
+    so two racing dispatchers enqueue ONE run not two; and — because a GC pause always lets a paused owner
+    overrun its 30 s lease (L22, lease = LIVENESS knob never safety) — an **idempotent job** keyed on
+    (job_id, scheduled_time) so the unavoidable double-fire is a no-op (L13): exactly-once *attempts* impossible,
+    exactly-once *effect* lives in the job (L45's shape on the clock), + fencing token (L10/22) for resources
+    that need it. Trace clean fire / double-fire race (DB serializes the claim → 1 run) vs GC-pause double-fire
+    (2 runs → idempotency saves it) / crash-then-recover (200k overdue jobs → per-JOB **coalesce** [1 digest]
+    vs **backfill** [every missed billing hour], throttle+jitter the catch-up or it's the herd again). First
+    wall = the herd is in the SCHEDULE not the scheduler (more dispatchers don't help) → **jitter** fire times
+    (hash(job_id) mod 60 s → 200k over 60 s = ~3,333/s, trade timeliness precision for smooth load) + **clock
+    skew** (L35: compare due-ness/lease-expiry against ONE authoritative clock not each node's wall clock;
+    don't promise precision finer than NTP skew; leases expire on real elapsed time, logical clocks can't
+    time 30 s). Four traps: one scheduler / inline execution; assuming a lease gives exactly-once; no
+    missed-fire policy; the midnight herd + trusting local clocks. Reuses L03/04 shard+consistent-hash, L05/09
+    queue+workers+head-of-line, L06 CAS, L07 SPOF/herd/backoff, L08 rate-limit catch-up, L10 election/failover,
+    L13 idempotency+exactly-once-effect, L22 lease+fencing+GC-pause, L27/28 autoscale+bounded-queue, L35 clock
+    skew/physical-vs-logical time. Trade: timeliness vs exactly-once execution. (Lesson 0046)
+
+### Advanced topics (next batch — queued so the course never runs dry)
+47. Storage engines: LSM-trees vs B-trees — L12 gave the B-tree for fast reads, but write-heavy systems
+    (L25 ledger, L38 event log, L44 metrics) pay a random-write-per-change tax; a log-structured merge-tree
+    turns writes into sequential appends + background compaction (L20/39), the read/write/space amplification
+    triangle, and a per-SSTable Bloom filter (L21) to keep reads cheap. Trade: write throughput vs read
+    amplification & space.
+48. Distributed caching & invalidation at scale — many app servers share a cache tier (L02/L14); the hard
+    part is coherence: write-through vs write-behind, invalidation fan-out, the stampede when a hot key is
+    invalidated (L02 thundering herd), and TTL-vs-explicit-purge (L14). Trade: freshness vs cache hit rate
+    & load.
+49. API gateways & the edge — one front door (L42) that does auth, routing, request aggregation (the BFF),
+    and enforces rate limits (L08) / quotas / mTLS (L30) so backends don't each re-implement them; the risk
+    of a fat gateway becoming a SPOF (L07/26) and a deploy bottleneck (L31/36). Trade: centralized
+    cross-cutting concerns vs a fragile shared choke point.
+50. Global traffic management (GeoDNS / anycast / failover) — routing each user to the nearest HEALTHY region
+    (L23 multi-region, L42 load balancing) via geo/latency DNS or anycast, health-based failover with a DNS
+    TTL that bounds how fast you can drain a dead region, and the split-brain risk of two regions both
+    thinking they're primary (L10/11). Trade: proximity & availability vs routing staleness & complexity.
+51. Chaos engineering & fault injection — deliberately breaking things (kill a node, add latency, drop a
+    region, partition the network) to VERIFY the failure designs actually hold (L07 timeouts/breakers, L34
+    health checks, L36 cells, L46 failover); blast-radius control, steady-state hypotheses, and running it in
+    production safely. Trade: confidence in resilience vs the risk of the experiment itself.
 
 ## Lesson format conventions
 - Four reusable "moves" framing introduced in Lesson 01: estimate → model →

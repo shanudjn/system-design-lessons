@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 46 — Distributed Job Scheduling: A Million Cron Jobs, Each Firing Once, On Time</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 46 · Worked Example</div>
+  <h1>Distributed Job Scheduling: A Million Cron Jobs, Each Firing Once, On Time</h1>
+  <p class="lead">Lesson 45 delivered events the instant they happened. This lesson delivers them <b>on a clock</b> — not "when the order ships" but "at 3:00 AM," "every hour on the hour," "on the 1st of the month." A <b>scheduled job</b> is a unit of work bound to a <i>time</i>: a subscription renewal (Lesson 25's billing), a nightly report, a five-minute health sweep, a "your trial ends tomorrow" reminder. Running one on a single machine is the humble <code>cron</code> line every developer knows. Running <b>a million</b> of them across a fleet — so that each one fires <b>exactly once</b>, at the <b>right time</b>, even when a machine dies mid-tick, even when the whole cluster was down at midnight — is a different animal, and it breaks on two words that sound like the same word but aren't: <b>once</b> and <b>on&nbsp;time</b>. We'll <b>estimate</b> why one scheduler box is both a bottleneck and a single point of failure, and why the innocent convention "run it at midnight" detonates into an <b>~8,600&times;</b> load spike. We'll <b>model</b> the split every real scheduler builds — a <b>dispatcher</b> that decides <i>what is due</i> and a <b>worker fleet</b> that <i>runs it</i> (Lessons 5/9) — plus the <b>lease</b> and <b>atomic claim</b> that stop two nodes double-firing the same job (Lessons 10/22), and the <b>idempotent job</b> that survives the double-fire no lease can fully prevent (Lesson 13). We'll <b>trace</b> a clean fire, the double-fire race, and the crash-then-recover that resurrects missed jobs. And we'll hit the wall that defines the design: the <b>midnight thundering herd</b>, plus <b>clock skew</b> (Lesson 35) that makes "the right time" a thing no two machines agree on. The trade underneath: <b>timeliness vs exactly-once execution.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0046-distributed-job-scheduling.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>Our platform is the same e-commerce/SaaS backend from Lessons 12/24/25/33/45. Customers and internal teams register jobs that must run on a schedule: renew a subscription, email a trial-ending notice, roll up yesterday's metrics (Lesson 44), sweep stale carts, retry a failed payout. Concretely: <b>1,000,000 registered jobs</b>. Each has a <b>schedule</b> — a cron expression (<code>0 3 * * *</code> = 3 AM daily) or a one-shot "fire at time <code>T</code>." Across all of them they fire, on average, <b>~2,000,000 times/day</b> → <code>2,000,000 &divide; 86,400 s &asymp; <b>23 fires/second</b></code> on average. Two properties define everything, and they pull in opposite directions. <b>Once:</b> a job that renews a subscription must fire <i>exactly once</i> — fire it twice and you double-charge a customer (Lesson 25), fire it zero times and their service lapses. <b>On time:</b> "3 AM" means 3 AM, not 3:04 when a slow box finally gets to it. A single <code>cron</code> daemon on one server gives you neither at scale. We'll build the system that gives you both — and see exactly where they fight.</p>
+
+<div class="diagram"><pre>
+  ONE SCHEDULER:  1,000,000 jobs  ->  ~23 fires/s average, but SPIKY.
+
+  [ jobs table ]  id | schedule | next_fire_time | status | owner | lease_until
+       |          (indexed on next_fire_time, L12 -- so "what's due?" is a
+       |           tiny range read, not a 1,000,000-row scan every second)
+       v
+  +----------------------------------------------------------------------+
+  |  DISPATCHER (sharded by hash(job_id), each shard has ONE live owner)  |
+  |    every TICK (~1 s):  find jobs with next_fire_time <= now           |
+  |      -> ATOMIC CLAIM each (lease it, L22) so no peer also fires it     |
+  |      -> ENQUEUE a run job {job_id, scheduled_time} (durable, L05/09)   |
+  |      -> compute + store the NEXT next_fire_time (reschedule)          |
+  +----------------------------------------------------------------------+
+       |  (dispatcher NEVER runs the job inline -- a slow job must not
+       v   block the tick; it only decides + hands off)
+  [ run queue ] --> [ WORKERS ] --run the job (idempotent, keyed on
+                                   (job_id, scheduled_time), L13)--> effect
+                                   ack -> mark that fire DONE
+
+  Two words fight:  ONCE  (lease + atomic claim + idempotent job)
+                    ON TIME (tick fast, shard for throughput, but the
+                             midnight herd + clock skew cap precision)
+</pre></div>
+
+<p class="note"><span class="key">A scheduled job is a unit of work bound to a time; a scheduler's job is to fire each one once, at (or near) that time, across a fleet where any single machine may die.</span> Two words we'll lean on: the <b>tick</b> is the dispatcher's heartbeat — it wakes every second or so and asks "what's due now?"; <code>next_fire_time</code> is the stored timestamp of a job's next scheduled run, which the dispatcher advances every time it fires (a daily job's <code>next_fire_time</code> jumps 24 h forward). Firing a job means <i>enqueuing</i> it, not running it.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Scheduled job / cron</b> — a unit of work bound to a schedule (a cron expression or a one-shot time), to be run when that time arrives.</li>
+  <li><b>Tick</b> — the dispatcher's periodic wake-up (here ~1 s) where it looks for due jobs.</li>
+  <li><b>Dispatcher (scheduler)</b> — the component that decides <i>what is due</i> and enqueues it; it does not execute the work.</li>
+  <li><b>Worker</b> — a process that pulls a run job off the queue and actually executes it (Lessons 5/9).</li>
+  <li><b>Lease</b> — a time-boxed claim on a job (or a shard of jobs), auto-renewed by heartbeat, so a dead owner's claim expires and another node can take over (Lesson 22).</li>
+  <li><b>Atomic claim</b> — a compare-and-set that lets exactly one node mark a due job as "mine" (Lesson 6), so two dispatchers racing the same job don't both fire it.</li>
+  <li><b>Fencing token</b> — a monotonically increasing number attached to a claim, so a resource can reject a write from a stale (paused) owner whose lease already expired (Lessons 10/22).</li>
+  <li><b>Idempotent job</b> — a job whose second execution has no additional effect, keyed on <code>(job_id, scheduled_time)</code>, so an unavoidable double-fire is harmless (Lesson 13).</li>
+  <li><b>Missed-fire catch-up</b> — the policy for what to do with a job whose scheduled time passed while the cluster was down: <b>coalesce</b> (fire once) or <b>backfill</b> (fire each missed occurrence).</li>
+  <li><b>Schedule jitter</b> — spreading jobs that would all fire at the same instant across a small window, to break the thundering herd (Lessons 7/26/45).</li>
+</ul>
+
+<h2>Move 1 — Estimate: why one <code>cron</code> box gives you neither "once" nor "on time"</h2>
+<p>The naive design is the one on every laptop: a single machine runs a <code>cron</code> daemon that wakes each second, checks which jobs are due, and runs them. Let's price why that box fails at a million jobs — on availability first, then on throughput, then on the spike that dwarfs both.</p>
+
+<div class="card calc">
+  <p><b>One box is a single point of failure (Lesson 7).</b> If the scheduler machine is down from 23:59 to 00:11 — a deploy, a kernel panic, a bad disk — then <i>every</i> job scheduled for midnight simply never fires. There is no retry, because the thing that would issue the retry is the thing that's down. A missed webhook (Lesson 45) is a late delivery; a missed <i>schedule</i> is a fire that never happened — a subscription not renewed, a report not generated, and nobody notices until a customer does.</p>
+  <p><b>One box is a throughput ceiling.</b> Suppose <b>200,000</b> of our million jobs are "daily," and — by the oldest convention in cron — their authors all wrote <code>0 0 * * *</code>, i.e. <b>midnight</b>. So 200,000 jobs come due in the <i>same one-second tick</i>. Even if claiming and enqueuing one job costs a lean <b>0.5 ms</b> of dispatcher work, firing them serially on one core takes <code>200,000 &times; 0.5 ms = <b>100 seconds</b></code>. The jobs meant for 00:00:00 are still being dispatched at 00:01:40 — <span class="key">"on time" is already broken by two minutes, on the happy path, with no failure at all.</span></p>
+  <p><b>And the spike dwarfs the average by ~8,600&times;.</b> The fleet averages ~23 fires/s, but that one midnight tick wants <code>200,000 &divide; 23 &asymp; <b>8,600&times;</b></code> the average rate in a single second — and then hands all 200,000 runs to the workers at once, who slam the billing DB, the email service, and every downstream in lockstep. This is Lesson 2's thundering herd and Lesson 7's load spike, born not from real traffic but from <i>humans rounding to a nice number.</i></p>
+  <p><b>The fix is the course's oldest reflex, twice.</b> For availability and throughput: <b>don't run one scheduler</b> — shard the schedule across N dispatchers and make each shard failover-able (Lessons 3/4/10). For the herd: <b>don't run the job inline</b> — the dispatcher only decides and enqueues; a separate worker fleet absorbs the burst behind a durable queue (Lessons 5/9/28).</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — a simple single scheduler vs a distributed one.</b> One <code>cron</code> box is trivially correct about "once" (there's only one thing firing, so nothing can double-fire) and trivially wrong about availability and throughput. The moment you add a second machine for availability and throughput, you have <i>reintroduced</i> the double-fire problem — now two machines can both think a job is due. <span class="key">Distributing the scheduler is what buys "on time" at scale, and it is exactly what puts "exactly once" at risk. The rest of this lesson is spent buying "once" back.</span></p>
+
+<h2>Move 2 — Model: a sharded dispatcher, a lease that stops the double-fire, and a job that survives it anyway</h2>
+<p>Split the work, then make firing safe across machines.</p>
+
+<h3>Dispatcher and worker are different jobs — keep them apart (Lessons 5/9)</h3>
+<p>The dispatcher's tick must be fast and predictable: wake, find due jobs, claim them, enqueue them, advance their <code>next_fire_time</code>, sleep. If the dispatcher <i>ran</i> the jobs, a single slow job (a 40-second report) would stall the tick, and every other job scheduled for that second would fire late — one slow job poisoning the clock for all (Lesson 9's head-of-line blocking, Lesson 45's inline-delivery trap in a new costume). So the dispatcher only ever <b>enqueues</b> a small run job <code>{job_id, scheduled_time}</code> onto a durable queue; the <b>worker fleet</b> pulls and executes, scaling independently and soaking up the midnight burst (Lessons 27/28). The dispatcher owns <i>time</i>; the workers own <i>work</i>.</p>
+
+<h3>Shard the schedule so N dispatchers fire in parallel (Lessons 3/4)</h3>
+<p>Partition the jobs by <code>hash(job_id)</code> into, say, <b>16 shards</b>, each owned by one live dispatcher. Now the midnight batch splits: <code>200,000 &divide; 16 = 12,500</code> jobs per shard, <code>12,500 &times; 0.5 ms = 6.25 s</code> to dispatch instead of 100 s — a 16&times; cut, and if one dispatcher dies only its <i>shard</i> stalls, not the whole schedule. Each shard is owned via a <b>lease</b> (Lesson 22): the owner heartbeats to renew it; if it dies, the lease expires and a standby claims the shard (Lesson 10's failover, applied to a slice of the schedule). <span class="key">Consistent hashing (Lesson 4) means adding or removing a dispatcher reshuffles only ~1/N of shards, not all of them.</span></p>
+
+<h3>The atomic claim — the one line that stops the double-fire (Lessons 6/22)</h3>
+<p>Even sharded, two dispatchers can briefly overlap on a shard (a lease handoff, a network hiccup, a slow-clock standby that thinks the owner is dead). If both tick and both see job <code>job_42</code> due, both must <i>not</i> fire it. The fix is a <b>compare-and-set</b> (Lesson 6) that only one can win:</p>
+<div class="card calc">
+  <p><b>Worked claim.</b> Instead of "read due jobs, then fire them" (a check-then-act race, Lesson 13), the dispatcher <i>conditionally</i> claims each due job in one atomic step:</p>
+  <p style="margin:.3rem 0"><code>UPDATE jobs SET owner='disp-7', lease_until = now()+30s, epoch = epoch+1<br>&nbsp;WHERE id='job_42' AND next_fire_time &lt;= now() AND (owner IS NULL OR lease_until &lt; now())</code></p>
+  <p>The database applies this to the row atomically, so of two dispatchers racing it, <b>exactly one</b> gets <code>rows_affected = 1</code> (it fires) and the other gets <code>0</code> (it moves on). This is Lesson 22's lease as a single conditional write: the <code>lease_until</code> makes a crashed owner's claim expire so the job isn't stuck forever, and the <code>epoch</code> that ticks up on each claim is a <b>fencing token</b> (Lessons 10/22) — carried through to the run job so a downstream resource can reject a write from a stale owner.</p>
+  <p style="color:var(--muted); margin:.4rem 0 0">Why not "just elect one global leader to fire everything"? A single leader (Lesson 10) removes the race but re-creates the throughput ceiling and the failover gap of the one <code>cron</code> box. Sharded leases give you one owner <i>per shard</i> — the concurrency of many boxes with the single-owner safety of one, per slice.</p>
+</div>
+
+<h3>The job must be idempotent, because no lease makes double-fire impossible (Lesson 13)</h3>
+<p>Here is the hard truth the lease can't escape, and it's Lesson 22 verbatim. Dispatcher <code>disp-7</code> claims <code>job_42</code> with a 30-second lease, enqueues the run, and then <b>stops-the-world for a 40-second GC pause</b> (Lesson 22). At <code>t+30s</code> its lease expires; a standby legitimately reclaims <code>job_42</code> and enqueues it <i>again</i>. Two run jobs now exist for the same fire. A finite lease is a <b>liveness</b> knob (it bounds how long a dead owner blocks a job), <i>never</i> a safety guarantee — a paused-but-alive owner can always overrun it. So the fire is at-least-once, and the only real defense is to make the <b>job itself idempotent</b> (Lesson 13): key every execution on <code>(job_id, scheduled_time)</code>, record that key when the effect commits, and make a repeat a no-op. "Charge subscription 88 for the 2026-08-02 cycle" run twice charges once. <span class="key">Exactly-once <i>scheduling attempts</i> is impossible across a fleet; exactly-once <i>effect</i> is achievable — and it lives in the job, not the scheduler.</span> This is precisely Lesson 45's lesson (at-least-once on the wire, idempotency at the destination) pointed at the clock.</p>
+
+<p class="note why"><b>Name the trade-off — lease length: false double-fire vs slow failover.</b> A short lease detects a dead dispatcher fast (jobs recover quickly) but a live-but-slow owner overruns it more easily → more double-fires the idempotency layer must absorb, and more leadership flap (Lesson 10). A long lease rarely false-expires but leaves a genuinely dead owner's jobs frozen longer. You can't tune the double-fire to zero (the GC pause always wins), so you tune the lease for <i>liveness</i> and put <i>correctness</i> in idempotent jobs — the same division of labor as Lesson 22's fencing.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>One clean fire, one double-fire race, and the crash-then-recover that resurrects missed jobs.</p>
+
+<h3>Path A — a clean fire</h3>
+<div class="diagram"><pre>
+  Job:  job_42  "renew subscription 88"  schedule 0 3 * * *  next_fire=03:00:00
+
+   1. TICK at 03:00:00 on the shard that owns job_42. Range-read the index:
+        WHERE next_fire_time <= now()   -> job_42 is in the due slice (L12).
+   2. ATOMIC CLAIM (the UPDATE above): rows_affected=1 -> this dispatcher owns
+        the fire. epoch bumped to 57 (the fencing token).
+   3. ENQUEUE run job { job_id: job_42, scheduled_time: 03:00:00, epoch: 57 }.
+        The dispatcher is now DONE with job_42 -- microseconds.
+   4. RESCHEDULE: next_fire_time = tomorrow 03:00:00, status=scheduled.
+   5. A worker pulls the run job. Idempotency check: has (job_42, 03:00:00)
+        committed? No -> charge subscription 88 (L25), record the key in the
+        SAME transaction as the charge (L13/33), ack. Fire DONE, exactly once.
+</pre></div>
+
+<h3>Path B — two dispatchers race the same job</h3>
+<div class="diagram"><pre>
+  A lease handoff leaves disp-7 and disp-9 both briefly owning the shard.
+  Both tick at 03:00:00 and both see job_42 due.
+
+   disp-7:  UPDATE ... WHERE id=job_42 AND lease_until<now  -> rows_affected=1  (WINS, fires)
+   disp-9:  UPDATE ... WHERE id=job_42 AND lease_until<now  -> rows_affected=0  (LOSES, skips)
+
+   The row can only be claimed once; the compare-and-set (L06) serializes the
+   two writers at the database, so only ONE run job is enqueued. No double-fire.
+
+   Compare to the GC-pause case (Path B'):
+   disp-7 claims (lease 30s), enqueues, then PAUSES 40s. At t+30 lease expires,
+   disp-9 reclaims + enqueues a SECOND run. Now two runs exist -> the WORKER's
+   idempotency key (job_42, 03:00:00) makes the second a no-op (L13/22). The
+   lease bounds liveness; the idempotent job guarantees the effect. Both needed.
+</pre></div>
+
+<h3>Path C — the cluster was down at midnight (missed-fire catch-up)</h3>
+<div class="diagram"><pre>
+  Whole scheduler cluster down 00:00 -> 00:11. At 00:11 it comes back and ticks.
+  200,000 jobs now have next_fire_time in the PAST (they were due at 00:00).
+
+  The tick sees them ALL as due at once. What should firing "10 minutes late"
+  even mean?  It depends on the JOB -- two policies, chosen per job:
+
+   COALESCE (fire once):   "send the daily digest email"
+       -> firing 1 digest is right; firing "the one we missed" = fire once now
+          (or skip to the next future slot). Do NOT send yesterday's + today's.
+
+   BACKFILL (fire each):   "aggregate usage for hourly billing" (L25/44)
+       -> each missed hour is a distinct period that MUST run, or a billing
+          window is silently skipped = lost revenue. Fire every missed occurrence.
+
+  Trap: 200,000 coalesced/backfilled jobs all firing at 00:11 = the midnight
+  herd, again, on recovery (L07 metastable). So catch-up is rate-limited + jittered
+  (L08/07), and idempotent (L13) so a retry of the catch-up itself is harmless.
+</pre></div>
+<p>Path A is the 99.99% we design <i>around</i>; Path B is the concurrency safety (atomic claim + idempotent job) that earns the word "once"; Path C is the one people forget until an outage — a scheduler that can't answer "what about the fires I missed while I was down?" silently loses work, and whether the right answer is "fire once" or "fire each" is a <i>property of the job</i>, not a global switch. Every piece works <i>as long as the fires that all pile onto the same instant don't crush the system.</i> That "as long as" is the wall.</p>
+
+<h2>Move 4 — Find the first bottleneck: the midnight herd, and the clock nobody agrees on</h2>
+<p>We sharded for throughput and leased for safety. But the load isn't spread over time — it's spiked onto the round numbers humans choose, and the "time" every node compares against isn't the same time.</p>
+
+<div class="card calc">
+  <p><b>The herd, quantified.</b> 200,000 jobs at <code>0 0 * * *</code> land in one tick. Sharding to 16 dispatchers cuts <i>dispatch</i> time to ~6.25 s, but all 200,000 <i>runs</i> still hit the workers and their downstreams (billing DB, email, Lesson 25's ledger) in a few seconds — <code>8,600&times;</code> the average rate, straight into Lesson 27's utilization knee and Lesson 7's retry storm. Adding dispatchers doesn't help: the spike is in the <i>schedule</i>, not the scheduler.</p>
+  <p><b>The fix is jitter — spread the fire times (Lessons 7/26/45).</b> Treat "midnight" as "somewhere in the first minute after midnight": assign each of the 200,000 jobs a deterministic offset (e.g. <code>hash(job_id) mod 60 s</code>). Now they fire at <code>200,000 &divide; 60 &asymp; <b>3,333/s</b></code> — a smooth, sustainable rate instead of an 8,600&times; wall. For jobs that don't truly need second-precision (a nightly report doesn't care if it starts at 00:00:07), this is free. The queue (Lesson 28) then absorbs whatever burst remains, and the workers autoscale into it (Lesson 27).</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — timeliness precision vs smooth load.</b> Firing exactly at 00:00:00.000 is what caused the herd; spreading the same jobs over 60 seconds smooths the load but means a given job fires up to a minute "late." Almost no scheduled job actually needs sub-minute precision — but the few that do (a market-open trade, a coordinated cutover) can't be jittered, so those you must provision for the spike, not spread it away. <span class="key">The default is jitter; precision is the exception you pay real capacity for.</span></p>
+
+<h3>The other wall: clock skew — whose "now" is now? (Lesson 35)</h3>
+<p>Every claim asks <code>next_fire_time &lt;= now()</code> — but <b>now</b> is measured by a wall clock, and no two machines' wall clocks agree (Lesson 35). If <code>disp-7</code>'s clock runs 500 ms ahead, it fires jobs 500 ms early; a standby whose clock lags may think the owner's lease hasn't expired when it has, delaying failover. Two disciplines keep skew from corrupting "once" and "on time":</p>
+<div class="card">
+  <p style="margin:.2rem 0">• <b>Compare against one clock, not each node's own (Lesson 35).</b> Condition the claim on the <i>datastore's</i> <code>now()</code>, or a coordination service's time — so all dispatchers evaluate "is it due?" and "is the lease expired?" against a <i>single</i> authority, not their private wall clocks. This is Lesson 35's "don't sort by local wall-clock time" applied to firing.</p>
+  <p style="margin:.2rem 0">• <b>Don't promise precision finer than your skew.</b> NTP pins clocks to roughly a few milliseconds to tens of ms (Lesson 35); a 1-second tick already can't distinguish sub-second times honestly. So set the tick granularity and your SLA at or above the skew bound — promising "fires within ~1 s of schedule" is truthful; promising "fires at exactly <code>T</code>" across a fleet is a lie the physics won't keep.</p>
+  <p style="margin:.2rem 0">• <b>Leases must expire on real elapsed time, not logical order.</b> A fencing token (Lesson 22) orders <i>claims</i> without a clock, but the lease timeout itself is a physical duration — so it needs a real, if approximate, clock. Logical clocks order events; they don't tell you when 30 seconds have passed (Lesson 35's closing caution).</p>
+</div>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — one scheduler, or running jobs inline in the tick.</b> A single <code>cron</code> box is a SPOF (a midnight outage silently drops every midnight job) and a throughput ceiling (200k serial fires = 100 s late); running the job <i>inside</i> the tick lets one slow job stall the clock for all. Shard the dispatcher for availability + throughput (Lessons 3/4/10), and hand work to a separate queue + worker fleet (Lessons 5/9).</li>
+  <li><b>Trap 2 — assuming a lease gives exactly-once firing.</b> A GC pause or a network partition always lets a paused owner overrun its lease, so two nodes can fire the same job; a lease is a liveness bound, not a safety guarantee. Make the <i>job</i> idempotent, keyed on <code>(job_id, scheduled_time)</code>, so the unavoidable double-fire is a no-op (Lessons 13/22), and carry a fencing token for resources that need it.</li>
+  <li><b>Trap 3 — no missed-fire policy.</b> After an outage, jobs whose time passed are either silently dropped (work lost) or all replayed at once (herd on recovery). Decide <i>per job</i> whether to <b>coalesce</b> (one digest, not ten) or <b>backfill</b> (every missed billing hour), and rate-limit + jitter the catch-up so recovery isn't a second stampede (Lessons 7/8).</li>
+  <li><b>Trap 4 — the midnight herd and trusting local clocks.</b> Humans round schedules to <code>0 0</code>, concentrating a day's fires into one instant (~8,600&times; the average); and each node's wall clock disagrees on when that instant is. Jitter fire times over a window (Lessons 7/26), and evaluate due-ness and lease expiry against one authoritative clock, never each node's own (Lesson 35).</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>A distributed scheduler firing <b>1,000,000 jobs</b> (~23 fires/s average, wildly spiky) so each runs <b>once</b>, <b>on time</b>, across a fleet where any node may die. <b>Estimate</b> killed the single <code>cron</code> box three ways: it's a SPOF (a midnight outage drops every midnight job with no retry, because the retrier is what's down), a throughput ceiling (<code>200,000 &times; 0.5 ms = 100 s</code> to dispatch the midnight batch serially → two minutes late on the happy path), and the herd — 200,000 jobs written <code>0 0 * * *</code> come due in one tick, <code>8,600&times;</code> the average rate — so <b>shard the dispatcher</b> for availability and throughput (Lessons 3/4/10) and <b>hand work to a queue + worker fleet</b> so the tick never runs a job inline (Lessons 5/9/28). <b>Model</b> gave firing safety across machines: a dispatcher that only decides-and-enqueues, sharded by <code>hash(job_id)</code> with a per-shard <b>lease</b> for failover (Lesson 22), an <b>atomic claim</b> (compare-and-set, Lesson 6) so two racing dispatchers enqueue one run not two, and — because a GC pause always lets a paused owner overrun its 30 s lease — an <b>idempotent job</b> keyed on <code>(job_id, scheduled_time)</code> that makes the unavoidable double-fire a no-op (Lessons 13/22): the lease bounds <i>liveness</i>, the idempotent job guarantees the <i>effect</i>. <b>Tracing</b> showed the clean one-fire path, the double-fire race (the DB serializes the claim → one run) versus the GC-pause double-fire (two runs → idempotency saves it), and the crash-then-recover where 200,000 overdue jobs force a per-job choice between <b>coalesce</b> (fire once) and <b>backfill</b> (fire each missed occurrence). The <b>first bottleneck</b> is the herd the schedule itself creates — fixed by <b>jitter</b> (spread 200,000 midnight fires over 60 s → <code>~3,333/s</code> instead of an 8,600&times; wall, Lessons 7/26) — and the <b>clock skew</b> that makes "now" disagree across nodes, fixed by comparing due-ness and lease expiry against <i>one</i> authoritative clock and refusing to promise precision finer than the skew (Lesson 35). The real lesson: <span class="key">binding work to a clock across a fleet splits into two words that fight — "on time" forces you to distribute (which reintroduces the double-fire), and "once" forces you to lease and to make the job idempotent (because no lease survives a pause). You can't have exactly-once <i>attempts</i>; you engineer exactly-once <i>effect</i>, spread the herd the calendar creates, and tell the truth about a precision the clocks can't keep. The standing tension: timeliness vs exactly-once execution.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next we go under the database that has quietly held every job, ledger, and index — how it actually stores writes:</b></p>
+  <p style="margin:.2rem 0">• <b>Storage engines — LSM-trees vs B-trees:</b> Lesson 12 gave us the B-tree that makes reads fast; but our write-heavy systems (the ledger of Lesson 25, the event log of Lesson 38, the metrics of Lesson 44) pay a hidden tax on every update. Why a B-tree does a random write per change, why a <b>log-structured merge-tree</b> turns writes into fast sequential appends + background <b>compaction</b>, the <b>read/write/space amplification</b> triangle you're always trading around, and the per-table <b>Bloom filter</b> (Lesson 21) that keeps LSM reads cheap. The trade shifts to <b>write throughput vs read amplification &amp; space.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">scheduled job / cron</span>
+    <span class="pill">tick</span>
+    <span class="pill">dispatcher</span>
+    <span class="pill">worker</span>
+    <span class="pill">next_fire_time</span>
+    <span class="pill">lease</span>
+    <span class="pill">atomic claim (compare-and-set)</span>
+    <span class="pill">fencing token</span>
+    <span class="pill">idempotent job</span>
+    <span class="pill">exactly-once effect</span>
+    <span class="pill">missed-fire catch-up</span>
+    <span class="pill">coalesce vs backfill</span>
+    <span class="pill">sharded schedule</span>
+    <span class="pill">schedule jitter</span>
+    <span class="pill">thundering herd</span>
+    <span class="pill">clock skew</span>
+  </p>
+  <p>That's Lesson 46, built on Lesson 3/4's sharding + consistent hashing (splitting the schedule across dispatchers), Lesson 5/9's producer→queue→workers decoupling (the dispatcher never runs a job inline), Lesson 6's compare-and-set (the atomic claim that stops the double-fire), Lesson 7's SPOF / thundering herd / backoff+jitter (why not one box, why jitter the herd), Lesson 8's rate limiting (throttling catch-up), Lesson 10's leader election + failover (per-shard ownership), Lesson 13's idempotency key + exactly-once effect (the job that survives a double-fire), Lesson 22's lease + fencing token + the GC-pause hazard (liveness vs safety), Lesson 27/28's autoscaling + bounded queue (absorbing the burst), and Lesson 35's clock skew + physical-vs-logical time (whose "now" is now). <b>Ask me follow-ups</b> — e.g. "how do systems like Quartz, Airflow, or Kubernetes CronJobs actually implement leader election and catch-up?", "how do I let a job declare its own coalesce-vs-backfill policy?", "how do fencing tokens flow from the dispatcher all the way to the billing resource?", "what's the right tick granularity if my clocks are only NTP-synced?", or "how would I schedule a one-shot 'fire at exactly this future timestamp' job among a billion of them?" When you're ready, say <b>next</b> and we'll go deeper on <i>Storage engines: LSM-trees vs B-trees — write throughput vs read amplification &amp; space.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your team runs one cron daemon on a single beefy server for all 1,000,000 scheduled jobs. It's been fine for months. What are the two distinct ways this single box fails at scale, and what's the fix — before you worry about anything else?",
+    options: [
+      {t:"It's a single point of failure AND a throughput ceiling. If the box is down at midnight, every job scheduled for midnight silently never fires (there's no retrier — it's the thing that's down); and even when healthy, 200,000 jobs coming due in the same tick fire serially (200,000 × 0.5 ms ≈ 100 s), so they're minutes late on the happy path. Fix both by distributing: shard the schedule across N dispatchers (each shard failover-able), and hand the actual work to a durable queue + separate worker fleet so the tick only decides and enqueues.",
+       ok:true,
+       fb:"Right. One box conflates two independent failures — availability (a dead scheduler drops fires with no retry) and throughput/timeliness (serial dispatch of a big batch runs late). Sharding the dispatcher addresses both, and decoupling execution onto workers keeps a slow job from stalling the tick (Lessons 3/4/5/9/10). Distributing is also what reintroduces the double-fire problem — which is the rest of the design."},
+      {t:"The only real risk is running out of disk for the jobs table; move the table to a bigger volume and the single scheduler is fine indefinitely.",
+       ok:false,
+       fb:"Storage isn't the wall here — a million small job rows is tiny. The failures are availability (a midnight outage drops every midnight fire, unrecoverably) and timeliness/throughput (a 200,000-job batch dispatched serially runs ~100 s late). A bigger disk fixes neither; you need to distribute the scheduler and decouple execution."},
+      {t:"The box will be CPU-bound evaluating cron expressions, so caching the parsed schedules is the first fix; once parsing is cached, one machine handles a million jobs on time.",
+       ok:false,
+       fb:"Parsing is cheap and not the bottleneck. Caching it doesn't make one machine survive its own downtime (the SPOF), and it doesn't spread a 200,000-fire midnight batch across more than one core in time. The first fixes are distribution (for availability + throughput) and a queue+workers split (so the tick never runs work inline)."}
+    ]
+  },
+  {
+    stem: "You've sharded the dispatcher and added a per-shard lease so only one node owns a shard. A colleague says: 'Great — the lease means exactly one node fires each job, so we've got exactly-once and can skip making the jobs idempotent.' Why is that wrong?",
+    options: [
+      {t:"A lease is a liveness bound, not a safety guarantee. A dispatcher can claim a job with a 30 s lease, enqueue the run, then stop-the-world GC-pause for 40 s; its lease expires, a standby legitimately reclaims and enqueues the job a SECOND time. No finite lease survives an unbounded pause, so double-fire is always possible — the only real defense is an idempotent job keyed on (job_id, scheduled_time), so the second execution is a no-op. Exactly-once ATTEMPTS is impossible; exactly-once EFFECT lives in the job.",
+       ok:true,
+       fb:"Exactly — this is Lesson 22's fencing hazard on the clock. The lease bounds how long a dead owner blocks a job (liveness); it cannot stop a paused-but-alive owner from overrunning it. Correctness has to live in an idempotent job (Lesson 13), with a fencing token for resources that need to reject a stale writer. The scheduler gets you at-least-once; the job gets you exactly-once effect."},
+      {t:"It's wrong because the lease refreshes too slowly; if you renew the lease every 100 ms instead of by heartbeat, a paused node's lease never expires and no second node ever fires — then you truly don't need idempotency.",
+       ok:false,
+       fb:"Faster renewal doesn't help: if the node is PAUSED (GC, or a network partition cutting it off), it isn't renewing at all, and you WANT its lease to expire so another node can take over — that's the whole point of a lease. The takeover is exactly what creates the double-fire. You can't renew your way out of a pause; you need idempotent jobs."},
+      {t:"The lease does give exactly-once firing; the colleague is right, and idempotency is only needed for jobs triggered by webhooks, not by a scheduler.",
+       ok:false,
+       fb:"No — the same at-least-once reality that governs webhooks (Lesson 45) governs scheduler fires: a paused owner overrunning its lease, or a reclaim after a crash-before-reschedule, both produce a second fire. A scheduler that skips idempotency will double-charge a subscription the first time a dispatcher hits a long GC pause. The job must be idempotent regardless of what triggers it."}
+    ]
+  },
+  {
+    stem: "Your whole scheduler cluster was down from 00:00 to 00:11. It recovers and ticks: 200,000 jobs now have a next_fire_time in the past. Two of them are 'send the daily digest email' and 'aggregate usage for the 00:00 billing hour.' How should each be handled, and what must you watch on recovery?",
+    options: [
+      {t:"It's a per-job policy: the daily digest should COALESCE (fire once now, or skip to the next slot — don't send two digests for the missed and current runs), while the hourly billing aggregation should BACKFILL (each missed hour is a distinct period that must run, or a billing window is silently skipped = lost revenue). And because 200,000 overdue jobs firing at 00:11 is the midnight herd again, rate-limit and jitter the catch-up, and keep the jobs idempotent so re-running the catch-up is harmless.",
+       ok:true,
+       fb:"Right. 'What does firing late mean?' has no global answer — it depends on whether the job is a state refresh (coalesce) or a per-period obligation (backfill). And a naive replay of every overdue job at once re-creates the thundering herd on recovery (Lesson 7 metastable), so throttle + jitter it (Lessons 7/8) and lean on idempotency (Lesson 13)."},
+      {t:"Both should backfill every missed occurrence — firing all missed runs for every job guarantees no work is lost, which is always the safe default.",
+       ok:false,
+       fb:"Backfilling the daily digest would send multiple digest emails for one skipped day — annoying and wrong. 'Fire each missed occurrence' is right for per-period obligations (billing) but wrong for state-refresh jobs (a digest, a cache warm), where the missed and current runs are the same intent → coalesce. There's no universally safe default; it's a property of the job."},
+      {t:"Both should be dropped — they're in the past, and firing a job after its scheduled time violates 'on time,' so the correct behavior is to skip them and resume from the next future occurrence.",
+       ok:false,
+       fb:"Silently dropping overdue jobs loses real work: the 00:00 billing hour would never be aggregated, and revenue for that window vanishes. Some jobs genuinely must run late (backfill); others should coalesce to one; almost none should be silently dropped. A scheduler with no missed-fire policy quietly loses fires after every outage."}
+    ]
+  },
+  {
+    stem: "Your dashboards show a brutal one-second spike every day at 00:00:00 — 200,000 jobs fire at once, ~8,600× the average rate, hammering the billing DB and email service into timeouts. You've already sharded the dispatcher across 16 nodes and it didn't help the spike. Why not, and what actually fixes it?",
+    options: [
+      {t:"Sharding the dispatcher parallelizes DECIDING what's due, but the spike is in the SCHEDULE itself — 200,000 jobs written '0 0 * * *' are genuinely due at the same instant, so no number of dispatchers changes when they fire. The fix is to spread the fire times: give each job a deterministic offset (e.g. hash(job_id) mod 60 s) so the 200,000 fire at ~3,333/s over a minute instead of all at once. Almost no nightly job needs sub-minute precision, and the queue + autoscaling workers absorb the rest.",
+       ok:true,
+       fb:"Exactly. The herd lives in the calendar, not the scheduler — humans rounding to '0 0' concentrates a day's fires into one second. Jitter (Lessons 7/26/45) spreads the same work across a window at the cost of a little timeliness precision, which nightly jobs don't need. The few jobs that DO need exact timing you provision for the spike rather than spread away."},
+      {t:"Sharding didn't help because 16 shards isn't enough; scale to 512 dispatchers and each handles ~390 of the midnight jobs, eliminating the spike at the source.",
+       ok:false,
+       fb:"More dispatchers dispatch the batch faster, but they still fire all 200,000 jobs at 00:00:00 and dump all 200,000 runs onto the same downstreams in the same second — the billing DB and email service still see 8,600× load. You can't out-shard a spike that's in the schedule; you have to spread the fire times (jitter), not add more firers."},
+      {t:"Sharding didn't help because the jobs table index is too slow; add a covering index on next_fire_time and the 00:00 batch will dispatch without spiking downstream.",
+       ok:false,
+       fb:"A faster index makes finding the due jobs quicker, but it doesn't change that 200,000 jobs are due at once and will be enqueued and run against downstreams simultaneously. The bottleneck is the concentration of fire times, not the read that finds them. Jitter the schedule so the fires — and their downstream load — spread over a window."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
