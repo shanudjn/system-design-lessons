@@ -795,11 +795,31 @@
     skew/physical-vs-logical time. Trade: timeliness vs exactly-once execution. (Lesson 0046)
 
 ### Advanced topics (next batch — queued so the course never runs dry)
-47. Storage engines: LSM-trees vs B-trees — L12 gave the B-tree for fast reads, but write-heavy systems
-    (L25 ledger, L38 event log, L44 metrics) pay a random-write-per-change tax; a log-structured merge-tree
-    turns writes into sequential appends + background compaction (L20/39), the read/write/space amplification
-    triangle, and a per-SSTable Bloom filter (L21) to keep reads cheap. Trade: write throughput vs read
-    amplification & space.
+47. ✅ **Storage engines: LSM-trees vs B-trees** — Lesson 44's metrics firehose (1,000,000 writes/s × 16 B
+    = only 16 MB/s of DATA, but randomly interleaved keys) killed the B-tree: sorted-in-place means each 16 B
+    insert is a read-modify-write of a whole 8 KB page (8,192÷16 = **512×** write amp), scattered keys defeat
+    page-batching → needs 16 MB/s × 512 = 8 GB/s ≈ **16×** the disk's sequential bandwidth (or ~1M random
+    writes/s vs a disk's few-hundred-to-tens-of-thousands IOPS = 20–10,000× short); no same-class disk closes
+    it. NAMED trade sorted-in-place vs log-structured: "always sorted on disk" and "never random-write" can't
+    both hold. Fix = **LSM-tree** (RocksDB/Cassandra/LevelDB): append to sequential **WAL** + RAM **memtable**
+    (16 MB/s = 3.2% of disk), **flush** full memtable as one immutable sorted **SSTable** (64 MB fills every
+    4 s, flushes in 0.13 s), background **compaction** merge-sorts files down dropping shadowed values +
+    **tombstones**. The **amplification triangle** (can't min all three): write amp (~10–30× leveled, all
+    SEQUENTIAL vs B-tree's random 512×), read amp (probe memtable + many SSTables), space amp (dead versions/
+    tombstones until compacted); leveled (low read/space, high write) vs size-tiered (reverse). Trace: write
+    (WAL+memtable, ack, never a random page); point read (newest→oldest, would probe ~7 files → per-SSTable
+    **Bloom filter** L21 "definitely not here", 10 bits/key → 0.6185^10 ≈ **0.8%** FP → ~1 file, no false
+    negatives); range read (Bloom CAN'T help — it's point-membership, not range → merge overlapping SSTables,
+    the LSM's honest weakness, B-tree's home turf L12/18); delete = write a tombstone (space amp up until
+    compaction). First wall = compaction is a SECOND write workload on the same disk → sustainable ingest
+    ceiling = bandwidth ÷ write-amp ≈ 500 ÷ 20 = **25 MB/s** (not the WAL's 500); cross it → SSTables pile up
+    → read/space amp climb → **write stall / compaction debt** (L27 knee, L28 backpressure inside one DB).
+    NAMED trade foreground latency vs background work (one disk split between serve-now and clean-up).
+    Scoreboard: B-tree = read/range-heavy OLTP; LSM = write-heavy logs/metrics/ledgers/KV. Four traps: B-tree
+    default under write-heavy load; assuming LSM made writes free; Bloom for range scans; ignoring tombstones/
+    space amp. Reuses L02 buffer-the-expensive/herd, L12 B-tree/page/disk numbers, L15/20 delete-by-marker,
+    L21 Bloom filter, L25/38/44 write-heavy workloads, L27/28 knee+backpressure. Trade: write throughput vs
+    read amplification & space. (Lesson 0047)
 48. Distributed caching & invalidation at scale — many app servers share a cache tier (L02/L14); the hard
     part is coherence: write-through vs write-behind, invalidation fan-out, the stampede when a hot key is
     invalidated (L02 thundering herd), and TTL-vs-explicit-purge (L14). Trade: freshness vs cache hit rate

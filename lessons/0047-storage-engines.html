@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 47 — Storage Engines: LSM-Trees vs B-Trees, the Write Tax Under Every Database</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 47 · Worked Example</div>
+  <h1>Storage Engines: LSM-Trees vs B-Trees — the Write Tax Under Every Database</h1>
+  <p class="lead">For 46 lessons a "database" has been a black box we <i>put rows into</i> and <i>read rows out of</i>. Lesson 12 cracked it open just enough to explain fast reads: the <b>B-tree</b>, a fan-out-500 tree that finds any of 100M rows in ~3 disk hops. But every write-heavy system since then quietly paid a tax the B-tree never advertised — the <b>ledger</b> of Lesson 25 appending entries, the <b>event log</b> of Lesson 38 that only ever grows, the <b>metrics store</b> of Lesson 44 taking a million samples a second. A B-tree keeps its data in sorted order <i>on disk</i>, so inserting a key whose neighbors are scattered means a <b>random write</b> to a random spot — the one thing spinning and even solid-state disks do worst. This lesson opens the box the rest of the way and asks the question that decides which database you pick for a write-heavy workload: <b>how does the storage engine turn a stream of writes into bytes on disk?</b> We'll take Lesson 44's metrics ingest — <b>1,000,000 writes/second</b> — and <b>estimate</b> why a B-tree needs <b>~16&times; the disk's entire bandwidth</b> to keep up (and can't). We'll <b>model</b> the answer every write-optimized store reaches for — the <b>log-structured merge-tree (LSM-tree)</b>: buffer writes in RAM, dump them to disk in big <b>sequential</b> batches as immutable <b>SSTables</b>, and clean up later with background <b>compaction</b>. We'll <b>trace</b> a write, a point read, a range read, and a delete through both engines. And we'll hit the wall the LSM trades <i>into</i>: reads now have to look in many places (<b>read amplification</b>), old versions pile up (<b>space amplification</b>), and compaction competes with your writes for the same disk — capped by a per-file <b>Bloom filter</b> (Lesson 21) that keeps reads cheap. The trade underneath every storage engine: <b>write throughput vs read amplification &amp; space.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0047-storage-engines.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>We'll store the same firehose from Lesson 44: a fleet emits metrics at <b>1,000,000 data points per second</b>, and (following Lesson 44) each point on disk is a lean <b>16 bytes</b> — a timestamp and a value, with the label set stored once elsewhere. That is <code>1,000,000 &times; 16 B = 16,000,000 B/s = <b>16 MB/s</b></code> of actual user data — a trickle. The catch is not the <i>volume</i>; it's the <i>shape</i> of the writes. Each point belongs to a different series, and a million series interleave, so at the storage layer the <b>keys arrive in effectively random order</b>. A <b>storage engine</b> — the layer of a database that decides how records are laid out on disk and how they're found again — has exactly one hard job here: absorb a million randomly-keyed writes a second onto a disk that is fast at <b>sequential</b> access and slow at <b>random</b> access. We'll measure our disk with the two numbers from Lessons 12/29: it streams <b>~500 MB/s sequentially</b>, but a <i>random</i> seek-and-write costs on the order of <b>milliseconds</b>, so it manages only a few hundred to a few tens of thousands of <b>random</b> operations per second. Everything below follows from that one gap between sequential and random.</p>
+
+<div class="diagram"><pre>
+  1,000,000 writes/s, random keys, 16 B each = 16 MB/s of DATA.
+  Disk: ~500 MB/s SEQUENTIAL, but random writes are ~1000x slower.
+
+  B-TREE (sorted on disk, update-in-place)        LSM-TREE (never random-write)
+  --------------------------------------          --------------------------------
+   write key -> find its leaf page (sorted)         write -> append to WAL (seq) +
+     -> READ 8 KB page, insert 16 B, WRITE           insert into MEMTABLE (RAM, sorted)
+        8 KB back  == a RANDOM 8 KB rewrite                 |  memtable fills (64 MB)
+        per 16 B  == 512x write amplification              v
+   random keys -> every write hits a               FLUSH: write memtable to disk as ONE
+     different page -> no batching ->                immutable sorted file = SSTable (SEQ)
+     ~1 random I/O per write                             |  files accumulate
+                                                         v
+   READ: 3-4 page hops, deterministic.             COMPACT (background): merge-sort
+                                                    SSTables, drop dead keys (all SEQ).
+
+                                                   READ: check memtable, then SSTables
+                                                    newest->oldest. Could touch MANY
+                                                    files == read amplification -> a
+                                                    per-SSTable BLOOM FILTER (L21) says
+                                                    "definitely not here" -> skip it.
+
+  Trade:  B-tree = cheap reads, expensive random writes.
+          LSM     = cheap sequential writes, reads & space you must tame.
+</pre></div>
+
+<p class="note"><span class="key">A storage engine turns a stream of writes into bytes on disk. A B-tree keeps those bytes sorted and updates them in place — great for reads, brutal for random-order writes. An LSM-tree refuses to ever write randomly: it batches writes in memory and flushes them sequentially, paying the cost back later in reads, space, and compaction work.</span> Two terms up front: a write is <b>sequential</b> when it lands right after the previous one (the disk head never moves / the flash controller writes a clean block); it's <b>random</b> when it lands somewhere unrelated (a seek, or a read-modify-write of a scattered block). That single distinction is the whole lesson.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Storage engine</b> — the layer of a database that lays records out on disk and finds them again (B-tree and LSM-tree are the two dominant designs).</li>
+  <li><b>Page</b> — the fixed-size block (here 8 KB, from Lesson 12) a B-tree reads and writes as one unit; you can't update 16 bytes without rewriting the whole page.</li>
+  <li><b>Sequential vs random I/O</b> — a write that lands next to the last one (fast, ~500 MB/s) vs one that lands somewhere scattered (slow, a seek per operation).</li>
+  <li><b>Write-ahead log (WAL)</b> — an append-only file every committed write is first appended to, so a crash can't lose an acknowledged write (Lessons 33/38's durable log, here as a crash-recovery journal).</li>
+  <li><b>Memtable</b> — the in-memory sorted buffer an LSM-tree accepts writes into before flushing them to disk.</li>
+  <li><b>SSTable (Sorted String Table)</b> — an immutable file of key→value pairs kept in sorted order; once written, it is never modified.</li>
+  <li><b>Flush</b> — writing a full memtable out to disk as one new SSTable, in a single sequential pass.</li>
+  <li><b>Compaction</b> — the background job that merges several SSTables into fewer, dropping superseded values and deleted keys, keeping read cost and space bounded.</li>
+  <li><b>Tombstone</b> — a marker written to record that a key was <i>deleted</i> (you can't erase it from an immutable file; you shadow it, and compaction removes it later — Lessons 15/20).</li>
+  <li><b>Write / read / space amplification</b> — bytes actually written to disk per byte of user data; files touched per read; disk used per byte of live data. The three-way trade you can never zero out at once.</li>
+  <li><b>Bloom filter</b> — a tiny probabilistic bitmap that answers "is this key <i>definitely not</i> here?" with no false negatives (Lesson 21), used per SSTable to skip files that can't hold the key.</li>
+</ul>
+
+<h2>Move 1 — Estimate: why a B-tree needs 16&times; the disk to ingest 16 MB/s</h2>
+<p>The B-tree from Lesson 12 is the default engine of most relational databases (Postgres, MySQL's InnoDB, and every classic SQL store) — and it earns that place on <i>reads</i>: it finds any key in <code>~log&#8325;&#8320;&#8320; rows &asymp; 3</code> page hops. But its defining property is that keys live in <b>sorted order across pages on disk</b>, and that is exactly what makes our write workload detonate. Let's price it.</p>
+
+<div class="card calc">
+  <p><b>One insert = a full-page rewrite.</b> A B-tree page is <b>8 KB = 8,192 bytes</b> (Lesson 12); our record is <b>16 bytes</b>. To store one new point, the engine must locate the leaf page whose key range covers it, <b>read that 8 KB page</b>, splice in the 16 bytes, and <b>write the whole 8 KB page back</b> — you cannot durably change 16 bytes of a page without rewriting the page. That's <code>8,192 &divide; 16 = <b>512&times; write amplification</b></code> for a single isolated insert: 8 KB of disk writes to persist 16 B of data.</p>
+  <p><b>Random keys kill the one escape hatch.</b> A B-tree <i>can</i> amortize that — if the next 511 inserts land in the <i>same</i> page (sorted, sequential keys), one page-write stores 512 records and amplification falls toward 1&times;. But our million series interleave, so consecutive writes land in <b>different, scattered pages</b>. Each insert touches a fresh page, which is then evicted from cache before the next write for it arrives — so the batching never happens. Worse, each is a <b>read-modify-write</b> of a random page: potentially a random read <i>and</i> a random write.</p>
+  <p><b>Now the two ways to see the wall.</b> By bandwidth: <code>16 MB/s of data &times; 512 = <b>8,192 MB/s = 8 GB/s</b></code> of page writes — <code>8,192 &divide; 500 &asymp; <b>16&times;</b></code> the disk's <i>entire</i> sequential bandwidth, and it isn't even sequential. By operations: 1,000,000 random page writes/second, when a hard disk does <b>~100</b> random I/O per second (<code>1,000,000 &divide; 100 = <b>10,000&times;</b></code> short) and even a fast SSD does maybe <b>~50,000</b> random writes/second (<code>1,000,000 &divide; 50,000 = <b>20&times;</b></code> short). <span class="key">The B-tree isn't slow here — it's off by one to four orders of magnitude, and no faster disk in the same class closes that gap.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off — sorted-in-place (B-tree) vs log-structured (LSM).</b> Keeping data sorted on disk is what makes a B-tree's reads and range scans cheap and predictable (Lesson 12), and it is <i>the exact same property</i> that makes a random-order write expensive — you must go modify the one page where that key belongs. You cannot have "always sorted on disk" and "never do a random write" at once. The B-tree chose sorted-in-place and pays on writes; the LSM-tree, next, chooses never-random-write and pays on reads and space. <span class="key">Every storage engine is a position on that single trade.</span></p>
+
+<h2>Move 2 — Model: the LSM-tree turns random writes into sequential ones</h2>
+<p>The insight is Lesson 2's and Lesson 5's, applied to disk layout: if the expensive thing is a random write, <b>don't do random writes</b> — buffer them and write them out in big sequential batches. That is the whole of the <b>log-structured merge-tree</b> (the engine under RocksDB, Cassandra, LevelDB, ScyllaDB, and most write-heavy stores). Four parts.</p>
+
+<h3>1. The write path never touches a random page</h3>
+<p>Every incoming write does two cheap things and returns: it is <b>appended to a write-ahead log</b> (a pure sequential file, for crash recovery only) and inserted into the <b>memtable</b> — an in-memory sorted structure (a balanced tree or skip list). No disk seek, no page rewrite. At <code>16 MB/s</code>, the WAL append is <code>16 &divide; 500 = <b>3.2%</b></code> of the disk's sequential bandwidth — a rounding error, versus the B-tree's 1,600%.</p>
+
+<h3>2. Flush: memtable → one immutable SSTable, sequentially</h3>
+<p>When the memtable fills — say <b>64 MB</b> — it is written to disk in <b>one sequential pass</b> as an immutable <b>SSTable</b>: a file of key→value pairs in sorted order, plus a small index and (below) a Bloom filter. Because the memtable is already sorted in RAM, the flush is a clean sequential write. A 64 MB memtable fills every <code>64 &divide; 16 = 4 s</code> and flushes in <code>64 &divide; 500 = <b>0.13 s</b></code>. The old WAL segment can then be discarded — its data is now safely in the SSTable. <span class="key">Random writes have become: a sequential WAL append, then a sequential bulk flush. The disk only ever does what it's good at.</span></p>
+
+<h3>3. SSTables are immutable — so an update is a new write, not an edit</h3>
+<p>An SSTable is never modified. To <i>update</i> a key you simply write the new value into the current memtable; it lands in a newer SSTable that <b>shadows</b> the older one. To <i>delete</i> a key you write a <b>tombstone</b> — a marker meaning "this key is gone" — which shadows every older value (Lessons 15/20's delete-by-marker). So over time a key can have several versions scattered across SSTables, newest wins. This is what makes writes cheap; it is also the seed of every cost in Move 4.</p>
+
+<h3>4. Compaction: merge files back down in the background</h3>
+<p>If SSTables only ever accumulated, reads would keep slowing and dead versions would waste space forever. <b>Compaction</b> is the background janitor: it reads several sorted SSTables, <b>merge-sorts</b> them into fewer (merging already-sorted files is sequential I/O), keeps only the newest value per key, and <b>drops shadowed values and tombstones</b>. Two common strategies set where you sit on the cost triangle: <b>size-tiered</b> (merge files of similar size; fewer rewrites → low write amplification, but more overlapping files → higher read &amp; space amplification) and <b>leveled</b> (keep sorted, non-overlapping files in size levels; more rewrites → higher write amplification, but ~1 file per level to check → low read &amp; space amplification).</p>
+
+<p class="note why"><b>Name the trade-off — the amplification triangle.</b> An LSM-tree exposes three costs you trade against each other and can never minimize all at once: <b>write amplification</b> (each byte gets rewritten once per compaction it passes through — roughly <b>10–30&times;</b> for leveled, still far below the B-tree's 512&times; and, crucially, all sequential), <b>read amplification</b> (a read may probe the memtable plus several SSTables), and <b>space amplification</b> (superseded versions and tombstones sit around until compaction reclaims them). Leveled compaction spends write amplification to buy low read &amp; space; size-tiered does the reverse. <span class="key">Choosing a compaction strategy is choosing which corner of the triangle your workload can least afford.</span></p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Follow one write, one point read, one range read, and one delete through the LSM engine — and contrast the read with the B-tree.</p>
+
+<h3>Path A — a write (the whole point)</h3>
+<div class="diagram"><pre>
+  write  series=cpu.load{host=web-7}  ts=03:00:10  value=0.42   (16 B)
+
+   1. APPEND to WAL (sequential, fsync) -- the only durable step. ~microseconds.
+   2. INSERT into memtable (RAM, sorted). Ack the write. DONE.
+        (no page found, no page read, no random write -- nothing like the B-tree)
+   3. ...later, memtable hits 64 MB -> FLUSH as SSTable-9 (one sequential write),
+        discard the WAL segment it covered.
+   4. ...later still, compaction merges SSTable-9 with peers -> fewer, cleaner files.
+
+  16 MB/s of writes = 3.2% of the disk sequentially. A million/s is comfortable.
+</pre></div>
+
+<h3>Path B — a point read, and why it needs a Bloom filter</h3>
+<div class="diagram"><pre>
+  read  latest value for cpu.load{host=web-7} at 03:00:10
+
+   Newest wins, so search NEWEST -> OLDEST until found:
+     1. memtable (RAM)                          -- miss
+     2. SSTable-12 ? SSTable-11 ? ... SSTable-1  -- up to ~7 levels of files
+
+   Naive: a key that ISN'T there forces probing EVERY SSTable = read amplification.
+   B-tree comparison: a read is ~3-4 page hops, ALWAYS -- deterministic, no probing.
+
+   FIX (L21): each SSTable carries a BLOOM FILTER -- a tiny bitmap answering
+   "is this key DEFINITELY NOT in this file?" with NO false negatives.
+     - Before touching a file's data, check its Bloom filter.
+     - "definitely not" -> SKIP the file entirely (no disk read).
+   At ~10 bits/key the false-positive rate is ~0.6185^10 = ~0.8% (~1%), so a read
+   touches the ~1 file that truly has the key + a negligible ~1% wasted probe.
+   Read amplification collapses from ~7 files to ~1.
+</pre></div>
+
+<h3>Path C — a range read (where Bloom filters can't help)</h3>
+<div class="diagram"><pre>
+  read  all cpu.load{host=web-7} samples from 03:00 to 03:05  (a scan, L44)
+
+   A Bloom filter answers "is EXACT key X present?" -- it cannot answer "any key
+   in [03:00, 03:05]?", because you don't know the exact keys in advance.
+   So a range scan must MERGE the relevant key-range from the memtable AND every
+   SSTable whose range overlaps [03:00, 03:05], newest-wins per key.
+
+   This is the LSM's honest weakness: point reads are rescued by Bloom filters,
+   but range scans pay full read amplification -> which is exactly what leveled
+   compaction (few, non-overlapping files per level) exists to keep small.
+   A B-tree, sorted in place, does a range scan as one contiguous walk -- its
+   home turf (L12/L18 cursor pagination).
+</pre></div>
+
+<h3>Path D — a delete is a write</h3>
+<div class="diagram"><pre>
+  delete  series cpu.load{host=web-7}
+
+   You cannot erase it from immutable SSTables. Instead WRITE a TOMBSTONE into
+   the memtable -> it shadows every older value (newest wins). Reads that hit the
+   tombstone first return "not found." The old values keep occupying disk until a
+   COMPACTION that sees both the tombstone AND the values drops them together.
+   => a delete temporarily INCREASES space (space amplification), and a stream of
+      deletes can leave "tombstone-heavy" files that slow scans until compacted.
+</pre></div>
+<p>Path A is why you reach for an LSM at all — a million writes/second becomes a 3.2%-of-disk trickle. Path B is the tax you take in return (many places to look), bought back cheaply by the Bloom filter for point lookups. Path C is the tax the Bloom filter <i>can't</i> pay — range scans — and Path D shows deletes making it briefly worse before compaction cleans up. Every one of those "...later" and "until compacted" clauses points at the same background process, which is where the first real bottleneck lives.</p>
+
+<h2>Move 4 — Find the first bottleneck: compaction is a second write workload</h2>
+<p>The WAL makes it look like you can ingest at the disk's full sequential speed. You can't — because compaction is <i>also</i> writing, over the same disk, forever.</p>
+
+<div class="card calc">
+  <p><b>The real write ceiling is disk bandwidth &divide; write amplification.</b> Foreground writes stream at 16 MB/s, but every byte gets rewritten by compaction ~10–30&times; on its way down the levels. Compaction and foreground flushes share one disk of <b>~500 MB/s</b>. So the <i>sustainable</i> user-write rate isn't 500 MB/s — it's <code>500 &divide; WA</code>. At a leveled <b>WA of 20&times;</b>: <code>500 &divide; 20 = <b>25 MB/s</b></code> sustainable — comfortably above our 16 MB/s, but only <b>~1.5&times; headroom</b>. Push WA to 30&times; and the ceiling drops to <code>500 &divide; 30 &asymp; <b>16.7 MB/s</b></code> — right on top of our load.</p>
+  <p><b>What happens when you cross it.</b> If writes arrive faster than compaction can churn, new SSTables pile up at the top level faster than they're merged down. Read amplification climbs (more files to probe), space balloons (dead versions un-reclaimed), and the engine does the only safe thing: it <b>throttles or stalls writes</b> — the dreaded LSM "write stall" / "compaction debt." <span class="key">The LSM didn't remove the write cost; it moved it into the background, where it becomes a bandwidth budget you must not overspend.</span> This is Lesson 27's utilization knee and Lesson 28's backpressure, living inside a single database.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — foreground latency vs background work.</b> More aggressive compaction (leveled) keeps reads and space tight but spends more of your disk on rewrites, lowering the sustainable write ceiling and stealing bandwidth from foreground writes. Lazier compaction (size-tiered) raises the write ceiling but lets read and space amplification grow. You are always dividing one disk's bandwidth between "serve now" and "clean up so we can serve later." <span class="key">There is no setting that is best at writes, reads, and space at once — you pick the two your workload needs and pay in the third.</span></p>
+
+<h3>The scoreboard: which engine for which workload</h3>
+<table>
+  <tr><th>Property</th><th>B-tree</th><th>LSM-tree</th></tr>
+  <tr><td>Random-write throughput</td><td>Low (page rewrite per insert)</td><td><b>High</b> (sequential batches)</td></tr>
+  <tr><td>Point read</td><td><b>~3–4 hops, deterministic</b></td><td>Memtable + Bloom-gated SSTables (~1 file)</td></tr>
+  <tr><td>Range scan</td><td><b>Contiguous, cheap</b> (sorted in place)</td><td>Merge across files (read amplification)</td></tr>
+  <tr><td>Write amplification</td><td>High &amp; <b>random</b> (~512&times; worst case)</td><td>Lower but real, all <b>sequential</b> (~10–30&times;)</td></tr>
+  <tr><td>Space</td><td>~1.3–1.5&times; (half-full pages)</td><td>~1.1&times; leveled, more size-tiered (dead versions)</td></tr>
+  <tr><td>Best for</td><td>Read-heavy, range-heavy, OLTP</td><td>Write-heavy: logs, metrics, ledgers, KV</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — reaching for a B-tree because it's the default, under a write-heavy load.</b> A B-tree's sorted-in-place layout turns each randomly-keyed insert into a full-page random rewrite (~512&times; amplification), and random-write IOPS is exactly what disks lack — so a metrics/log/ledger firehose (Lessons 25/38/44) can be 10–10,000&times; beyond what the engine can absorb. Match the engine to the workload: write-heavy + point/KV access → LSM; read/range-heavy OLTP → B-tree.</li>
+  <li><b>Trap 2 — assuming the LSM made writes free.</b> The WAL's 3.2%-of-disk makes ingestion look effortless, but compaction rewrites every byte 10–30&times; over the same disk, so the sustainable ceiling is <code>bandwidth &divide; write-amplification</code> (~25 MB/s here), not the raw 500 MB/s. Exceed it and you get write stalls. Provision for the compaction bandwidth, not just the WAL.</li>
+  <li><b>Trap 3 — forgetting range scans can't use the Bloom filter.</b> A Bloom filter rescues <i>point</i> reads by answering "definitely not here," but it can't answer "any key in this range," so range scans pay full read amplification across overlapping SSTables. If your workload is scan-heavy, choose leveled compaction (few, non-overlapping files) or reconsider a B-tree.</li>
+  <li><b>Trap 4 — ignoring tombstones and space amplification.</b> Deletes and updates don't shrink an LSM immediately — they write markers that shadow old data, which lingers until compaction. A delete-heavy or churny workload can bloat space and slow scans with tombstone-heavy files. Size disk for the amplified footprint and tune compaction to reclaim on time.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>The same "database" we've written to for 46 lessons is really a <b>storage engine</b> making one choice: how to turn a stream of writes into bytes on a disk that is fast at <b>sequential</b> and slow at <b>random</b> access. <b>Estimate</b> showed the B-tree of Lesson 12 — the read-optimized default — collapsing under Lesson 44's <b>1,000,000 writes/s</b>: because it keeps data sorted <i>in place</i>, each 16-byte insert forces a read-modify-write of an 8 KB page (<code>8,192 &divide; 16 = <b>512&times;</b></code> write amplification), and random keys defeat the page-batching that could save it, so the engine needs <code>16 MB/s &times; 512 = 8 GB/s &asymp; <b>16&times;</b></code> the disk's whole bandwidth — or, in operations, 10,000&times; a hard disk's random-write budget. <b>Model</b> gave the write-optimized answer, the <b>LSM-tree</b>: append every write to a sequential <b>WAL</b> and a RAM <b>memtable</b>, <b>flush</b> the full memtable to disk as one immutable sorted <b>SSTable</b>, and let background <b>compaction</b> merge-sort files down, dropping shadowed values and <b>tombstones</b> — so a million random writes/second become a <b>3.2%-of-disk</b> sequential trickle. <b>Tracing</b> showed the cheap write, the point read that would otherwise probe every SSTable (read amplification) rescued to ~1 file by a per-SSTable <b>Bloom filter</b> (Lesson 21, ~1% false positives at ~10 bits/key), the range read the Bloom filter <i>can't</i> help, and the delete that is itself a write. The <b>first bottleneck</b> is that compaction is a second write workload on the same disk: the sustainable ingest ceiling is <code>bandwidth &divide; write-amplification &asymp; 500 &divide; 20 = <b>25 MB/s</b></code>, not the WAL's apparent 500 — cross it and the engine <b>stalls writes</b> (Lessons 27/28 inside one database). The real lesson: <span class="key">you cannot be best at writes, reads, and space at once. Sorted-in-place (B-tree) buys cheap reads and range scans with expensive random writes; log-structured (LSM) buys cheap sequential writes with read amplification, space amplification, and a compaction bandwidth budget you must respect. Picking a database <i>is</i> picking a corner of that triangle for your workload — the standing tension: write throughput vs read amplification &amp; space.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next we go one layer out — from how one node stores writes to how many nodes share a cache in front of them:</b></p>
+  <p style="margin:.2rem 0">• <b>Distributed caching &amp; invalidation at scale:</b> Lessons 2 and 14 put a cache in front of one thing; but a real system has <i>many</i> app servers sharing a cache <i>tier</i>, and the hard part isn't hits — it's <b>coherence</b>. When the data changes, how do all those cached copies find out? Write-through vs write-behind, invalidation fan-out, the <b>stampede</b> when a hot key is invalidated and every server misses at once (Lesson 2's thundering herd, back again), and TTL-vs-explicit-purge (Lesson 14). The trade shifts to <b>freshness vs cache hit rate &amp; load.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">storage engine</span>
+    <span class="pill">B-tree</span>
+    <span class="pill">LSM-tree</span>
+    <span class="pill">page</span>
+    <span class="pill">sequential vs random I/O</span>
+    <span class="pill">write-ahead log (WAL)</span>
+    <span class="pill">memtable</span>
+    <span class="pill">SSTable</span>
+    <span class="pill">flush</span>
+    <span class="pill">compaction</span>
+    <span class="pill">size-tiered vs leveled</span>
+    <span class="pill">tombstone</span>
+    <span class="pill">write amplification</span>
+    <span class="pill">read amplification</span>
+    <span class="pill">space amplification</span>
+    <span class="pill">Bloom filter</span>
+    <span class="pill">write stall</span>
+  </p>
+  <p>That's Lesson 47, built on Lesson 2's caching-in-RAM &amp; thundering herd (buffer the expensive thing; the memtable is a write buffer), Lesson 12's B-tree / page / disk-vs-index numbers (the read-optimized engine this lesson stress-tests on writes), Lesson 15/20's delete-by-marker (tombstones and compaction reclaiming space), Lesson 21's Bloom filter (per-SSTable "definitely not here" that collapses read amplification), Lesson 25's ledger / Lesson 38's event log / Lesson 44's metrics (the write-heavy, append-mostly workloads that make an LSM the right pick), and Lesson 27/28's utilization knee &amp; backpressure (compaction debt and the write stall, inside one database). <b>Ask me follow-ups</b> — e.g. "how do RocksDB's leveled and universal compaction actually differ in practice?", "why do some systems (like modern Postgres extensions or FoundationDB) mix B-tree and LSM ideas?", "how does the WAL relate to the outbox/CDC log of Lesson 33?", "what is the read-modify-write cost on an SSD's flash-translation layer specifically?", or "how would I choose between an LSM and a B-tree for the orders table of Lesson 12 vs the metrics of Lesson 44?" When you're ready, say <b>next</b> and we'll go deeper on <i>Distributed caching &amp; invalidation at scale — freshness vs cache hit rate &amp; load.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your team stores Lesson 44's metrics firehose (1,000,000 writes/s, randomly-interleaved series keys) in a classic B-tree database and ingestion is falling hopelessly behind, even though the data itself is only 16 MB/s. What's the root cause, and is a faster disk of the same class the fix?",
+    options: [
+      {t:"A B-tree keeps keys sorted IN PLACE on disk, so each randomly-keyed 16 B insert forces a read-modify-write of the whole 8 KB page it belongs to (~512× write amplification), and because the keys are scattered, every insert hits a different page — no batching. That's ~1,000,000 random page I/Os per second against a disk that does hundreds to tens of thousands of random ops/s, so you're 20–10,000× short. A same-class faster disk won't close an orders-of-magnitude gap; you need a write-optimized engine (LSM) that turns random writes into sequential ones.",
+       ok:true,
+       fb:"Right. The bottleneck is the B-tree's sorted-in-place layout meeting random-order keys: full-page rewrites (512×) that can't be amortized, and random-write IOPS is precisely what disks lack. 16 MB/s × 512 ≈ 8 GB/s ≈ 16× the disk's sequential bandwidth — and it isn't even sequential. The fix is a different engine, not a marginally faster disk."},
+      {t:"The B-tree is slow because its reads are slow at this scale — a 100M-row tree is too deep to traverse a million times a second. Add read replicas and the write ingestion will recover.",
+       ok:false,
+       fb:"Reads are the B-tree's strength (~3–4 page hops, deterministic), and the problem here is WRITES, not reads. Read replicas scale read volume (Lesson 6) but don't change how a single primary persists a write — each insert is still a random full-page rewrite. The tree depth isn't the issue; the random-write amplification is."},
+      {t:"The records are too big — 16 B per point is wasteful. Compress each point to 2 B and the write load drops 8×, which is enough for the B-tree to keep up.",
+       ok:false,
+       fb:"Shrinking the record barely helps: the cost isn't the 16 B of data, it's the 8 KB PAGE rewritten per insert. Even at 2 B/point the engine still does ~1,000,000 random page writes/s (now ~4,096× amplification), still far beyond the disk's random-I/O budget. The layout is the problem, not the payload size."}
+    ]
+  },
+  {
+    stem: "You switch to an LSM-tree engine and writes fly. A teammate concludes: 'LSM made writes basically free — the WAL is only 3% of disk bandwidth, so we can ingest at almost the disk's full 500 MB/s.' Why is that dangerously wrong?",
+    options: [
+      {t:"The WAL is only the foreground cost; compaction is a SECOND write workload on the same disk. Every byte gets rewritten ~10–30× by compaction as it merges down the levels, so the sustainable ingest ceiling is bandwidth ÷ write-amplification (≈ 500 ÷ 20 = ~25 MB/s), not 500. Exceed it and SSTables pile up faster than they're merged — read amplification and space climb, and the engine throttles or STALLS writes (compaction debt). You must provision for the compaction bandwidth, not the WAL.",
+       ok:true,
+       fb:"Exactly. The LSM didn't delete the write cost — it moved it into the background, where it becomes a bandwidth budget shared with foreground writes. The real ceiling is disk-BW ÷ write-amplification, and crossing it triggers write stalls (Lessons 27/28's knee and backpressure inside one database). The WAL's 3% is a comforting lie about total write cost."},
+      {t:"It's right — the WAL is the only write to disk, and SSTable flushes happen in RAM, so 500 MB/s is genuinely achievable and there's nothing else competing for the disk.",
+       ok:false,
+       fb:"Flushes and compaction both write to DISK, not RAM: a flush writes the memtable out as an SSTable, and compaction repeatedly rewrites those SSTables merging them down. Those rewrites (10–30× the data) share the disk with the WAL, so the achievable ingest is far below 500 MB/s. The WAL is not the only write."},
+      {t:"It's wrong only because fsync on the WAL is slow; if you disable fsync, the WAL truly becomes free and you can ingest at 500 MB/s with no other limit.",
+       ok:false,
+       fb:"Disabling fsync trades away durability (an acked write can be lost on a crash — the WAL's whole purpose) and STILL doesn't address the real ceiling, which is compaction's write amplification over the same disk. Even with a free WAL, compaction rewriting every byte 10–30× caps sustainable ingest at ~bandwidth ÷ WA. The limit is compaction, not fsync."}
+    ]
+  },
+  {
+    stem: "Point reads on your LSM store were slow because a lookup for a missing key had to probe every SSTable (read amplification). You add a per-SSTable Bloom filter at ~10 bits/key and point reads get fast. A colleague wants to use the same Bloom filters to also speed up your big 'all samples from 03:00 to 03:05' range scans. Will that work?",
+    options: [
+      {t:"No. A Bloom filter answers 'is this EXACT key definitely not present?' with no false negatives — perfect for a point lookup, where it lets a read skip SSTables that can't hold the key and touch ~1 file instead of ~7. But a range scan asks 'any key within [03:00, 03:05]?', and you don't know the exact keys in advance, so the Bloom filter can't rule a file in or out. Range scans still merge across every overlapping SSTable — which is exactly why leveled compaction (few, non-overlapping files per level) exists, and why a B-tree's sorted-in-place layout wins scans.",
+       ok:true,
+       fb:"Right. Bloom filters are a point-membership test; they collapse point-read amplification (~7 files → ~1, at ~1% false positives for 10 bits/key) but are blind to ranges. Scan-heavy workloads lean on leveled compaction to keep overlapping files few — or favor a B-tree, whose in-place sort makes a range a single contiguous walk (Lessons 12/18)."},
+      {t:"Yes — a Bloom filter can be queried with a range, returning all keys it contains between 03:00 and 03:05, so the scan can skip files with no keys in that window.",
+       ok:false,
+       fb:"A Bloom filter can't enumerate its keys or answer range queries at all — it only answers 'is this one exact key possibly present?' and can't list what's inside. There's no way to ask it 'any key in [03:00, 03:05]?'. Range scans get no help from it; that's the LSM's honest weakness on scans."},
+      {t:"Yes, once you raise the Bloom filter to ~40 bits/key so the false-positive rate is near zero; at that accuracy it can answer range queries reliably.",
+       ok:false,
+       fb:"More bits/key only lowers the false-positive rate of the POINT test; it never gives a Bloom filter the ability to answer a RANGE query, which is a different question entirely. No bit budget turns a membership filter into a range index. The tool is simply the wrong shape for scans."}
+    ]
+  },
+  {
+    stem: "You're choosing a storage engine for two tables: (1) Lesson 44's metrics (1M appends/s, mostly point lookups by series+time) and (2) Lesson 12's orders table for the customer-facing app (moderate writes, lots of 'orders for user X, newest first' range queries and detail-page reads). What's the sound way to decide?",
+    options: [
+      {t:"Match each to the engine whose strengths fit its access pattern: the metrics table is write-heavy with point access → an LSM-tree (sequential batched writes absorb the firehose; Bloom filters keep point reads cheap; range scans are rarer). The orders table is read/range-heavy with modest writes → a B-tree (sorted-in-place makes 'newest first for user X' a cheap contiguous scan and detail reads ~3–4 deterministic hops, and the write rate never approaches the random-write wall). There's no single 'best' engine — you pick the corner of the write/read/space triangle each workload needs.",
+       ok:true,
+       fb:"Exactly the reasoning. An LSM buys write throughput at the cost of read amplification, space, and compaction bandwidth — ideal for logs/metrics/ledgers/KV. A B-tree buys cheap reads and range scans at the cost of random-write throughput — ideal for read-heavy, range-heavy OLTP. Engine choice IS workload-fit; the same database would be wrong for the other table."},
+      {t:"Use an LSM-tree for both — it has lower write amplification than a B-tree, so it's strictly better everywhere and standardizing on one engine reduces operational complexity.",
+       ok:false,
+       fb:"An LSM isn't strictly better: it pays read amplification and space amplification, and range scans can't use its Bloom filters. The orders table's 'newest first for user X' scans and detail reads are the B-tree's home turf (sorted in place), and its write rate never hits the random-write wall. Standardizing blindly forces the wrong trade-off on the read/range-heavy table."},
+      {t:"Use a B-tree for both — it's the well-understood default in relational databases, and you can always throw more RAM and a faster SSD at the metrics table to handle the write volume.",
+       ok:false,
+       fb:"The metrics firehose is 20–10,000× beyond a B-tree's random-write budget (512× page-rewrite amplification on scattered keys); RAM and a same-class SSD don't close an orders-of-magnitude gap, and the writes aren't even sequential. That's precisely the workload an LSM exists for. Defaulting to a B-tree for a write-heavy, randomly-keyed load is Trap 1."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
