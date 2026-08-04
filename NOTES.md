@@ -820,10 +820,38 @@
     space amp. Reuses L02 buffer-the-expensive/herd, L12 B-tree/page/disk numbers, L15/20 delete-by-marker,
     L21 Bloom filter, L25/38/44 write-heavy workloads, L27/28 knee+backpressure. Trade: write throughput vs
     read amplification & space. (Lesson 0047)
-48. Distributed caching & invalidation at scale — many app servers share a cache tier (L02/L14); the hard
-    part is coherence: write-through vs write-behind, invalidation fan-out, the stampede when a hot key is
-    invalidated (L02 thundering herd), and TTL-vs-explicit-purge (L14). Trade: freshness vs cache hit rate
-    & load.
+48. ✅ **Distributed caching & invalidation at scale** — a product catalog (10M products × 2 KB = 20 GB),
+    50k reads/s over a DB that safely serves ~5k/s (L27 knee), changing ~500 writes/s across L27's 286 app
+    servers: L02/L14 cached in front of ONE thing and the job was HITS; at fleet scale a cache is a COPY and
+    the hard word is COHERENCE — the instant the source of truth (L06/25) moves, every copy is a small lie.
+    Estimate why ONE shared tier beats a private cache per server: 286 private caches = up to 286 stale copies
+    to chase per write (+ 5.72 TB to hold the catalog 286×), a shared tier holds ONE copy per key (any server
+    routes it to the same node, consistent hashing L04) → 20 GB once + one DELETE to invalidate; and it must
+    run at 99% hit (DB can't serve 50k/s without it: 1-5k/50k=90% offload minimum, zero headroom → aim 99%,
+    misses=500/s). Model the WRITE (where caching gets hard): cache-aside (write DB, invalidate — honest
+    default, source-of-truth first so a crash leaves a stale CACHE not a stale DB) vs write-through (always
+    fresh, cache write on every DB write's critical path) vs write-behind (fast ack from RAM, flush DB later,
+    L47 memtable across the cache/DB boundary, data-loss risk if cache dies pre-flush); + the sharper fork
+    DELETE (idempotent+commutative → two writers can't leave a wrong value, but a guaranteed MISS after each
+    write) vs versioned OVERWRITE (no miss, but two writers race to a lost update IN the cache L06 unless a
+    version stamp / compare-and-set gates it). Trace hit (99%, ~0.2 ms, DB untouched), miss (populate + TTL
+    backstop = L14 dial), clean write (DB first THEN invalidate — invalidate-first lets a reader repopulate the
+    not-yet-updated DB), and the STALE-REPOPULATION RACE (reader misses→reads DB v1→stalls; writer updates
+    v2+deletes; reader wakes+SETs v1 → cache stuck stale till TTL — the stale write comes from a READER not a
+    writer, so delete-vs-overwrite can't fix it; bound by TTL / version-CAS on populate / delete-after-delay).
+    First wall = adding a per-server NEAR CACHE (L1, 20 MB/server) to beat the network hop brings N copies BACK:
+    can't synchronously delete a copy you can't address → invalidation becomes a best-effort pub/sub BROADCAST
+    (L09, 500×286=143k drops/s, cheap) whose ONLY hard guarantee is a short TTL (a disconnected/lagging/
+    restarting subscriber misses the message → stale till expiry; TTL is the contract, not decoration); and
+    deleting one HOT key (10k reads/s → L=R×T=10k×0.010=100 simultaneous misses, L13, landing on ONE hot shard
+    L03) reignites L02's THUNDERING HERD → single-flight/request-coalescing (100 DB reads→1), serve-stale/SWR
+    (L02, expiry never a miss, only where seconds-stale ok), or versioned overwrite (hot key never goes absent).
+    Four traps: invalidate-before-write-DB (reader fills the gap with the old value); overwrite w/o a version
+    (lost update in the cache); trust the fan-out is reliable (it's best-effort → keep the TTL short); delete a
+    hot key & expect the DB to absorb the herd. Reuses L02 cache-aside/TTL/eviction/herd/single-flight/SWR,
+    L03 hot shard, L04 consistent-hash routing, L06 lost update + CAS, L09 pub/sub, L13 Little's Law, L14
+    freshness-vs-speed + TTL-vs-purge, L27 fleet/knee/99%-offload, L47 memtable-then-flush. Trade: freshness vs
+    cache hit rate & load. (Lesson 0048)
 49. API gateways & the edge — one front door (L42) that does auth, routing, request aggregation (the BFF),
     and enforces rate limits (L08) / quotas / mTLS (L30) so backends don't each re-implement them; the risk
     of a fat gateway becoming a SPOF (L07/26) and a deploy bottleneck (L31/36). Trade: centralized

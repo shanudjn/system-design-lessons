@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 48 — Distributed Caching &amp; Invalidation: Keeping Many Caches Honest</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 48 · Worked Example</div>
+  <h1>Distributed Caching &amp; Invalidation: Keeping Many Caches Honest</h1>
+  <p class="lead">Lesson 2 put a cache in front of <i>one</i> database and Lesson 14 pushed copies out to the world's edges. Both times the cache was easy in one specific way: we mostly worried about <b>hits</b> — how to hold the hot data so the slow origin is touched less. This lesson takes the same idea to the shape of a real backend — <b>many</b> app servers sharing <b>one</b> cache tier in front of a database whose data <b>keeps changing</b> — and there the hard problem is no longer the hit. It's <b>coherence</b>: a cache is a <i>copy</i>, and the instant the source of truth changes, every copy is a small lie. We'll take a product-catalog read path — <b>50,000 reads/second</b> over <b>10 million products</b> against a database that can safely serve only <b>~5,000 reads/second</b> — and <b>estimate</b> why a single <i>shared</i> cache tier beats a private cache on every server (it deduplicates both the RAM <i>and</i> the thing you have to invalidate). We'll <b>model</b> the choices that decide freshness: <b>cache-aside</b> vs <b>write-through</b> vs <b>write-behind</b>, and the sharper fork inside each — on a write, do you <b>delete</b> the key or <b>overwrite</b> it? We'll <b>trace</b> a hit, a miss, a write, and the famous <b>stale-repopulation race</b> where a slow reader writes an <i>old</i> value back <i>after</i> a newer write. And we'll hit the wall that makes distributed caching hard: the moment you add a per-server <b>near cache</b> to cut latency, you have N copies again and a write must <b>invalidate</b> all of them — an <b>invalidation fan-out</b> that is best-effort, bounded by a <b>TTL</b>, and which turns a single hot key's invalidation into a <b>stampede</b> (Lesson 2's thundering herd, back again). The trade underneath all of it: <b>freshness vs cache hit rate &amp; load.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0048-distributed-caching-invalidation.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>We run a product catalog. There are <b>10,000,000 products</b>, each rendered blob is about <b>2 KB</b> (name, price, stock, ratings summary), so the full working set is <code>10,000,000 &times; 2 KB &asymp; <b>20 GB</b></code>. The read path serves <b>50,000 reads/second</b> at peak — product pages, search result hydration, "you might also like" panels. Behind it is one relational database (the orders/catalog store of Lessons 12/37) that, kept safely below its utilization knee (Lesson 27), can serve about <b>5,000 reads/second</b> before latency climbs. And the catalog <i>changes</i>: prices, stock counts, and descriptions get edited at roughly <b>500 writes/second</b> (a 100:1 read:write ratio). The read fleet is Lesson 27's <b>286 app servers</b>. Every one of them needs the same product data, the data is 10&times; too much read traffic for the database, and it is mutable. That combination — <i>shared, hot, and changing</i> — is exactly where a cache stops being a speed trick and becomes a correctness problem.</p>
+
+<div class="diagram"><pre>
+  50,000 reads/s of product data. DB safely serves ~5,000/s.
+  Need >=90% offload -> a CACHE. But MANY servers share it, and
+  the data CHANGES -> the hard part is COHERENCE, not hits.
+
+  286 app servers ---- read ----> [ SHARED CACHE TIER ] ---- miss ----> [   DB   ]
+       |  (each may ALSO keep a      (Redis/Memcached,        (source of truth,
+       |   tiny LOCAL L1 near-cache)  sharded by key, L04,      ~5,000 reads/s)
+       |                              ONE copy per key)
+       v
+   a WRITE changes the DB. Every cached COPY is now STALE:
+     - shared tier alone:  ONE copy   -> invalidate = 1 DELETE
+     - + per-server L1s:   N copies    -> invalidate = broadcast to N (pub/sub)
+
+  Write policies:  cache-aside   (read-populate; write-invalidate)   <- default
+                   write-through (write cache + DB together; fresh, slow write)
+                   write-behind  (write cache, flush DB later; fast, loss risk)
+
+  Two hazards baked in:
+    stale-repopulation RACE  -- a slow miss writes an OLD value back AFTER a
+                                newer write -> TTL backstop / version stamp
+    hot-key STAMPEDE (L02)   -- invalidate 1 hot key -> ALL readers miss at
+                                once -> single-flight + serve-stale (SWR)
+</pre></div>
+
+<p class="note"><span class="key">A cache is a copy of the truth that lives closer and answers faster. In a single-server world that copy is easy to keep honest — one writer, one copy. At scale you have many readers, one shared copy (or worse, many private copies), and a source of truth that keeps moving underneath them. The whole discipline of distributed caching is deciding, on every write, how each copy learns it is now wrong — and living with the fact that it learns a little late.</span> The source of truth is the database (Lessons 6/25): the one place a value is authoritative. Everything cached is derived from it and therefore, for some window, potentially stale.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Cache tier</b> — a fleet of dedicated cache nodes (Redis/Memcached) sitting between the app servers and the database, holding hot values in RAM.</li>
+  <li><b>Source of truth</b> — the authoritative store (the database) that a cache merely copies; when the two disagree, the source of truth is right by definition.</li>
+  <li><b>Cache coherence</b> — the property that a read from any cache reflects the latest committed write (or is at least no more than a bounded amount of time stale).</li>
+  <li><b>Cache-aside (lazy loading)</b> — the app checks the cache first; on a miss it reads the DB and populates the cache. On a write it changes the DB and <i>invalidates</i> the key. The default pattern (Lesson 2).</li>
+  <li><b>Write-through</b> — a write updates the cache <i>and</i> the DB together, synchronously, so the cache is never behind the DB.</li>
+  <li><b>Write-behind (write-back)</b> — a write updates the cache, acks immediately, and flushes to the DB asynchronously later.</li>
+  <li><b>Invalidation</b> — telling a cache a key is now wrong, either by <i>deleting</i> it (next read recomputes) or <i>overwriting</i> it with the new value.</li>
+  <li><b>TTL (time to live)</b> — an expiry stamped on a cached entry so it self-evicts after N seconds, capping how stale any copy can get even if nothing invalidates it (Lesson 14).</li>
+  <li><b>Near cache (L1)</b> — a small cache <i>inside</i> each app server's process, in front of the shared tier (which becomes the L2), trading coherence for latency.</li>
+  <li><b>Stampede / thundering herd</b> — many readers missing the same key at the same instant and all hammering the source of truth at once (Lesson 2).</li>
+  <li><b>Single-flight (request coalescing)</b> — letting exactly one reader recompute a missing key while the others wait for and share its result.</li>
+  <li><b>Stale-while-revalidate (SWR)</b> — serving the old value immediately while refreshing it in the background, so an expiry never becomes a miss (Lesson 2).</li>
+</ul>
+
+<h2>Move 1 — Estimate: one shared copy beats 286 private ones</h2>
+<p>The first design question is not <i>which</i> cache pattern but <i>where the copies live</i>. Two layouts fit our 286 servers: give every server its own private in-process cache, or stand up one shared cache tier they all talk to. Estimating both exposes why "shared" is the load-bearing word.</p>
+
+<div class="card calc">
+  <p><b>Private caches multiply the RAM.</b> If each of the 286 app servers cached the whole catalog locally, that's <code>286 &times; 20 GB = <b>5,720 GB &asymp; 5.72 TB</b></code> of RAM to hold the <i>same</i> 20 GB catalog 286 times over. In practice a private cache only holds each server's hot subset — say the top 10,000 products (Zipf skew, Lesson 2), <code>10,000 &times; 2 KB = <b>20 MB</b></code> per server — so the RAM is fine. But the copies are the problem, not the bytes.</p>
+  <p><b>Private caches multiply the thing you must invalidate.</b> When one product's price changes, there are now up to <b>286 stale copies</b>, one per server, each with its own independent lifetime. To make them coherent you must reach all 286 — and a server the write never reaches keeps serving the old price until its entry expires. A <i>shared</i> tier holds <b>exactly one copy per key</b> (any server routes key <code>product:42</code> to the same cache node via consistent hashing, Lesson 4), so invalidating it is a <b>single delete</b> at one place. The shared tier deduplicates both the RAM (20 GB once, not 5.72 TB) <i>and</i> the invalidation surface (1 copy, not 286).</p>
+  <p><b>And the offload has to be near-total.</b> The DB serves ~5,000 reads/s; peak is 50,000/s. To keep the DB below its ceiling the cache must absorb at least <code>1 - 5,000/50,000 = <b>90%</b></code> of reads — and 90% leaves <i>zero</i> headroom, so we aim for a <b>99% hit ratio</b>: misses <code>= 1% &times; 50,000 = <b>500/s</b></code>, a tenth of the DB's budget. A 20 GB working set in a RAM tier hits that easily. <span class="key">The cache isn't an optimization here; at 99% it's load-bearing — the DB physically cannot serve peak without it.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off — private near-cache latency vs shared-tier coherence.</b> A private in-process cache is the fastest possible read (nanoseconds, no network hop) and it can't take the whole tier down, but every private copy is a separate thing to keep honest. A shared tier costs a ~0.2 ms network round trip per read and is a dependency all 286 servers lean on, but it collapses N copies to one — one place to invalidate, one place to size. <span class="key">Fewer copies is more coherent and less fresh-to-read; more copies is faster to read and harder to keep true.</span> We'll start with the shared tier (one copy, tractable) and only add private near-caches in Move 4, where their coherence cost becomes the bottleneck.</p>
+
+<h2>Move 2 — Model: the write is where caching gets hard</h2>
+<p>Reads are the easy half: check the cache, return on hit, fall through to the DB on miss and populate. Every hard decision in distributed caching is about the <b>write</b> — because a write is the moment a cached copy becomes a lie, and the pattern you choose decides how fast, and how safely, the copy learns it.</p>
+
+<h3>1. Three write policies, three points on the freshness/latency curve</h3>
+<table>
+  <tr><th>Policy</th><th>A write does…</th><th>Freshness</th><th>Write latency</th><th>Main risk</th></tr>
+  <tr><td><b>Cache-aside</b></td><td>write DB, then <b>invalidate</b> the key</td><td>fresh on next read</td><td>DB only</td><td>stale-repopulation race; a miss right after each write</td></tr>
+  <tr><td><b>Write-through</b></td><td>write cache <b>and</b> DB synchronously</td><td>always fresh</td><td>DB + cache</td><td>write amplification; caches data never read</td></tr>
+  <tr><td><b>Write-behind</b></td><td>write cache, ack, flush DB <b>later</b></td><td>DB temporarily behind</td><td>cache only (fast)</td><td>data loss if cache dies before flush; ordering</td></tr>
+</table>
+<p><b>Cache-aside</b> is the default because it is lazy and honest: the cache only ever holds data someone actually read, and the source of truth is always written first, so a crash between the two steps leaves a <i>stale cache</i> (self-heals on invalidate/TTL), never a <i>stale database</i>. <b>Write-through</b> buys guaranteed freshness by paying the cache write on the critical path of every DB write — worth it when reads must never see stale data, wasteful when you cache things that are rarely read. <b>Write-behind</b> is the fast-write extreme: acknowledge from RAM and flush to disk later (Lesson 47's memtable idea, applied across the cache/DB boundary) — great for absorbing write bursts, but the ack now precedes durability, so a cache node dying before the flush loses acknowledged writes. For a read-heavy catalog whose truth must survive, <b>cache-aside</b> is the fit; we'll build on it.</p>
+
+<h3>2. The sharper fork: on a write, <i>delete</i> the key or <i>overwrite</i> it?</h3>
+<p>Inside cache-aside sits the decision that trips up more systems than the policy choice: when the underlying value changes, do you <b>delete</b> the cache key (so the next read misses and repopulates from the DB) or <b>overwrite</b> it in place with the new value?</p>
+<ul>
+  <li><b>Delete / invalidate</b> — simple and race-resistant. Deletes are <i>idempotent and commutative</i>: two concurrent writers both deleting a key can't leave it holding a wrong value — they leave it empty, and the next read fetches the current truth. The cost is a guaranteed <b>miss</b> after every write (and, on a hot key, a stampede — Move 4).</li>
+  <li><b>Overwrite / update-in-place</b> — no miss, the new value is served immediately. But two concurrent writers race: if writer A (value <code>v1</code>) and writer B (value <code>v2</code>) interleave, the cache can end up holding <code>v1</code> while the DB holds <code>v2</code> — a <b>lost update inside the cache</b> (Lesson 6), and it persists until TTL. Safe only with a <b>version stamp</b> (write the value <i>and</i> its version; overwrite only if your version is newer, a compare-and-set — Lesson 6).</li>
+</ul>
+
+<p class="note why"><b>Name the trade-off — invalidate (correctness) vs overwrite (fewer misses).</b> Deleting keeps the cache trivially correct by making the DB re-answer, at the price of a miss and a possible herd. Overwriting avoids the miss but reintroduces every concurrency hazard the delete sidestepped, so it demands versioning to be safe. <span class="key">Default to delete; reach for versioned overwrite only for keys so hot that the post-write miss is itself the problem.</span> This is the same "recompute vs carry the value" tension as Lesson 33's invalidate-vs-update — here on a cache instead of a read model.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Follow a read hit, a read miss, a clean write, and the write's dangerous cousin — the stale-repopulation race — through the shared cache-aside tier.</p>
+
+<h3>Path A — a read hit (the 99%)</h3>
+<div class="diagram"><pre>
+  read  product:42
+
+   1. app server -> GET product:42 from the shared tier (routed by hash, L04)
+   2. HIT -> return the 2 KB blob. ~0.2 ms network round trip. DB untouched.
+
+  At 99% hit ratio this is 49,500 of every 50,000 reads/s. The DB never sees them.
+</pre></div>
+
+<h3>Path B — a read miss (populate)</h3>
+<div class="diagram"><pre>
+  read  product:99  (not cached, or expired)
+
+   1. GET product:99 -> MISS
+   2. read product 99 from the DB (source of truth) -> value v_now
+   3. SET product:99 = v_now  with a TTL (say 300 s)   [populate for next time]
+   4. return v_now
+
+  ~500 misses/s reach the DB -- a tenth of its 5,000/s budget. The TTL is a
+  BACKSTOP: even if no write ever invalidates this key, it can't stay stale
+  longer than 300 s (L14). Shorter TTL = fresher but more misses; longer TTL =
+  fewer misses but staler. That dial is the freshness-vs-load knob.
+</pre></div>
+
+<h3>Path C — a clean write (invalidate)</h3>
+<div class="diagram"><pre>
+  write  product:42  price 19.99 -> 17.99
+
+   1. UPDATE product 42 in the DB   -- source of truth first, always
+   2. DELETE product:42 from the cache   -- invalidate the one shared copy
+   3. next reader misses -> reads the DB (17.99) -> repopulates. Fresh.
+
+  DB-first, then invalidate: a crash after step 1 leaves a STALE CACHE entry that
+  the TTL will clear -- recoverable. Invalidate-first-then-write would leave a
+  window where a reader repopulates the OLD value from the not-yet-updated DB.
+</pre></div>
+
+<h3>Path D — the stale-repopulation race (why TTL alone isn't enough)</h3>
+<div class="diagram"><pre>
+  A slow READER and a WRITER interleave on product:42:
+
+   t0  reader R: GET product:42 -> MISS
+   t1  reader R: read DB -> gets OLD value v1 = 19.99
+   t2  (R stalls -- GC pause / slow network, L07/L22)
+   t3  writer  W: UPDATE DB -> v2 = 17.99
+   t4  writer  W: DELETE product:42        (cache now empty)
+   t5  reader R: wakes, SET product:42 = v1 = 19.99   <-- writes STALE back!
+   -------------------------------------------------------------------
+   Cache now holds 19.99 though the DB says 17.99 -- and STAYS wrong until TTL,
+   because no further write is coming to re-invalidate it.
+
+  FIXES (pick by how much staleness you can tolerate):
+   * TTL backstop      -- bounds the damage to <= TTL (300 s). Pragmatic default.
+   * version stamp     -- store (value, version); on populate, SET only if the
+                          fetched version >= the cached one (compare-and-set, L06).
+   * delete-after-delay-- writer deletes on write, then deletes AGAIN a few ms
+                          later, evicting any stale value a racing reader wrote.
+</pre></div>
+<p>Path A is why the cache exists; Path B is the tax you pay to fill it, dialed by the TTL. Path C is the write done right — <b>source of truth first, then invalidate the copy</b> — and Path D is the subtle bug the ordering <i>alone</i> doesn't fix: a reader that read the DB <i>before</i> the write can still populate the cache <i>after</i> the invalidate, and no amount of "delete instead of overwrite" prevents it, because the stale write comes from a <i>reader</i>, not a writer. A version stamp (or the humble TTL) is what finally bounds it. Every one of these paths assumed one shared copy. The moment we want reads faster than a network hop, we add a copy per server — and that is where coherence stops being a delete and becomes a broadcast.</p>
+
+<h2>Move 4 — Find the first bottleneck: the near cache brings back N copies</h2>
+<p>The shared tier answers in ~0.2 ms, but at 50,000 reads/s that round trip and that one tier are still a load and a dependency. The obvious win is a tiny <b>near cache (L1)</b> inside each app server — hold the top 10,000 products locally (<code>20 MB/server</code>), and the hottest reads never leave the process. It works beautifully for latency and instantly recreates the exact problem the shared tier solved: <b>now there are up to 286 copies of every hot key again</b>, and a write must reach all of them.</p>
+
+<div class="card calc">
+  <p><b>You can't delete a copy you can't address synchronously.</b> The shared tier had one copy at a known node — a targeted <code>DELETE</code>. The 286 near-caches are spread across the fleet, changing as servers autoscale (Lesson 27). You can't synchronously reach every one on the write path. So invalidation becomes a <b>broadcast</b>: on a write, publish "drop key <code>product:42</code>" to a <b>pub/sub</b> channel (Lesson 9) that every app server subscribes to, and each drops its local copy. At 500 writes/s fanned out to 286 subscribers that's <code>500 &times; 286 = <b>143,000</b></code> invalidation deliveries/s — cheap (they're tiny keys, not values), but now a moving part on the write path.</p>
+  <p><b>And the broadcast is best-effort, so the TTL becomes the safety net, not a nicety.</b> A subscriber that was briefly disconnected, restarting, or lagging misses the message and keeps serving the old price. There is no acknowledgement that all 286 dropped it. The only hard guarantee left is the <b>near-cache TTL</b>: set it short — say <b>10 seconds</b> — and the worst-case staleness of a missed invalidation is bounded to 10 s, at the cost of every near-cache entry reloading from the shared tier every 10 s. <span class="key">In a multi-copy cache, invalidation is an optimization that makes staleness usually-tiny; the TTL is the contract that makes it never-unbounded.</span></p>
+</div>
+
+<h3>The stampede: invalidating one hot key melts the layer below it</h3>
+<p>There is a second, sharper bottleneck hiding in the invalidate. Suppose <code>product:42</code> is the front-page item taking <b>10,000 reads/s</b> by itself. You invalidate it (a price change, or its TTL fires). Now every reader misses <i>the same key at the same instant</i> and rushes to recompute it. For the ~10 ms it takes to read the DB and repopulate, the number of in-flight duplicate misses is (Little's Law, Lesson 13) <code>10,000/s &times; 0.010 s = <b>100</b></code> simultaneous DB reads <i>for one key</i> — a <b>thundering herd</b> (Lesson 2), and on a hotter key or a slower recompute it is far worse. Multiply by the shared tier's own hot-shard problem (that key hashes to <i>one</i> cache node, Lesson 3) and a single popular product can overload both layers at once.</p>
+
+<div class="diagram"><pre>
+  hot key product:42 @ 10,000 reads/s is invalidated at t0:
+
+  NAIVE:  all readers miss -> ~100 concurrent identical DB reads (L13 L=R*T)
+          -> DB hot-spot / herd (L02). Worse on hotter keys.
+
+  FIX 1  SINGLE-FLIGHT (request coalescing): the first miss takes a short lock,
+         recomputes once, populates; the other ~99 WAIT and share that result.
+         100 DB reads -> 1. (L02's single-flight, now across the shared tier.)
+
+  FIX 2  SERVE-STALE / SWR (L02): don't delete on expiry -- serve the slightly
+         old value and refresh in the BACKGROUND, so an expiry is never a miss.
+         (Use only where a few seconds stale is acceptable -- not a price you
+          just legally changed; fine for a ratings summary.)
+
+  FIX 3  DON'T INVALIDATE HOT KEYS -- versioned OVERWRITE (Move 2): a write
+         replaces the value in place (with a version stamp), so the hottest keys
+         never go absent and never herd. Pay for it with the versioning machinery.
+</pre></div>
+
+<p class="note why"><b>Name the trade-off — freshness vs hit rate &amp; load, made concrete.</b> Every lever in Move 4 is the same dial. A <i>shorter</i> near-cache TTL and eager invalidation buy freshness but cost hit rate (more reloads) and load (more misses, more herd risk). A <i>longer</i> TTL and serve-stale buy hit rate and shield the source of truth but let readers see older data. Single-flight and versioned overwrite let you push toward freshness <i>without</i> paying the herd — they're how you cheat the dial, at the cost of more moving parts. <span class="key">There is no "just make it fresh and fast and cheap": you're always trading how current the copy is against how often you hit it and how hard the layer beneath it works.</span> This is Lesson 14's freshness-vs-speed and Lesson 2's herd, now spread across a fleet of caches instead of one.</p>
+
+<h3>The scoreboard: which knob for which need</h3>
+<table>
+  <tr><th>Need</th><th>Reach for</th><th>Pay in</th></tr>
+  <tr><td>Offload a huge, shared, read-heavy load</td><td>Shared cache tier, cache-aside, 99% hit</td><td>a stale window on every write until invalidate/TTL</td></tr>
+  <tr><td>Cut read latency below a network hop</td><td>Per-server near cache (L1)</td><td>N copies → invalidation fan-out + a short TTL</td></tr>
+  <tr><td>Never serve stale on read</td><td>Write-through (+ read-through)</td><td>cache write on every DB write's critical path</td></tr>
+  <tr><td>Absorb write bursts, fast acks</td><td>Write-behind</td><td>durability risk if the cache dies pre-flush</td></tr>
+  <tr><td>Survive a hot key's invalidation</td><td>Single-flight / SWR / versioned overwrite</td><td>coordination or a few seconds of staleness</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — invalidating the cache before writing the DB.</b> If you delete (or overwrite) the cache first and then write the DB, a reader can slip into the gap, miss, read the <i>not-yet-updated</i> DB, and repopulate the old value — permanently stale until TTL. Always write the source of truth <i>first</i>, then invalidate the copy (Path C). A crash then leaves a stale <i>cache</i> (self-healing), never a stale <i>database</i>.</li>
+  <li><b>Trap 2 — overwriting the cache in place without a version.</b> Update-in-place avoids a miss but lets two concurrent writers leave the cache holding the older value (a lost update inside the cache, Lesson 6), stuck until TTL. Either delete-to-invalidate (idempotent, race-free) or carry a version and overwrite only if newer (compare-and-set).</li>
+  <li><b>Trap 3 — trusting invalidation fan-out to be reliable.</b> A pub/sub broadcast to N near-caches is best-effort: a disconnected or lagging server never gets the message and serves stale indefinitely. The near-cache TTL is not optional decoration — it is the only bound on how wrong a missed invalidation can get. Keep it short.</li>
+  <li><b>Trap 4 — deleting a hot key and expecting the DB to absorb the miss.</b> Invalidating a key taking thousands of reads/s makes every reader miss at once and herd the source of truth (Lesson 2), and it lands on one hot cache shard (Lesson 3). Guard hot keys with single-flight, serve-stale, or versioned overwrite — never a bare delete.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>Lessons 2 and 14 taught the cache as a speed trick in front of one origin. This lesson took it to the real shape — <b>many app servers, one changing source of truth</b> — where the cache becomes a <i>copy-management</i> problem and the hard word is <b>coherence</b>. <b>Estimate</b> showed why the copies, not the bytes, are the issue: 286 private caches mean up to 286 stale copies to chase on every write (and 5.72 TB to hold the catalog 286 times), while one <b>shared tier</b> holds <b>one copy per key</b> — 20 GB once, one delete to invalidate — and has to run at a <b>99% hit ratio</b> because the DB (5,000 reads/s) physically cannot serve peak (50,000/s) without it. <b>Model</b> put the hard decisions on the write: <b>cache-aside</b> (write DB, invalidate — the honest default) vs <b>write-through</b> (always fresh, slow write) vs <b>write-behind</b> (fast, durability risk), and the sharper fork of <b>delete</b> (idempotent, race-free, but a miss) vs <b>versioned overwrite</b> (no miss, but demands compare-and-set, Lesson 6). <b>Tracing</b> walked the hit (the 99%), the miss (populate with a TTL backstop), the clean write (<b>source of truth first, then invalidate</b>), and the <b>stale-repopulation race</b> where a slow reader writes an old value back <i>after</i> a newer write — bounded only by a version stamp or a TTL. The <b>first bottleneck</b> arrived the instant we added a per-server <b>near cache</b> to beat the network hop: N copies returned, invalidation became a best-effort <b>pub/sub fan-out</b> (<code>500 &times; 286 = 143,000</code> drops/s) whose only hard guarantee is a short <b>TTL</b>, and invalidating one <b>hot key</b> (<code>10,000/s &times; 0.010 s = <b>100</b></code> simultaneous misses, Lesson 13) reignited Lesson 2's <b>thundering herd</b> — tamed by <b>single-flight</b>, <b>serve-stale</b>, or versioned overwrite. The real lesson: <span class="key">a cache is a copy, and every copy is a bet that the truth hasn't moved. Distributed caching is the discipline of deciding how each copy learns it lost that bet — and the cost of learning fast (eager invalidation, short TTLs, more copies to broadcast to) is exactly the cost you pay in hit rate and load. The standing tension: freshness vs cache hit rate &amp; load.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next we move from what sits behind the front door to the front door itself:</b></p>
+  <p style="margin:.2rem 0">• <b>API gateways &amp; the edge:</b> Lesson 42 balanced load across the fleet; this one asks what the single front door in front of it all should <i>do</i>. Auth, routing, request aggregation (the "backend-for-frontend"), and enforcing the cross-cutting rules — rate limits (Lesson 8), quotas, mTLS (Lesson 30) — in one place so 286 backends don't each re-implement them. The risk is the mirror of this lesson's shared tier: a fat gateway that becomes a <b>SPOF</b> (Lessons 7/26) and a deploy bottleneck (Lessons 31/36). The trade shifts to <b>centralized cross-cutting concerns vs a fragile shared choke point.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">cache tier</span>
+    <span class="pill">source of truth</span>
+    <span class="pill">cache coherence</span>
+    <span class="pill">cache-aside</span>
+    <span class="pill">read-through</span>
+    <span class="pill">write-through</span>
+    <span class="pill">write-behind</span>
+    <span class="pill">invalidation</span>
+    <span class="pill">delete vs overwrite</span>
+    <span class="pill">version stamp / CAS</span>
+    <span class="pill">TTL</span>
+    <span class="pill">near cache (L1/L2)</span>
+    <span class="pill">invalidation fan-out</span>
+    <span class="pill">pub/sub broadcast</span>
+    <span class="pill">stale-repopulation race</span>
+    <span class="pill">thundering herd</span>
+    <span class="pill">single-flight</span>
+    <span class="pill">stale-while-revalidate</span>
+    <span class="pill">hot key / hot shard</span>
+  </p>
+  <p>That's Lesson 48, built on Lesson 2's cache-aside, TTL/eviction, thundering herd &amp; single-flight/SWR (the read-side toolkit, now spread across a fleet), Lesson 3/4's hot-shard &amp; consistent-hash routing (one copy per key, and the hot key that lands on one node), Lesson 6's lost update &amp; compare-and-set (the overwrite race and its version-stamp fix), Lesson 9's pub/sub (the invalidation fan-out to N near-caches), Lesson 13's Little's Law (sizing the stampede at L=R&times;T), Lesson 14's freshness-vs-speed &amp; TTL-vs-purge (the dial, now across many caches), Lesson 27's fleet &amp; utilization knee (why the DB needs 99% offload), and Lesson 47's memtable-then-flush (write-behind as buffering the durable write). <b>Ask me follow-ups</b> — e.g. "how does a real system like Facebook's memcache handle the invalidation race (leases)?", "when is write-through actually worth the write-path cost?", "how do I pick a near-cache TTL from my invalidation-delivery reliability?", "what's the difference between this cache coherence and CPU cache coherence protocols?", or "how would versioned overwrite interact with the CQRS read models of Lesson 37?" When you're ready, say <b>next</b> and we'll go deeper on <i>API gateways &amp; the edge — centralized cross-cutting concerns vs a fragile shared choke point.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your catalog service runs 286 app servers, 50,000 reads/s, over a DB that safely serves ~5,000 reads/s, and the data changes ~500 times/s. A teammate proposes giving each app server its own private in-process cache instead of a shared cache tier, arguing 'local is faster and simpler.' What's the strongest reason to prefer one shared tier here?",
+    options: [
+      {t:"A shared tier holds exactly ONE copy per key (all servers route the same key to the same node via consistent hashing), so when a value changes you invalidate one place with one delete. Private caches create up to 286 independent copies of every hot key, each with its own lifetime — so a single write leaves up to 286 stale copies you must somehow reach, and a server the invalidation never reaches keeps serving old data until its entry expires. Because the data changes, the number of copies you must keep coherent is the dominant cost, and the shared tier deduplicates both the RAM and that invalidation surface.",
+       ok:true,
+       fb:"Right. With mutable data the hard problem is coherence, and coherence cost scales with the number of copies. One shared copy per key means one targeted delete; 286 private copies means an unreliable broadcast to a moving fleet, bounded only by TTL. Private caches are faster to read (no hop) but far harder to keep honest — which is exactly why we start shared and only add near-caches once we've priced their fan-out cost."},
+      {t:"Private in-process caches would use too much RAM: 286 servers × 20 GB = 5.72 TB, which is infeasible, whereas a shared tier needs only 20 GB total.",
+       ok:false,
+       fb:"The RAM figure is real only if every server cached the WHOLE catalog; in practice a private cache holds just each server's hot subset (~20 MB), so RAM isn't the blocker. The decisive problem isn't bytes — it's that mutable data turns every private copy into a separate thing to invalidate. Focusing on RAM misses why coherence, not capacity, drives the choice."},
+      {t:"A shared tier gives a higher hit ratio because it's bigger, and hit ratio is the only thing that matters for protecting the DB; coherence is a solved problem once the hit ratio is high enough.",
+       ok:false,
+       fb:"A bigger pooled working set does help hit ratio, but the claim that coherence is 'solved by a high hit ratio' is exactly the mistake this lesson exists to correct. A cache serving a stale value is still a HIT — high hit ratio and stale data coexist happily. Freshness (coherence) is an independent axis from hit rate, and with changing data it's the hard one."}
+    ]
+  },
+  {
+    stem: "You use cache-aside and delete the key on every write, always writing the DB first. You still occasionally see a cache entry stuck holding an old price for minutes. Tracing it: reader R missed and read v1=19.99 from the DB, then stalled (GC pause); meanwhile writer W updated the DB to v2=17.99 and deleted the cache key; then R woke and populated the cache with v1. What's actually going on, and what fixes it?",
+    options: [
+      {t:"This is the stale-repopulation race, and 'delete instead of overwrite' + 'DB first' can't prevent it — because the stale write comes from a READER, not a writer. R read the old value before the write, but populated the cache after the invalidate, so its SET lands last and wins. Ordering the writer's steps doesn't help; you need to bound or detect the stale populate: a TTL backstop caps the damage to at most one TTL, or a version stamp lets the populate be a compare-and-set (write only if the fetched version is at least as new as what's cached), or the writer double-deletes after a short delay to evict a racing reader's stale SET.",
+       ok:true,
+       fb:"Exactly. The race is reader-vs-writer, not writer-vs-writer, so the usual 'delete, DB-first' rules leave it open — R's late SET of a pre-write value overwrites the invalidate. The bound is a TTL (pragmatic), and the true fix is versioning (CAS on populate) or delete-after-delay. This is why a TTL is a backstop even when you invalidate eagerly."},
+      {t:"The bug is that you deleted instead of overwriting. If the writer had SET the new value 17.99 into the cache instead of deleting, there'd be no window for R to repopulate, and the race disappears.",
+       ok:false,
+       fb:"Overwriting doesn't close this race: R still holds v1 from its earlier DB read and will SET v1 AFTER the writer's SET v2, landing last and clobbering the fresh value — same stale outcome. Worse, overwrite-in-place adds a writer-vs-writer lost-update race the delete avoided. Without a version check, neither delete nor overwrite fixes a reader that writes an old value back late."},
+      {t:"The DB replication lag is the cause — R read a stale replica. Route all cache-miss reads to the primary and the stale populate can't happen.",
+       ok:false,
+       fb:"Reading the primary doesn't help: in the trace R read v1 from an up-to-date source at t1, before the write existed — the staleness comes from R populating LATE (after the write and invalidate), not from reading a lagging replica. Even with every read on the primary, a reader that fetched before the write can still SET after it. The fix is a version stamp or TTL, not read routing."}
+    ]
+  },
+  {
+    stem: "To cut read latency you add a per-server near cache (L1) in front of the shared tier. Now a price change must reach up to 286 local copies. You broadcast a 'drop key X' message over pub/sub so each server evicts its copy. A teammate says: 'Great, invalidation is now instant and reliable everywhere — we can drop the TTLs on the near caches.' Why is dropping the TTL dangerous?",
+    options: [
+      {t:"The pub/sub broadcast is best-effort: a server that was briefly disconnected, restarting, lagging, or that joined after the message was sent never receives 'drop key X' and keeps serving the stale value — and there's no acknowledgement that all 286 evicted it. Without a TTL there is NO bound on how long such a missed invalidation stays wrong; it could serve the old price indefinitely. The short near-cache TTL isn't decoration — it's the only hard guarantee that a missed broadcast self-heals within a bounded window (e.g. 10 s).",
+       ok:true,
+       fb:"Right. Fan-out to N copies is an optimization that usually makes staleness tiny, but it's unreliable by nature — no per-subscriber ack, and the fleet is always churning. The TTL is the contract that turns 'usually fresh' into 'never stale longer than T.' Drop it and one dropped message becomes permanent staleness."},
+      {t:"It's fine to drop the TTL — pub/sub delivers to all current subscribers, so as long as no server is added or removed during the publish, every near cache is guaranteed to evict, making the TTL redundant.",
+       ok:false,
+       fb:"That guarantee doesn't exist: pub/sub is best-effort, subscribers can be disconnected/lagging/restarting independent of membership changes, and there's no ack that all evicted. 'No server added or removed during the publish' is both unrealistic on an autoscaling fleet and insufficient — an existing but briefly-disconnected server still misses it. The TTL is what bounds those misses."},
+      {t:"Dropping the TTL is dangerous only because near caches would grow unbounded in memory without expiry; add an LRU size cap instead and you can safely drop the TTL for coherence purposes.",
+       ok:false,
+       fb:"An LRU cap controls memory, not staleness — an entry that stays hot is never evicted by LRU, so a missed invalidation on a hot key can serve the old value forever under a pure size cap. The TTL's job here isn't memory management; it's bounding how long an unreliable invalidation can stay wrong. Size cap and coherence TTL solve different problems."}
+    ]
+  },
+  {
+    stem: "One product, product:42, takes 10,000 reads/s by itself. Its price changes and you invalidate (delete) the key. Latency spikes and the DB briefly overloads. A teammate says 'the cache is too small — give it more memory so this doesn't happen.' What's really happening and what's the right fix?",
+    options: [
+      {t:"It's a thundering herd: deleting a hot key makes every reader miss the SAME key at the SAME instant. During the ~10 ms it takes to recompute from the DB, the in-flight duplicate misses are L=R×T = 10,000/s × 0.010 s ≈ 100 simultaneous DB reads for one key — and they all land on the single cache shard that key hashes to. More cache memory doesn't help (the key was evicted on purpose, and it's one key). The fix is single-flight (one reader recomputes while the other ~99 wait and share the result), serve-stale/SWR where a few seconds stale is acceptable, or a versioned overwrite so the hot key never goes absent.",
+       ok:true,
+       fb:"Exactly. The problem is coordination on a single hot key at the moment of invalidation, not total cache capacity — Little's Law sizes the herd (L=R×T) and it lands on one hot shard. Single-flight collapses ~100 DB reads to 1; serve-stale avoids the miss entirely; versioned overwrite keeps the key present. Adding memory addresses none of those."},
+      {t:"The DB overloaded because the cache miss rate is too high overall; raise the global hit ratio from 99% to 99.9% by increasing TTLs across all keys and the herd goes away.",
+       ok:false,
+       fb:"This isn't an aggregate hit-ratio problem — it's a single-key event at the instant of invalidation. Longer TTLs on everything else don't stop 100 simultaneous misses on product:42 the moment you delete it (and you deleted it precisely because it changed). The herd is about coordinating concurrent misses on one hot key, which single-flight/SWR solve directly; a blanket TTL bump just makes all other data staler."},
+      {t:"The real fix is to shard the cache across more nodes so product:42's load is spread over many cache servers, eliminating the hot spot.",
+       ok:false,
+       fb:"A single key hashes to ONE node no matter how many nodes you add, so sharding doesn't spread a single hot key's load (that's the hot-shard problem of Lesson 3). And even if it did, the DB herd on invalidation would remain — 100 concurrent readers still miss and recompute the same key. You need to coordinate those misses (single-flight) or avoid the miss (serve-stale / versioned overwrite), not add shards."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
