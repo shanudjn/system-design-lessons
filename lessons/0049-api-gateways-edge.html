@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 49 — API Gateways &amp; the Edge: One Front Door for Many Backends</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 49 · Worked Example</div>
+  <h1>API Gateways &amp; the Edge: One Front Door for Many Backends</h1>
+  <p class="lead">Lesson 42 answered <i>which backend serves each request</i> — it balanced load across a fleet. This lesson asks the question that sits one step earlier: what should the single <b>front door</b> in front of all those backends actually <i>do</i>? Once a system is 30 microservices instead of one monolith, a pile of work has no natural home — checking who the caller is, enforcing the rate limit, terminating TLS, deciding which service a URL belongs to, stitching six services' answers into one screen for a phone. Push that work <i>into</i> every service and you write it 30 times, 30 slightly-differently, with 30 chances to leave a hole. Pull it <i>out</i> to a shared front door and you write it once — but now every request in the system crosses one component, and that component is a single point of failure and a place every team's changes collide. We'll take a concrete edge — a mobile app's home screen over <b>40,000 requests/second</b> to <b>30 backend services</b> — and <b>estimate</b> what a gateway saves: a 6-call home screen collapsed from <b>~300 ms</b> to <b>~106 ms</b>, cross-cutting security written <b>once</b> instead of 30 times, and 20% junk traffic rejected before it touches a backend. We'll <b>model</b> what a gateway <i>is</i> and its seven jobs, and draw the line between the <b>north-south</b> gateway and the <b>east-west</b> service mesh. We'll <b>trace</b> a clean request, the <b>aggregating</b> BFF call, a request rejected at the edge, and a partial failure where one of six services times out. And we'll hit the wall the front door builds into the system: it is the <b>fattest SPOF</b> you own (Lessons 7/26/42) and, if you let it grow fat with business logic, a <b>deploy bottleneck</b> every team must queue behind (Lessons 31/36). The trade underneath: <b>centralized cross-cutting concerns vs a fragile shared choke point.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0049-api-gateways-edge.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>Our backend is no longer one program. It's <b>30 microservices</b> — a profile service, an orders service (Lessons 12/37), a cart, a recommendations service (Lesson 16), notifications (Lesson 26), promotions, and two dozen more — each owned by a different team, each deployed on its own schedule (Lesson 31), each behind Lesson 42's load balancer. The clients are phones and browsers out on the public internet, generating <b>40,000 requests/second</b> at peak (Lesson 27's fleet). Every single request needs the same handful of things done to it <i>before</i> any service should touch it: the caller's identity has to be verified, the request has to be checked against a rate limit (Lesson 8), the TLS connection has to be terminated (Lesson 30), and the URL has to be matched to <i>which</i> of the 30 services owns it. And one common screen — the app's home tab — needs data from <b>six</b> of those services at once. The question is where all of that lives. Put it in the 30 services and you have 30 copies of security-critical code. Put it in one front door — an <b>API gateway</b> — and you have one copy, one choke point, one thing that must never go down.</p>
+
+<div class="diagram"><pre>
+  40,000 req/s from phones &amp; browsers on the public internet.
+  30 backend services, each owned by a different team.
+  EVERY request needs the same cross-cutting work done first.
+
+   [ phones / browsers ]
+          |  ONE TLS connection, ONE request
+          v
+  +-----------------------------------------------------+
+  |               API GATEWAY  (the edge)               |   <- the FRONT DOOR
+  |  1 TLS terminate   2 authenticate   3 rate-limit    |      (north-south)
+  |  4 route by path   5 aggregate(BFF) 6 observe(L17)  |
+  +-----------------------------------------------------+
+      |            |            |          |        |
+      v            v            v          v        v
+  [profile]   [orders]     [cart]   [recommend] [notify] ... 30 services
+   (fast internal LAN, ~2 ms round trip; identity passed as a trusted header)
+
+  WITHOUT a gateway:  each of 30 services re-does auth + rate-limit + TLS
+                      -> 30 copies, 30 deploys per policy change, 30 holes.
+  WITH a gateway:     write it ONCE at the door. But now 100% of traffic
+                      crosses ONE box -> its death = total outage (L07/26/42),
+                      and a FAT gateway becomes a shared deploy bottleneck (L36).
+
+  north-south (client &lt;-&gt; backend) = the GATEWAY, this lesson.
+  east-west  (service &lt;-&gt; service)  = the service MESH / sidecars (L34).
+</pre></div>
+
+<p class="note"><span class="key">An API gateway is a reverse proxy at the edge of your system that terminates the client's connection and applies the concerns every request shares — identity, rate limiting, TLS, routing, sometimes aggregation and observability — before handing a clean, trusted request to the right internal service.</span> "Cross-cutting" is the load-bearing word: these are jobs that cut across <i>every</i> service, belong to <i>none</i> of them, and are dangerous to implement inconsistently. The gateway is where they get one home.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>API gateway</b> — a reverse proxy at the system's edge that all client traffic passes through, applying cross-cutting concerns and routing each request to a backend service.</li>
+  <li><b>Cross-cutting concern</b> — a job that every service needs done but that belongs to no single service: authentication, rate limiting, TLS, logging. Centralizing it avoids re-implementing it N times.</li>
+  <li><b>Reverse proxy</b> — a server that accepts a client's request and forwards it to one of several backends on the client's behalf, hiding the backends from the client (Lesson 42's load balancer is one).</li>
+  <li><b>North-south traffic</b> — requests between the outside world (clients) and your system. The gateway's domain.</li>
+  <li><b>East-west traffic</b> — requests between your own services, inside the system. The <b>service mesh</b>'s domain (Lesson 34's sidecars), not the gateway's.</li>
+  <li><b>TLS termination</b> — decrypting the client's encrypted connection at the edge so the request can be inspected and routed (Lesson 30).</li>
+  <li><b>Authentication (authN)</b> — verifying <i>who</i> the caller is (validating a token). Distinct from <b>authorization (authZ)</b> — deciding <i>what</i> they may do.</li>
+  <li><b>Request aggregation / BFF (backend-for-frontend)</b> — the gateway fanning one client request out to several services and composing their answers into one response shaped for that client.</li>
+  <li><b>Trusted-identity header</b> — after the gateway authenticates the external token once, it forwards the verified identity to downstream services as a signed internal header, so they don't each re-validate the external token.</li>
+  <li><b>SPOF (single point of failure)</b> — a component whose failure takes the whole system down. The gateway is the fattest one you own (Lessons 7/26).</li>
+  <li><b>Admission control</b> — rejecting unwanted requests (unauthenticated, over-quota, abusive) at the edge before they consume backend work (Lesson 28).</li>
+</ul>
+
+<h2>Move 1 — Estimate: what the front door buys, and what it centralizes</h2>
+<p>Three numbers make the case for a gateway — and each one, flipped over, is also the cost. The gateway saves duplicated security code, saves mobile round trips, and saves backend CPU on junk; in exchange it becomes the one component that sees 100% of traffic.</p>
+
+<div class="card calc">
+  <p><b>1. Cross-cutting security, written once vs thirty times.</b> Every request needs its token verified and its rate checked. Do that inside each service and the auth logic lives in <b>30 codebases</b>. A change every team fears — rotating the signing key, tightening a rate limit, patching a token-parsing bug — becomes <b>30 deploys</b> across 30 teams on 30 schedules, with 30 chances to drift out of sync. And the failure mode isn't gradual: it takes <i>one</i> service that forgot to add rate limiting to become the unprotected hole the whole system leaks through. Centralize the check at the gateway and it is <b>one</b> implementation, <b>one</b> deploy, <b>one</b> place to get right. <span class="key">The value isn't just less code — it's <i>consistent</i> enforcement: a rule applied in one place can't be forgotten in another.</span></p>
+  <p><b>2. Six mobile round trips collapsed to one.</b> The home screen needs data from six services, and those calls often <i>chain</i> — fetch the profile, then that user's recent orders, then recommendations based on those orders — say <b>3 dependent hops</b>. From the phone, each hop pays the mobile round-trip time (Lesson 14's speed-of-light tax over cellular), about <b>100 ms</b>: <code>3 &times; 100 ms = <b>300 ms</b></code>, plus a TLS handshake per connection and the phone having to know all six service addresses. Move the composition into the gateway (the <b>BFF</b>): the phone makes <b>one</b> request (1 mobile round trip, 100 ms) and the gateway runs those 3 chained hops over the internal LAN at ~<b>2 ms</b> each: <code>100 + 3 &times; 2 = <b>106 ms</b></code> — a <b>~2.8&times;</b> latency cut, and the phone holds <b>1</b> connection instead of 6.</p>
+  <p><b>3. Junk rejected before it costs anything.</b> Say <b>20%</b> of edge traffic is unauthenticated or abusive — expired tokens, scrapers, over-quota callers: <code>20% &times; 40,000 = <b>8,000 req/s</b></code>. The gateway rejects each with a cheap <code>401</code>/<code>429</code> after a token check, so it never reaches a backend. Without the gateway that 8,000/s fans out into the 30 services and burns real CPU on work whose answer is "no" — Lesson 28's goodput problem. <span class="key">A front door is also a shield: the cheapest request to serve is the one you reject before it enters.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off — centralized cross-cutting concerns vs a fragile shared choke point.</b> Every saving above comes from the same move: funnel all traffic through one place and do the shared work there. That is exactly what makes the gateway powerful (one place to enforce, compose, and shield) and exactly what makes it dangerous (one place whose failure is everyone's failure, one place every team's change must pass through). <span class="key">The gateway trades N scattered, inconsistent implementations for one consistent implementation that is also one shared dependency.</span> The rest of the lesson is about keeping the first half of that trade while defusing the second.</p>
+
+<h2>Move 2 — Model: what a gateway is, and the seven jobs it does</h2>
+<p>A gateway is a reverse proxy (Lesson 42) with a pipeline of steps that run on every request before it reaches a service. The steps are the cross-cutting concerns, in order.</p>
+
+<h3>1. The request pipeline — seven jobs at the door</h3>
+<table>
+  <tr><th>#</th><th>Job</th><th>What it does</th><th>Builds on</th></tr>
+  <tr><td>1</td><td><b>TLS termination</b></td><td>decrypt the client connection once, at the edge</td><td>L30</td></tr>
+  <tr><td>2</td><td><b>Authentication</b></td><td>validate the token; reject if invalid (401)</td><td>L30</td></tr>
+  <tr><td>3</td><td><b>Rate limit / quota</b></td><td>token-bucket per API key; reject if over (429)</td><td>L08</td></tr>
+  <tr><td>4</td><td><b>Routing</b></td><td>match path/host to a service; pick an instance</td><td>L34/L42</td></tr>
+  <tr><td>5</td><td><b>Aggregation (BFF)</b></td><td>fan out to several services, compose one reply</td><td>L15</td></tr>
+  <tr><td>6</td><td><b>Observability</b></td><td>assign the trace ID, log, meter latency</td><td>L17</td></tr>
+  <tr><td>7</td><td><b>Protocol translation</b></td><td>external REST/JSON &harr; internal gRPC, etc.</td><td>L18</td></tr>
+</table>
+<p>Jobs 1&ndash;4 and 6 are the <i>thin</i> core every gateway does: terminate, authenticate, limit, route, observe. Jobs 5 and 7 — aggregation and translation — are where a gateway starts carrying <i>logic</i>, and where the "fat gateway" risk begins (Move 4). A crucial modelling choice makes the downstream services simpler: after job 2 authenticates the external token <b>once</b>, the gateway forwards the verified identity as a <b>trusted-identity header</b> (signed, and carried over mutual TLS so a service can trust it), so the 30 services never re-parse the external token. They authorize (<i>what</i> may this identity do?) but don't re-authenticate (<i>who</i> is this?). Authentication is centralized; authorization stays with the service that owns the resource.</p>
+
+<h3>2. The line that keeps the gateway from swallowing the mesh: north-south vs east-west</h3>
+<p>The gateway handles <b>north-south</b> traffic: the untrusted outside world talking to your system. That's why it does authentication, TLS from strangers, and public rate limiting. Traffic <i>between</i> your own services — <b>east-west</b> — is a different problem with a different tool: the <b>service mesh</b> (Lesson 34's sidecars), which handles service-to-service discovery, retries, mTLS, and load balancing <i>inside</i> the trust boundary. Confusing the two produces a gateway that every internal call is forced to detour through — re-creating the choke point on every hop. <span class="key">One front door for the outside; a mesh of side doors for the inside.</span></p>
+
+<h3>3. One gateway, or one per client? The BFF split</h3>
+<p>A phone and a desktop browser want different shapes of the same data — the phone a small, pre-composed home-screen blob; the browser a richer one. Cramming both into one gateway makes it a tangle where a mobile change risks breaking web. The <b>backend-for-frontend</b> pattern gives each client type its <i>own</i> thin gateway (a mobile BFF, a web BFF, a partner-API gateway), each owned by that client's team, each shaped for its client — all sharing the same downstream services. Aggregation logic (the fat part) lives in the per-client BFF; the shared cross-cutting core (auth, rate limit) can still be one layer in front. This is the main tool for keeping the gateway from becoming one god-object every team edits.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Follow four requests through the edge: a clean authenticated call, the aggregating home-screen call, a request rejected at the door, and a partial failure inside an aggregation.</p>
+
+<h3>Path A — a normal authenticated request</h3>
+<div class="diagram"><pre>
+  GET /orders/1234   (from an authenticated phone)
+
+   1. TLS terminate            -- decrypt once at the edge (L30)
+   2. authenticate token       -- valid? yes. extract user=alice
+   3. rate-limit check         -- alice's bucket has tokens? yes (L08)
+   4. route /orders/* -> orders-svc; pick an instance (L34 discovery, L42 LB)
+   5. forward with a SIGNED identity header (user=alice), over mTLS
+   6. orders-svc AUTHORIZES (may alice read order 1234?) -> yes -> responds
+   7. gateway logs + records the trace span (L17), returns the reply
+
+  The service never parsed the external token. authN centralized, authZ local.
+</pre></div>
+
+<h3>Path B — the aggregating home screen (BFF)</h3>
+<div class="diagram"><pre>
+  GET /home   (ONE request from the phone, 100 ms mobile RTT away)
+
+  gateway fans out over the fast LAN (~2 ms/hop), chaining where needed:
+     profile-svc --> orders-svc --> recommend-svc   (3 dependent hops)
+                 \-> cart-svc  \-> notify-svc \-> promo-svc  (parallel)
+     compose the six answers into ONE home-screen blob -> return.
+
+   phone cost:  1 mobile round trip           = 100 ms
+   gateway:     3 chained LAN hops @ 2 ms      =   6 ms
+   ------------------------------------------------------
+   total ~= 106 ms   vs   client-side 3x100 = 300 ms  (~2.8x cut)
+                          and 1 phone connection instead of 6.
+</pre></div>
+
+<h3>Path C — rejected at the edge (the shield)</h3>
+<div class="diagram"><pre>
+  GET /orders/1234   with an EXPIRED token   (or alice is over quota)
+
+   1. TLS terminate
+   2. authenticate -> INVALID  ->  return 401  (or, over-limit -> 429, L08)
+   -------------------------------------------------------------------
+   STOP. No routing, no backend touched. ~8,000 req/s of junk (Move 1)
+   die here for the cost of a token check -- admission control (L28).
+   The 30 services never spend a cycle on a request whose answer is "no".
+</pre></div>
+
+<h3>Path D — a partial failure in aggregation</h3>
+<div class="diagram"><pre>
+  GET /home  -- but recommend-svc is slow/down this second (L07 partial failure)
+
+  NAIVE:  gateway waits on all six -> recommend-svc hangs to a 3 s timeout
+          -> the WHOLE home screen fails. One service's fate = all six's.
+
+  BETTER: per-call timeout + graceful DEGRADE (L07):
+          return the 5 that answered + a null/placeholder for recommendations.
+          The home screen renders; the "for you" row is empty, not a spinner.
+
+  The trade aggregation creates: composing N services into 1 response COUPLES
+  their fates unless you explicitly degrade. The gateway must own a timeout
+  and a fallback PER downstream call, or it inherits the worst of all six.
+</pre></div>
+<p>Path A is the everyday request and shows the identity trick: authenticate once, pass a signed header, let each service authorize locally. Path B is the aggregation win — but notice it is also the moment the gateway stopped being a dumb proxy and started running application logic. Path C is the gateway earning its keep as a shield, killing junk for the price of a token check. And Path D is the bill for Path B: the instant you compose six services into one answer, one slow service can sink the whole screen unless the gateway holds a per-call timeout and a fallback. Every one of these paths ran through one box. That box is the bottleneck.</p>
+
+<h2>Move 4 — Find the first bottleneck: the front door is the fattest SPOF you own</h2>
+<p>By design, <b>100% of traffic crosses the gateway</b>. That is its power in Moves 1&ndash;3 and its danger here: if the gateway is down, every service behind it is unreachable even though every one of them is healthy — a total outage from a single component (Lessons 7/26/42, the same shape as the load-balancer SPOF). And there is a second, slower failure that has nothing to do with uptime: the gateway becomes the place every team's change must pass through, and a shared component that everyone must edit is a <b>deploy bottleneck</b> with a 100% blast radius (Lesson 36).</p>
+
+<div class="card calc">
+  <p><b>The availability SPOF — fix it by making the gateway a disposable herd.</b> A gateway that holds no per-request state is <i>stateless</i> — token-based auth means there's no session to pin to a box (Lesson 26's "make the stateful thing cheap to lose"). So run <b>many</b> gateway instances behind Lesson 42's load balancer (or anycast / a floating VIP), sized with N+1 headroom (Lesson 27) so any one can die and the survivors absorb it. At <b>40,000 req/s</b>, if one instance handles ~8,000 req/s you run <code>5 + 1 = <b>6</b></code> for single-fault tolerance. The gateway stops being <i>a</i> point of failure by being <i>many</i> interchangeable ones. Health-check and drain them on deploy exactly like any other service (Lessons 31/34).</p>
+  <p><b>The deploy-bottleneck SPOF — fix it by keeping the gateway thin.</b> The tempting move is to keep adding logic to the gateway: response transformation, request validation, business rules, one more team's special case. Each addition makes the gateway fatter, more fragile, and more coupled — and turns it into the 1990s <b>ESB (enterprise service bus)</b>, the shared middle everyone waited behind. The discipline: the shared gateway does <b>only</b> cross-cutting concerns (auth, rate limit, routing, TLS, observability); <i>business</i> logic and aggregation move <b>out</b> — into per-client <b>BFFs</b> owned by client teams, and into the services themselves. Route configuration is <b>declarative and owned per team</b> (a service ships its own route/rate-limit config as data), so adding a service isn't a change to the gateway's code. <span class="key">A gateway that carries only concerns nobody owns stays small; a gateway that carries logic everybody owns becomes the bottleneck the microservices were meant to remove.</span></p>
+</div>
+
+<h3>The scoreboard: which need, which lever</h3>
+<table>
+  <tr><th>Need</th><th>Reach for</th><th>Pay in</th></tr>
+  <tr><td>One consistent place for auth / rate-limit / TLS</td><td>Thin API gateway (jobs 1&ndash;4, 6)</td><td>a shared dependency all traffic crosses</td></tr>
+  <tr><td>Fewer mobile round trips, client-shaped replies</td><td>Aggregation / BFF (per client type)</td><td>gateway runs logic; coupled fates → must degrade</td></tr>
+  <tr><td>Reject junk before it costs backend work</td><td>Edge admission control (401/429)</td><td>the gateway must itself absorb the junk load</td></tr>
+  <tr><td>Survive the gateway dying</td><td>Many stateless instances + LB/anycast, N+1</td><td>redundancy cost; drain-on-deploy discipline</td></tr>
+  <tr><td>Avoid a god-gateway deploy bottleneck</td><td>Keep it thin; per-team declarative config; BFFs</td><td>logic spread across BFFs instead of one place</td></tr>
+  <tr><td>Service-to-service concerns (retries, mTLS)</td><td>Service mesh / sidecars (east-west)</td><td>a second layer to run — not the gateway's job</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — the god gateway (ESB reborn).</b> Piling business logic, response transforms, and every team's special case into the shared gateway makes it fat, fragile, and a deploy bottleneck every team queues behind (Lesson 36's shared-component blast radius). Keep the shared layer to cross-cutting concerns only; push logic and aggregation out to per-client BFFs and the services.</li>
+  <li><b>Trap 2 — treating the gateway as "infra that just works."</b> It's the one component 100% of traffic crosses — the fattest SPOF you own (Lessons 7/26/42). It needs many stateless instances behind a load balancer, health checks, N+1 headroom, and drain-on-deploy, or its single failure is a total outage.</li>
+  <li><b>Trap 3 — re-authenticating at every hop, or trusting the internal call blindly.</b> Making all 30 services re-validate the external token defeats the point of centralizing auth; but blindly trusting any internal call lets an attacker who reaches a service directly <i>bypass</i> the gateway (the confused-deputy hole). The fix is both: authenticate once at the edge, pass a <i>signed</i> identity header over <b>mTLS</b> (Lesson 30) so services trust the gateway but nothing else — zero-trust internally.</li>
+  <li><b>Trap 4 — aggregating without per-call timeouts and fallbacks.</b> Composing six services into one response couples their fates: one slow service hangs the whole screen (Lesson 7). Every downstream call in an aggregation needs its own timeout and a graceful degrade (return the parts that answered), or the gateway inherits the worst latency and lowest availability of everything it fans out to.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>Once a system is many services instead of one, a set of jobs — identity, rate limiting, TLS, routing, composition, observability — belongs to <i>every</i> service and to <i>none</i>. This lesson gave them a home: the <b>API gateway</b>, the front door all north-south traffic crosses. <b>Estimate</b> made the case in three numbers, each a saving that is also a cost: cross-cutting security written <b>once</b> instead of across 30 codebases (30 deploys → 1, and no forgotten hole); a 6-call home screen collapsed from <code>3&times;100 = 300 ms</code> to <code>100 + 3&times;2 = <b>106 ms</b></code> by moving composition into a <b>BFF</b>; and <code>20% &times; 40,000 = <b>8,000 req/s</b></code> of junk rejected at the door for the price of a token check (Lesson 28's shield). <b>Model</b> laid out the gateway's seven jobs and the identity trick that keeps services simple — authenticate <b>once</b>, forward a <b>signed identity header</b>, let each service authorize locally — plus the two lines that keep a gateway from swallowing the system: <b>north-south</b> (gateway) vs <b>east-west</b> (service mesh), and one shared gateway vs <b>per-client BFFs</b>. <b>Tracing</b> walked a clean request, the aggregating home screen, a junk request killed at the edge, and the partial failure that is aggregation's bill — one slow service sinks the screen unless the gateway holds a <b>per-call timeout and fallback</b> (Lesson 7). The <b>first bottleneck</b> is the front door itself, failing two ways: as the <b>fattest SPOF you own</b> (fixed by making it a stateless, disposable <b>herd</b> behind Lesson 42's LB, N+1, drained on deploy) and as a <b>deploy bottleneck</b> (fixed by keeping it <b>thin</b> — cross-cutting concerns only, business logic and aggregation pushed out to BFFs and services, routes as per-team declarative config). <span class="key">A gateway is worth it exactly when the concerns it centralizes are ones no single service should own and every service must get right — and it stays worth it only as long as you keep it thin and redundant, so the one door that lets everyone in never becomes the one door that keeps everyone out. The standing tension: centralized cross-cutting concerns vs a fragile shared choke point.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next we zoom out one more level — from the front door of one region to routing across many:</b></p>
+  <p style="margin:.2rem 0">• <b>Global traffic management (GeoDNS / anycast / failover):</b> this lesson put a front door in front of one fleet. Lesson 23 ran the system live in more than one region. The next question is how a user in Sydney reaches the <i>nearest healthy</i> region — geo/latency-based DNS or anycast to steer them, health-based failover to drain a dead region, and a DNS TTL that bounds how fast you can pull traffic away from one (Lessons 10/11's split-brain risk, now at the routing layer). The trade shifts to <b>proximity &amp; availability vs routing staleness &amp; complexity.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">API gateway</span>
+    <span class="pill">cross-cutting concern</span>
+    <span class="pill">reverse proxy</span>
+    <span class="pill">north-south vs east-west</span>
+    <span class="pill">service mesh</span>
+    <span class="pill">TLS termination</span>
+    <span class="pill">authentication vs authorization</span>
+    <span class="pill">trusted-identity header</span>
+    <span class="pill">mTLS</span>
+    <span class="pill">request aggregation</span>
+    <span class="pill">BFF</span>
+    <span class="pill">rate limit / quota</span>
+    <span class="pill">admission control</span>
+    <span class="pill">graceful degradation</span>
+    <span class="pill">SPOF</span>
+    <span class="pill">deploy bottleneck</span>
+    <span class="pill">ESB / god gateway</span>
+  </p>
+  <p>That's Lesson 49, built on Lesson 7's partial failure / timeouts / SPOF (the aggregation degrade and the front-door SPOF), Lesson 8's token-bucket rate limiting (enforced once at the edge), Lesson 15's fan-out (the BFF composing many services into one reply), Lesson 17's tracing (the gateway as the place trace IDs are minted), Lesson 26's disposable stateless front door (why the gateway scales as a herd), Lesson 28's admission control / goodput (rejecting junk at the door), Lesson 30's TLS/mTLS &amp; identity (terminate once, pass a signed header, zero-trust internally), Lesson 34's service discovery &amp; the east-west mesh (the line the gateway doesn't cross), Lesson 36's shared-component blast radius (why a fat gateway is a deploy bottleneck), and Lesson 42's load balancing (what runs behind and in front of the gateway). <b>Ask me follow-ups</b> — e.g. "how is an API gateway different from a plain load balancer?", "when should aggregation live in a BFF vs the client vs a dedicated service?", "how do gateways and service meshes divide the work in a real mesh like Istio?", "what exactly stops someone from bypassing the gateway and calling a service directly?", or "how do I keep 40 teams' route configs from turning the gateway into a merge-conflict swamp?" When you're ready, say <b>next</b> and we'll go deeper on <i>global traffic management — proximity &amp; availability vs routing staleness &amp; complexity.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your 30 microservices each validate the external auth token and enforce rate limits themselves. Security wants to rotate the token-signing key and tighten a rate limit. A teammate says 'no problem, it's a small code change.' What's the strongest argument for moving auth and rate limiting to a shared API gateway instead?",
+    options: [
+      {t:"With the logic in 30 codebases, a single policy change (key rotation, a tighter limit, a token-parsing fix) becomes 30 deploys across 30 teams on 30 schedules — with 30 chances to drift out of sync, and the failure mode is one service that forgets to enforce a rule becoming the unprotected hole the whole system leaks through. A gateway makes it one implementation, one deploy, and — the real win — consistent enforcement that can't be forgotten in one place while present in another.",
+       ok:true,
+       fb:"Right. The point isn't merely less code; it's that a cross-cutting rule applied in one place is applied everywhere, whereas 30 copies drift and one omission is a hole. Centralizing auth and rate limiting turns a 30-deploy, 30-chances-to-drift change into a single consistent one — the core reason these concerns belong at the edge, not scattered across services."},
+      {t:"A gateway is faster: terminating TLS and checking tokens in one optimized proxy is lower-latency than doing it in each service, so the main benefit is per-request speed.",
+       ok:false,
+       fb:"A gateway actually ADDS a hop (parse, auth, route) to every request — it's not primarily a latency win for the check itself. The decisive benefit is consistency and single-point-of-change for a cross-cutting security concern, not raw speed. Framing it as 'faster' misses why you'd accept an extra hop to get it."},
+      {t:"Centralizing auth removes the single point of failure, because the gateway is more reliable than 30 separate services each doing their own auth.",
+       ok:false,
+       fb:"It's the opposite: a gateway CREATES a single point of failure — 100% of traffic now crosses one component. You accept that (and mitigate it with many stateless instances behind a load balancer) in exchange for consistent enforcement. Claiming it 'removes' a SPOF inverts the actual trade this lesson is about."}
+    ]
+  },
+  {
+    stem: "The gateway authenticates the phone's token once at the edge, then forwards each request to a backend service with a signed 'user=alice' header over mTLS. A new engineer asks: 'If the gateway already checked who they are, why does the orders service still do its own check before returning order 1234?' What's the right distinction?",
+    options: [
+      {t:"The gateway did authentication (who is this? — validate the token, once), but the orders service still does authorization (what may this identity do? — may alice read order 1234?). authN is centralized so services don't re-parse the external token; authZ stays with the service that owns the resource, because only it knows the rules for that resource. The signed header + mTLS is what lets the service trust the identity without re-authenticating it.",
+       ok:true,
+       fb:"Exactly. Authenticate once at the edge, pass a trusted (signed, mTLS-carried) identity, and let each service authorize locally against the resource it owns. Splitting authN (centralized) from authZ (local) is what keeps services simple without making them blindly trust the caller."},
+      {t:"It's redundant — the orders service shouldn't re-check anything once the gateway authenticated the token. That second check is wasted work and should be removed to cut latency.",
+       ok:false,
+       fb:"The second check isn't re-authentication — it's authorization, deciding whether THIS identity may access THIS resource, which only the resource's owner can judge. Removing it means anyone the gateway lets in can read anyone's order. authN at the edge does not replace per-resource authZ."},
+      {t:"The service re-validates the external token in case the gateway was compromised; every service should independently re-authenticate the original token as defense in depth.",
+       ok:false,
+       fb:"Making all 30 services re-parse the external token defeats the whole point of centralizing authentication and recouples them to the token format. Defense-in-depth here is mTLS + a signed identity header (trust the gateway, nothing else) plus local authorization — not re-authenticating the external token at every hop."}
+    ]
+  },
+  {
+    stem: "You move the home screen's composition into the gateway (a BFF): one /home request fans out to six services and returns a combined blob. It works great — until recommend-svc has a slow afternoon and the whole home screen starts failing for everyone, even though the other five services are healthy. What happened and what's the fix?",
+    options: [
+      {t:"Aggregation couples the fates of the six services into one response: the naive gateway waits on all six, so recommend-svc hanging to its timeout sinks the entire /home reply even though five services answered instantly. The fix is a per-call timeout plus graceful degradation — return the five answers that came back and a null/placeholder for recommendations, so the screen renders with an empty 'for you' row instead of failing.",
+       ok:true,
+       fb:"Right. Composing N services into 1 response means the whole is only as available and as fast as its worst part — unless the gateway owns a timeout and a fallback per downstream call. Degrade to the parts that answered; a missing row beats a dead screen. This is the bill aggregation always comes with."},
+      {t:"The gateway is overloaded — six fan-out calls per request is too much work. Scale up the gateway fleet and the home screen will stop failing.",
+       ok:false,
+       fb:"The failure is one slow downstream service coupling into the aggregate response, not gateway CPU. More gateway instances don't stop recommend-svc's slowness from hanging a /home request that waits on it. The fix is a per-call timeout and degrade, not more gateway capacity."},
+      {t:"Aggregation in the gateway is the mistake; move all six calls back to the phone so a slow service only affects its own request, not the others.",
+       ok:false,
+       fb:"Client-side fan-out re-introduces the very costs the BFF removed (3–6 mobile round trips instead of 1, the phone knowing all six endpoints) and doesn't even require it — the real fix is a per-call timeout + graceful degrade in the gateway. You keep the aggregation win and stop one slow service from sinking the screen."}
+    ]
+  },
+  {
+    stem: "Over a year, teams keep adding to the gateway: response transforms, request validation, a few business rules, each team's special-case routing. It's now a large shared codebase, and every team's change queues behind the gateway team's review and deploy. What's the core problem and the right correction?",
+    options: [
+      {t:"The gateway has become a god-gateway / ESB: business logic that belongs to individual teams has accreted into one shared component, so it's now a deploy bottleneck with a 100% blast radius (Lesson 36) — every team waits behind it, and a bad change there hits everything. The correction is to keep the shared gateway thin — cross-cutting concerns only (auth, rate limit, routing, TLS, observability) — and push business logic and aggregation out to per-client BFFs owned by client teams and to the services, with routes as per-team declarative config so adding a service isn't a change to gateway code.",
+       ok:true,
+       fb:"Exactly. A gateway carrying concerns nobody owns stays small; a gateway carrying logic everybody owns becomes the shared bottleneck the microservices were meant to remove. Thin core + per-client BFFs + declarative per-team config is how you keep centralization's benefits without recreating the monolith at the edge."},
+      {t:"The problem is that the gateway isn't sharded — split it into 30 gateways, one per backend service, so each team owns its own and there's no shared bottleneck.",
+       ok:false,
+       fb:"One gateway per backend service fragments the cross-cutting concerns (auth, rate limiting) back into 30 places — the exact duplication a gateway exists to remove — and clients would have to know which gateway to call. The fix isn't per-service gateways; it's a thin shared core plus per-CLIENT BFFs, keeping cross-cutting logic in one place and business logic out of it."},
+      {t:"The problem is purely process: add more reviewers to the gateway team so changes deploy faster. The architecture is fine; it's a staffing bottleneck.",
+       ok:false,
+       fb:"More reviewers doesn't fix a component that structurally centralizes logic that belongs to many teams — you'd still have every team's business change funneling through one shared, high-blast-radius codebase. The bottleneck is architectural (fat gateway), so the fix is architectural: keep it thin and move logic out, not just staff the queue."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

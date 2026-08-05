@@ -852,10 +852,37 @@
     L03 hot shard, L04 consistent-hash routing, L06 lost update + CAS, L09 pub/sub, L13 Little's Law, L14
     freshness-vs-speed + TTL-vs-purge, L27 fleet/knee/99%-offload, L47 memtable-then-flush. Trade: freshness vs
     cache hit rate & load. (Lesson 0048)
-49. API gateways & the edge — one front door (L42) that does auth, routing, request aggregation (the BFF),
-    and enforces rate limits (L08) / quotas / mTLS (L30) so backends don't each re-implement them; the risk
-    of a fat gateway becoming a SPOF (L07/26) and a deploy bottleneck (L31/36). Trade: centralized
-    cross-cutting concerns vs a fragile shared choke point.
+49. ✅ **API gateways & the edge** — a mobile home screen over 40k req/s to 30 microservices, each owned by a
+    different team: a pile of cross-cutting work (authN, rate limit, TLS, routing, aggregation, observability)
+    belongs to EVERY service and to NONE → give it one home, the **API gateway** (a reverse proxy at the edge
+    all north-south traffic crosses). Estimate the win, each a cost flipped: security written ONCE vs 30
+    codebases (a key rotation / tighter limit = 30 deploys, 30 chances to drift, one forgotten service = the
+    hole → 1 consistent place); a 6-call home screen's 3 dependent hops collapsed 3×100ms=300ms →
+    100+3×2=**106 ms** by moving composition into a **BFF** (~2.8× cut, 6 phone connections → 1, L15 fan-out);
+    20%×40k = **8,000 req/s** of junk 401/429'd at the door for a token check (L28 admission control/goodput —
+    the cheapest request is the one you reject). Model the seven-job pipeline (TLS-terminate L30 → authenticate
+    → rate-limit L08 → route L34/42 → aggregate → observe L17 → translate) + the identity trick that keeps
+    services simple: authenticate the external token ONCE, forward a **signed identity header** over **mTLS**,
+    services AUTHORIZE (what may this identity do?) but don't re-AUTHENTICATE (who is this?) — authN centralized,
+    authZ local. Two lines keep the gateway from swallowing the system: **north-south** (gateway, untrusted
+    outside) vs **east-west** (service MESH/sidecars L34, inside the trust boundary), and one god-gateway vs
+    **per-client BFFs** (mobile/web/partner, each team-owned, aggregation lives here). Trace clean request
+    (signed header, service authorizes) / BFF aggregation / edge rejection (shield, no backend touched) / the
+    partial failure that is aggregation's BILL (compose N → couple N fates → one slow recommend-svc sinks the
+    whole screen unless per-call **timeout + graceful degrade** returns the 5 that answered, L07). First wall =
+    the front door itself, failing TWO ways: the **fattest SPOF** you own (100% of traffic crosses it →
+    death = total outage though every backend is healthy, L07/26/42 → fix by making it a STATELESS disposable
+    HERD behind L42's LB/anycast, N+1 headroom L27, drain-on-deploy L31/34, token-auth = no session to pin
+    L26), and a **deploy bottleneck** (logic accretes → the 1990s **ESB** reborn, a shared codebase with 100%
+    blast radius every team queues behind, L36 → fix by keeping it THIN: cross-cutting concerns ONLY, business
+    logic + aggregation pushed OUT to BFFs and services, routes as per-team DECLARATIVE config so adding a
+    service isn't a gateway code change). Four traps: the god gateway (ESB); treating it as infra that "just
+    works" (it's the SPOF — run several, health-check, drain); re-authenticating at every hop OR trusting the
+    internal call blindly (the gateway-bypass/confused-deputy hole → mTLS + signed header + zero-trust);
+    aggregating without per-call timeouts/fallbacks (inherit the worst of all six). Reuses L07 partial-failure/
+    timeout/SPOF, L08 token bucket, L15 fan-out, L17 tracing, L26 disposable stateless front door, L28 admission
+    control/goodput, L30 TLS/mTLS/identity, L34 discovery + east-west mesh, L36 shared-component blast radius,
+    L42 load balancing. Trade: centralized cross-cutting concerns vs a fragile shared choke point. (Lesson 0049)
 50. Global traffic management (GeoDNS / anycast / failover) — routing each user to the nearest HEALTHY region
     (L23 multi-region, L42 load balancing) via geo/latency DNS or anycast, health-based failover with a DNS
     TTL that bounds how fast you can drain a dead region, and the split-brain risk of two regions both
