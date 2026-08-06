@@ -883,14 +883,56 @@
     timeout/SPOF, L08 token bucket, L15 fan-out, L17 tracing, L26 disposable stateless front door, L28 admission
     control/goodput, L30 TLS/mTLS/identity, L34 discovery + east-west mesh, L36 shared-component blast radius,
     L42 load balancing. Trade: centralized cross-cutting concerns vs a fragile shared choke point. (Lesson 0049)
-50. Global traffic management (GeoDNS / anycast / failover) — routing each user to the nearest HEALTHY region
-    (L23 multi-region, L42 load balancing) via geo/latency DNS or anycast, health-based failover with a DNS
-    TTL that bounds how fast you can drain a dead region, and the split-brain risk of two regions both
-    thinking they're primary (L10/11). Trade: proximity & availability vs routing staleness & complexity.
+50. ✅ **Global traffic management (GeoDNS / anycast / failover)** — a service live in THREE regions
+    (Virginia, Frankfurt, Singapore) with a Sydney shopper: before any L42 load balancer, the device must be
+    handed an IP, so which region's address does the name resolve to, near+healthy, right now? A fixed IP fails
+    twice — proximity (Sydney→Singapore ~63 ms floor vs →Virginia ~160 ms; a cold HTTPS load is ~3 RTTs →
+    3×97 ≈ ~290 ms dragged across the Pacific, L14 speed-of-light at continent scale) and availability (that
+    region dies → 100% outage, wasting L23's spare regions the front door can't steer to). Model the TWO places
+    you can steer: DNS-based (GeoDNS/latency: authoritative server returns a different IP by resolver/ECS
+    location; rich control — geo/latency/weight/health — but every answer is CACHED for its TTL at resolver/OS/
+    browser, so a failover propagates only as caches expire) vs anycast (same IP announced via BGP from many
+    regions, network delivers each packet to the nearest; failover = withdraw the announcement, reconverges in
+    SECONDS, no DNS cache to wait out — but coarse "nearest by topology" not latency/weight, and a mid-session
+    re-route can RESET live TCP → default for stateless/QUIC, careful for long TCP). Both gated by a health check
+    = L34 readiness lifted to the REGION (detection ≈ interval × threshold). Trace: steady state (Sydney→SG
+    ~95 ms, cache 60 s); GeoDNS region death (failover bounded below by detection 30 s + TTL 60 s ≈ 90 s cached
+    tail; new users fine sooner); anycast death (reconverge in seconds, cost = TCP resets); FALSE failover =
+    partition makes a live region look dead from a single-vantage checker → needless reroute, or if it PROMOTES
+    a writer → split-brain (L10/11), two primaries, divergence. First wall = DNS caching bounds drain speed: TTL
+    is a request not a command (browsers pin, resolvers round up/ignore), lower TTL 60→20 s shrinks the window
+    (~90→~50 s) but triples DNS QPS (667→2,000/s @ 40k clients) and past a point buys nothing → don't fight DNS,
+    LAYER anycast for the fast path + health-gated GeoDNS for rich selection + L42/L34 inside each region. Four
+    traps: fixed un-steered address over multi-region; treating DNS failover as instant; health-checking a region
+    from one place (can't tell dead from unreachable = CAP at the routing layer, L11); letting routing (AP, stale
+    route = a retry) decide write-promotion (CP, needs consensus + fencing, L10/23). Reuses L10 consensus/split-
+    brain/fencing, L11 CAP dead-vs-unreachable, L14 speed-of-light, L23 multi-region spares, L31 weighting/canary,
+    L34 readiness/health/flap, L42 load balancing (region-above, server-within). Trade: proximity & availability
+    vs routing staleness & complexity. (Lesson 0050)
 51. Chaos engineering & fault injection — deliberately breaking things (kill a node, add latency, drop a
     region, partition the network) to VERIFY the failure designs actually hold (L07 timeouts/breakers, L34
-    health checks, L36 cells, L46 failover); blast-radius control, steady-state hypotheses, and running it in
-    production safely. Trade: confidence in resilience vs the risk of the experiment itself.
+    health checks, L36 cells, L46 failover, L50 regional failover); blast-radius control, steady-state
+    hypotheses, and running it in production safely. Trade: confidence in resilience vs the risk of the
+    experiment itself.
+
+### Advanced topics (next batch — queued so the course never runs dry)
+52. Content moderation & abuse systems at scale — classify a firehose of user content (spam, fraud, harmful
+    posts) with a cheap-model-first funnel (L16/L29 narrow-before-expensive), human-review queues, appeals,
+    and the precision/recall dial (L16) where both errors are costly. Trade: safety coverage vs false-positive
+    harm & review cost.
+53. Feature stores & ML serving infrastructure — serve features to a model at request time with online/offline
+    consistency (train-serve skew), point-in-time correctness, low-latency feature lookup (L02/L48 caching),
+    and batch vs streaming feature computation (L29 lambda/kappa). Trade: feature freshness vs serving latency
+    & training-serving consistency.
+54. Billing & metering systems — turn a usage firehose into correct invoices: idempotent event ingestion
+    (L13), aggregation into usage counters (L21), pricing/rating, and the reconciliation that catches drift
+    against the ledger (L25). Trade: billing accuracy vs metering cost & latency.
+55. Edge computing & compute-at-the-edge — push not just cached bytes (L14) but CODE to the edge (L50's PoPs):
+    the cold-start vs locality trade, state at the edge (eventual consistency, L11/23), and what can/can't run
+    far from the data. Trade: latency & offload vs consistency & operational reach.
+56. Data privacy, deletion & compliance (GDPR/right-to-be-forgotten) — actually deleting a user across an
+    event-sourced log (L38), backups, caches (L48), warehouses (L29), and derived copies (L37); crypto-shredding
+    (L30) vs true deletion, and audit trails. Trade: compliance & privacy vs immutability & derived-data sprawl.
 
 ## Lesson format conventions
 - Four reusable "moves" framing introduced in Lesson 01: estimate → model →

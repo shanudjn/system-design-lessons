@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 50 — Global Traffic Management: Steering Every User to the Nearest Healthy Region</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 50 · Worked Example</div>
+  <h1>Global Traffic Management: Steering Every User to the Nearest Healthy Region</h1>
+  <p class="lead">Lesson 49 put one <b>front door</b> in front of one fleet, in one place. Lesson 23 ran the system live in more than one <b>region</b> — Virginia and Frankfurt at once — for latency and survival. This lesson connects the two and asks the question that sits <i>above</i> the load balancer: before a user's request can reach any fleet, their device has to be handed an <b>IP address to connect to</b> — so which region's address does a shopper in Sydney get, and what happens to that answer the instant that region catches fire? A single fixed address fails twice over: it drags everyone to one far-away region (the <b>speed-of-light tax</b> of Lesson 14, now measured in whole continents), and when that region dies it takes down users who could have been served perfectly from somewhere else. We'll take one concrete system — a service live in <b>three regions</b> (Virginia, Frankfurt, Singapore) with a shopper in <b>Sydney</b> — and <b>estimate</b> what steering to the near region buys (~<b>300 ms</b> off a cold page load) and what a fixed address costs when a region fails. We'll <b>model</b> the two families of answer — <b>DNS-based steering</b> (GeoDNS / latency routing) versus <b>anycast</b> (one IP announced from many places) — and the <b>health-based failover</b> that gates both. We'll <b>trace</b> the steady state, a region death, an anycast reroute, and the false failover that is really a <b>split-brain</b> in disguise. And we'll hit the wall the whole scheme is built on: <b>DNS caching</b> — a failover is only as fast as a <b>TTL</b> and a pile of caches you do not control. The trade underneath: <b>proximity &amp; availability vs routing staleness &amp; complexity.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0050-global-traffic-management.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>The service from Lesson 23 now runs in <b>three regions</b>, each a complete copy of Lesson 49's stack (gateway, fleet, data): <b>us-east</b> in Virginia, <b>eu-central</b> in Frankfurt, and <b>ap-southeast</b> in Singapore. Each region has its own public IP address (or a small set of them, behind Lesson 42's regional load balancer). Users are spread across the planet. Our test user is a shopper in <b>Sydney</b>. When her phone wants to load the app, it must first turn our name — <code>shop.example.com</code> — into an IP address it can open a connection to. That translation is <b>DNS</b>, the internet's phone book. The whole game of this lesson happens in that one step: <span class="key">which of the three region IPs does <code>shop.example.com</code> resolve to, for <i>this</i> user, <i>right now</i> — and how fast can that answer change when a region goes down?</span> Get it right and Sydney talks to Singapore in ~95 ms and never notices Virginia burning. Get it wrong and she's either dragged across the Pacific on every request or stranded pointing at a dead region.</p>
+
+<div class="diagram"><pre>
+  ONE name, THREE regional IPs. Which one does Sydney get, and how fast
+  can the answer change when a region dies?
+
+                         shop.example.com  -> ??? .??? .??? .???
+                                  |
+              [ Global traffic manager: GeoDNS and/or anycast ]
+                    |               |                  |
+                    v               v                  v
+            us-east (VA)     eu-central (FR)    ap-southeast (SG)
+            each = a full L49 stack: gateway + L42 fleet + data (L23)
+
+   Sydney shopper, 6,300 km to Singapore vs 16,000 km to Virginia.
+   NEAR   region -> ~95 ms round trip.
+   WRONG  region -> ~230 ms round trip (L14 speed-of-light tax, continent scale).
+
+   STATIC single IP fails twice:
+     - proximity: everyone dragged to ONE region, far users pay the ocean.
+     - availability: that region dies -> EVERYONE down, even Sydney who
+       could be served fine from Singapore (L23's second region wasted).
+
+   The steering step lives in how a NAME becomes an IP (DNS) or how one IP
+   is ANNOUNCED from many places (anycast). Both must be gated on HEALTH,
+   and DNS answers are CACHED for a TTL you don't fully control (the wall).
+</pre></div>
+
+<p class="note"><span class="key">Global traffic management is the layer that decides which region each user's request is sent to — before it reaches any regional load balancer — steering by proximity and steering <i>away</i> from regions that are unhealthy.</span> Lesson 42 balanced load <i>within</i> a region ("which server?"). This is the level above it ("which region?"). The two nest: global traffic management picks the region, then that region's Lesson 42 load balancer picks the server.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>DNS (Domain Name System)</b> — the system that turns a name (<code>shop.example.com</code>) into an IP address a device can connect to. The first step of every request to a named service.</li>
+  <li><b>Authoritative DNS server</b> — the server that holds the real answer for a domain and decides what IP to return. This is where we put our steering logic.</li>
+  <li><b>Resolver (recursive resolver)</b> — the DNS server your device or ISP asks; it queries the authoritative server on your behalf and <i>caches</i> the answer. Your device rarely talks to the authoritative server directly.</li>
+  <li><b>TTL (time to live)</b> — how many seconds a DNS answer may be cached before it must be looked up again. The dial that bounds how fast a DNS change (like a failover) can take effect.</li>
+  <li><b>GeoDNS / latency-based routing</b> — an authoritative DNS server that returns a <i>different</i> IP depending on where the query came from (or which region is lowest-latency for it). Steering at name-resolution time.</li>
+  <li><b>EDNS Client Subnet (ECS)</b> — a DNS extension that passes a truncated form of the <i>user's</i> IP to the authoritative server, so it steers by the user's location, not the resolver's.</li>
+  <li><b>Anycast</b> — announcing the <i>same</i> IP address from multiple regions at once, so the internet's routing delivers each packet to the topologically nearest one. Steering in the network, per packet, no DNS choice involved.</li>
+  <li><b>BGP (Border Gateway Protocol)</b> — how networks announce "reach this IP range through me"; anycast works by announcing one range from many places and letting BGP pick the nearest.</li>
+  <li><b>Unicast</b> — the normal case: one IP address lives in exactly one place. (Anycast is the exception.)</li>
+  <li><b>Health check</b> — a probe that decides whether a region is fit to receive traffic; a failing region is pulled from the answer set (Lesson 34's readiness, at region scale).</li>
+  <li><b>Failover</b> — moving traffic off a failed region onto a healthy one.</li>
+  <li><b>Drain</b> — the act of pulling traffic away from a region; how <i>fast</i> you can drain is the number this lesson is about.</li>
+  <li><b>Split-brain</b> — two regions both believing they are in charge (e.g. both primary) at once, usually because a network partition made each think the other is dead (Lessons 10/11).</li>
+</ul>
+
+<h2>Move 1 — Estimate: what steering buys, and what a fixed address costs</h2>
+<p>Two numbers make the case, and they are the same two words as Lesson 23: <b>proximity</b> (latency) and <b>availability</b> (survival). A single fixed IP loses both; steering wins both back.</p>
+
+<div class="card calc">
+  <p><b>1. Proximity — the ocean, priced in milliseconds.</b> Distance is latency, and at continent scale the numbers are brutal (Lesson 14's speed-of-light tax). Light in fiber travels about <b>200,000 km/s</b> (two-thirds of light in vacuum). Sydney to Singapore is ~<b>6,300 km</b>: one way <code>6,300 &divide; 200,000 = 31.5 ms</code>, so a round trip is <code>2 &times; 31.5 &approx; <b>63 ms</b></code> at the physical floor (~95 ms in the real, non-straight-line internet). Sydney to Virginia is ~<b>16,000 km</b>: one way <code>16,000 &divide; 200,000 = 80 ms</code>, round trip <code>2 &times; 80 = <b>160 ms</b></code> at the floor (~230 ms real). The difference is <code>160 &minus; 63 &approx; <b>97 ms</b> per round trip</code> — and a <i>cold</i> HTTPS request is not one round trip: it's a DNS lookup, a TCP handshake, a TLS handshake, then the request itself — call it <b>~3 round trips</b> before a byte of content comes back (Lesson 14). <code>3 &times; 97 &approx; <b>~290 ms</b></code> shaved off a cold page load, for <i>free</i>, just by handing Sydney the Singapore address instead of the Virginia one. A fixed IP anchored in Virginia makes every Sydney request pay that ocean, on every round trip, forever.</p>
+  <p><b>2. Availability — the second region is only real if you can route to it.</b> Lesson 23 paid for a second (and third) live region to cut downtime: one region at <b>99.9%</b> is down <code>~8.76 h/yr</code>, but users who can be steered to a healthy region don't experience that outage. That saving is <i>entirely conditional on the steering layer</i>. Pin one fixed IP to Virginia and when Virginia fails, <b>100% of users are down</b> — including Sydney, who was being served from Singapore's healthy stack and had no reason to care about Virginia at all. <span class="key">Multi-region redundancy that the front door can't steer around is money spent on a spare you can't reach.</span> The job of global traffic management is to make Lesson 23's spare regions actually usable: detect the dead region and stop sending anyone to it.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — proximity &amp; availability vs routing staleness &amp; complexity.</b> Steering buys latency and survival, but it buys them by making the <i>answer to "what IP?" change per-user and over time</i> — and a changing answer that is <b>cached</b> (which every DNS answer is) is an answer that can be <i>stale</i>. The entire difficulty of this lesson is that the mechanism that lets you route around a dead region is the same mechanism whose caching makes "route around it" take time you can't fully control. Powerful steering and instant, trustworthy change pull against each other.</p>
+
+<h2>Move 2 — Model: two ways to steer, and the health check that gates both</h2>
+<p>There are exactly two places you can decide which region a user reaches: <b>when the name is resolved to an IP</b> (DNS-based steering), or <b>in the network, once the packet is already addressed</b> (anycast). They have opposite strengths, and real systems often combine them. Both are useless without a <b>health check</b> deciding which regions are even eligible.</p>
+
+<h3>1. DNS-based steering — GeoDNS and latency routing</h3>
+<p>Here the authoritative DNS server is the brain. When a resolver asks "what is <code>shop.example.com</code>?", the server looks at <i>where the question came from</i> — the resolver's IP, or, better, the user's own subnet via <b>EDNS Client Subnet</b> — and returns the IP of the nearest or lowest-latency healthy region. Sydney's resolver gets Singapore's IP; a Berlin resolver gets Frankfurt's. Steering happens at <b>name-resolution time</b>, so it is rich: you can route by geography, by measured latency, by weight (send 5% to a new region as a canary, Lesson 31), and — the point of this lesson — you can <i>remove</i> a region's IP from the answer set the moment its health check fails. The catch is baked into DNS itself: <span class="key">every answer is cached for its TTL, at the resolver, the OS, and often the browser — so a change you make now reaches users only as their caches expire.</span> DNS steering also natively sees the <i>resolver's</i> location, not the user's, so a user on a distant public resolver can be mis-placed unless ECS carries their real subnet.</p>
+
+<h3>2. Anycast — one IP, announced from everywhere</h3>
+<p>Here the network is the brain. The <i>same</i> IP address is announced via <b>BGP</b> from all three regions at once. To the internet, that address exists in three places, and each router forwards a packet toward the <i>topologically nearest</i> announcement. Sydney's packets land in Singapore not because DNS said so, but because that's the closest place the address is being announced from. Steering happens <b>per packet, in the routing fabric</b>, with no DNS decision at all. Two consequences fall out. Failover is <b>fast and automatic</b>: withdraw a dead region's BGP announcement and the internet reconverges in <b>seconds</b>, pulling traffic to the next-nearest announcement — no DNS cache to wait out. But control is <b>coarse</b>: you get "nearest by network topology," which is not the same as lowest latency or a weighted split, and a mid-session <b>re-route</b> can land a live TCP connection in a different region and break it. That's why anycast is the default for <i>stateless, connectionless</i> traffic (DNS itself, and increasingly QUIC/HTTP-3) and used carefully for long-lived TCP.</p>
+
+<table>
+  <tr><th></th><th>DNS-based (GeoDNS / latency)</th><th>Anycast (BGP)</th></tr>
+  <tr><td>Steers at</td><td>name resolution (per lookup)</td><td>the network (per packet)</td></tr>
+  <tr><td>Control</td><td><b>rich</b>: geo, latency, weight, health</td><td><b>coarse</b>: nearest by topology</td></tr>
+  <tr><td>Failover speed</td><td>bounded by <b>TTL + caches</b> (tens of s)</td><td><b>seconds</b> (BGP reconverges)</td></tr>
+  <tr><td>Sees location of</td><td>the resolver (user, only via ECS)</td><td>the packet's real path</td></tr>
+  <tr><td>Long-lived TCP</td><td>stable (IP fixed for the session)</td><td>can break on re-route</td></tr>
+  <tr><td>Best for</td><td>rich region selection, weighting</td><td>fast failover, DDoS spread, stateless</td></tr>
+</table>
+<p>They compose well: a very common design is <b>anycast the DNS servers themselves</b> (so the lookup is fast and DDoS-resistant) while using <b>GeoDNS logic</b> in those servers to hand out region IPs — or anycast a thin edge (Lesson 14's CDN / Lesson 49's gateway) that then forwards to a health-checked region. You rarely pick one; you layer them.</p>
+
+<h3>3. The health check — the part that makes it "route to the nearest <i>healthy</i>"</h3>
+<p>Neither mechanism means anything without a <b>health check</b> deciding which regions are eligible. A checker probes each region's endpoint on an interval; after a region fails a threshold of consecutive checks it is declared unhealthy and <b>pulled</b> — its IP dropped from the GeoDNS answer set, or its BGP announcement withdrawn. This is exactly Lesson 34's readiness check and Lesson 42's health check, lifted to the <b>region</b> as the unit. And it inherits Lesson 34's two dials: probe too slowly and a dead region keeps taking traffic; probe too aggressively (or from a single vantage point) and a momentary blip <b>false-fails</b> a healthy region — the region-scale version of Lesson 10/34's flap. The tuning knob is the same shape: <code>detection time &approx; interval &times; failure-threshold</code>.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Follow four scenarios: the steady state, a clean region death under GeoDNS, the same death under anycast, and the false failover that is really a split-brain.</p>
+
+<h3>Path A — steady state (Sydney, all regions healthy)</h3>
+<div class="diagram"><pre>
+  Sydney phone wants shop.example.com
+
+   1. asks its resolver -> resolver asks our AUTHORITATIVE DNS
+   2. authoritative sees the query is near AU (ECS subnet) + all healthy
+   3. returns ap-southeast (Singapore) IP, with TTL = 60 s
+   4. phone opens TLS to Singapore -> ~95 ms RTT -> served (L23/L42/L49 stack)
+   5. resolver caches "shop.example.com = SG" for 60 s (next lookups are free)
+
+  vs a fixed IP in Virginia: every request pays ~230 ms RTT (L14 ocean tax),
+  ~290 ms extra on the cold load. Steering earned that back.
+</pre></div>
+
+<h3>Path B — region death under GeoDNS (the failover window)</h3>
+<div class="diagram"><pre>
+  Singapore region goes DOWN.
+
+   t=0    SG stops answering health probes.
+   t~30s  health checker: 3 failed probes x 10 s -> declares SG UNHEALTHY,
+          pulls SG's IP from the answer set. New lookups now get FR (next-nearest).
+   BUT    Sydney phones whose resolver cached "SG" at t=-5s keep sending to the
+          DEAD IP until that cache entry expires (TTL 60 s).
+   worst  errors for already-cached users up to  detect + TTL = 30 + 60 = ~90 s,
+          then they re-resolve -> Frankfurt (~250 ms, worse latency but ALIVE).
+
+  Failover is NOT instant. It is bounded below by:
+     health-check DETECTION  +  DNS TTL (+ caches you don't control).
+  New users after t~30s are fine; the cost is the cached tail.
+</pre></div>
+
+<h3>Path C — the same death under anycast</h3>
+<div class="diagram"><pre>
+  Same IP announced from VA + FR + SG. Singapore dies.
+
+   t=0    SG withdraws its BGP announcement (or the router yanks it on health fail).
+   t~few  the internet RECONVERGES: Sydney's packets, addressed to the SAME IP,
+    sec   now flow to the next-nearest announcement -> Frankfurt. No DNS involved,
+          no TTL to wait out.
+   cost   any in-flight TCP connections pinned to SG may RESET (land in FR mid-flow);
+          the client reconnects. Fine for stateless/QUIC, a hiccup for long TCP.
+
+  Faster than DNS failover (seconds vs tens of seconds), but coarser control
+  and a risk to live connections. That's the trade between the two mechanisms.
+</pre></div>
+
+<h3>Path D — the false failover (a split-brain in disguise)</h3>
+<div class="diagram"><pre>
+  Singapore is UP and serving Sydney fine -- but the health checker (running in
+  Virginia) is on the far side of a NETWORK PARTITION and can't reach SG.
+
+  NAIVE:  checker sees SG "down" -> pulls it -> Sydney yanked to Frankfurt for
+          NO reason (a false failover, +155 ms latency, and a needless reconnect).
+
+  WORSE (stateful): if failover also PROMOTES a new primary in FR while SG is
+          alive and still taking writes -> TWO regions act primary at once =
+          SPLIT-BRAIN (L10/L11). Both accept writes -> divergence, lost updates.
+
+  The root cause: a health check CANNOT tell "region is DEAD" from "region is
+  UNREACHABLE FROM ME" -- that's CAP at the routing layer (L11). Fixes:
+    - check from MULTIPLE vantage points, agree by quorum (L10) before draining.
+    - keep ROUTING (AP: send users to whoever's up) SEPARATE from PROMOTION
+      (CP: who may accept writes needs consensus + fencing, L10/L11/L23).
+  A stale route costs a retry; a wrongly-promoted primary corrupts data.
+</pre></div>
+<p>Path A is the everyday win — near region, low latency, cache the answer and move on. Path B shows the honest cost of DNS failover: it is <i>not</i> instant, and the floor is set by detection time plus a TTL you partly don't control. Path C shows anycast trading that cached tail for network-speed reconvergence, at the price of coarser control and connection resets. And Path D is the one that turns a routing feature into a data-corruption bug: the health check is a <i>guess</i> made from one place, and a partition can make a live region look dead — so failover for <b>stateless routing</b> is safe to do eagerly (worst case: a needless reroute), but failover that <b>promotes a writer</b> must go through consensus, or you've built Lesson 11's split-brain at global scale.</p>
+
+<h2>Move 4 — Find the first bottleneck: DNS caching bounds how fast you can drain</h2>
+<p>Every path above ran into the same wall from a different side: <b>you do not control the caches</b>. When you change a DNS answer to drain a dead region, that change propagates only as fast as the <b>TTL</b> — and even the TTL is a request, not a command. Browsers pin a resolved IP for the life of a tab. Some OS and ISP resolvers <i>round small TTLs up</i> to a minimum of their own. A resolver that's offline when your change lands serves the stale answer until it comes back. <span class="key">DNS failover is therefore fundamentally a "tens of seconds," best-effort mechanism — never an instant, guaranteed one.</span></p>
+
+<div class="card calc">
+  <p><b>The TTL dial, priced both ways.</b> Suppose <b>40,000</b> active clients and a TTL of <b>60 s</b>. Steady-state DNS load is <code>40,000 &divide; 60 &approx; <b>667 lookups/s</b></code>, and a region death costs cached users up to <code>detect (30 s) + TTL (60 s) = <b>~90 s</b></code> of errors. Want faster failover? Drop the TTL to <b>20 s</b>: the failover tail shrinks to <code>30 + 20 = <b>~50 s</b></code>, but DNS load rises to <code>40,000 &divide; 20 = <b>2,000 lookups/s</b></code> — <b>3&times;</b> the query volume (more cost, more load on the authoritative servers, less benefit from caching). Push TTL toward a few seconds and the failover window keeps shrinking while DNS QPS keeps climbing — and past a point the client caches that ignore you make further cuts <i>buy nothing</i>. <span class="key">TTL is the same freshness-vs-load dial as Lesson 2's cache TTL and Lesson 14's CDN TTL — the cached thing here is a routing decision, and its staleness is measured in whose traffic keeps hitting a dead region.</span></p>
+  <p><b>The two-layer escape.</b> You don't beat the DNS floor by lowering TTL forever; you beat it by not relying on DNS for the fast part. Layer the mechanisms: put an <b>anycast</b> edge (or anycast DNS) in front so the <i>network</i> reroutes in seconds for the common region-down case, and use <b>health-gated GeoDNS</b> for the rich region selection and weighting. Inside each region, Lesson 42's load balancer and Lesson 34's health checks handle server-level failure so a single sick box never needs a region-level DNS change at all. The result: fast failover from anycast, rich control from DNS, and DNS changes reserved for the coarse, rare "drain a whole region" move where a tens-of-seconds tail is acceptable.</p>
+</div>
+
+<h3>The scoreboard: which need, which lever</h3>
+<table>
+  <tr><th>Need</th><th>Reach for</th><th>Pay in</th></tr>
+  <tr><td>Send each user to the near region</td><td>GeoDNS / latency routing (+ ECS)</td><td>DNS steering complexity; resolver-not-user location</td></tr>
+  <tr><td>Weighted / canary region split</td><td>Weighted DNS records (L31)</td><td>only as granular as a DNS answer set</td></tr>
+  <tr><td>Fastest possible region failover</td><td>Anycast (BGP withdraw)</td><td>coarse control; TCP resets on re-route</td></tr>
+  <tr><td>Route only to <b>healthy</b> regions</td><td>Health checks from multiple vantage points (L34)</td><td>false-fail risk; must gate before drain</td></tr>
+  <tr><td>Shrink the failover window</td><td>Lower DNS TTL (30&ndash;60 s)</td><td>higher DNS QPS; caches you don't control</td></tr>
+  <tr><td>Fail over a <b>stateful</b> primary safely</td><td>Consensus promotion + fencing (L10/L11/L23)</td><td>can't be a pure routing decision</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — a fixed, un-steered address in front of multi-region.</b> Paying for Lesson 23's second and third regions and then pinning one static IP means far users pay the ocean on every request and, when that region dies, everyone is down — including users a healthy region could serve. The redundancy is only real if the front door can steer to it.</li>
+  <li><b>Trap 2 — treating DNS failover as instant.</b> A DNS change propagates only as caches expire — the TTL is a request, not a command, and browsers/resolvers routinely hold or round it. Size your failover expectation as <code>detection + TTL + slack</code> (tens of seconds), and if you need seconds, put anycast (or an anycast edge) in front rather than chasing an ever-lower TTL.</li>
+  <li><b>Trap 3 — health-checking a region from one place.</b> A single-vantage-point checker can't tell "region dead" from "region unreachable <i>from me</i>," so a partition triggers a false failover — or, if failover promotes a writer, a split-brain (Lessons 10/11). Check from several locations and agree by quorum before draining; keep write-promotion behind consensus.</li>
+  <li><b>Trap 4 — letting routing decide correctness.</b> Steering users to whoever's up is an <b>AP</b> decision (a stale route just costs a retry, Lesson 11). Deciding <i>who may accept writes</i> is a <b>CP</b> decision that needs consensus and fencing (Lessons 10/23). Conflate them and a routing hiccup becomes two primaries and lost data. Route eagerly; promote carefully.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>Above every regional load balancer sits one more decision: before a request can reach any fleet, the user's device must be handed an <b>IP to connect to</b> — and that answer has to be <i>near</i> and <i>alive</i> for this user, right now. <b>Estimate</b> made the case in Lesson 23's two words: <b>proximity</b> (Sydney to Singapore ~63 ms floor vs to Virginia ~160 ms — <code>3 &times; 97 &approx; ~290 ms</code> off a cold load) and <b>availability</b> (a fixed IP means a region death is a 100% outage, wasting the spare regions you paid for). <b>Model</b> laid out the two places you can steer — <b>DNS-based</b> (GeoDNS/latency: rich control, but bounded by a cached <b>TTL</b>) and <b>anycast</b> (one IP announced by <b>BGP</b> from many places: seconds-fast failover, but coarse and rough on live TCP) — gated by a <b>health check</b> that is Lesson 34's readiness at region scale. <b>Tracing</b> walked the steady state, a GeoDNS region death (failover bounded by <code>detection + TTL &approx; ~90 s</code>), the same death under anycast (network reconverges in seconds, at the cost of connection resets), and the <b>false failover</b> where a partition makes a live region look dead — a routing hiccup at worst, a <b>split-brain</b> at worst-worst. The <b>first bottleneck</b> is <b>DNS caching</b>: a drain is only as fast as a TTL and a pile of caches you don't control, so you buy speed with a lower TTL (paying DNS QPS) up to the point client caches ignore you — then you stop fighting DNS and layer <b>anycast</b> for the fast path while reserving DNS changes for the coarse, rare region drain. <span class="key">Global traffic management is worth it exactly when you run in more than one region and need each user routed to the nearest healthy one — and its hard edge is that the steering answer is cached, so "route around the dead region" is fast but never instant, and "who may write" must never be decided by a route. The standing tension: proximity &amp; availability vs routing staleness &amp; complexity.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>We've now designed the system all the way up from a single URL to global routing. The last move is to prove the failure designs actually hold:</b></p>
+  <p style="margin:.2rem 0">• <b>Chaos engineering &amp; fault injection:</b> we've spent fifty lessons building defenses — timeouts and circuit breakers (Lesson 7), health checks and failover (Lessons 34/50), cells (Lesson 36), quorums (Lesson 10). But a defense you've never triggered is a hypothesis, not a fact. The next lesson <i>deliberately</i> breaks things — kills a node, adds latency, drops a region, partitions the network — to <b>verify</b> the failure designs behave as drawn, with blast-radius control and a steady-state hypothesis so the experiment itself is safe. The trade shifts to <b>confidence in resilience vs the risk of the experiment.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">global traffic management</span>
+    <span class="pill">DNS</span>
+    <span class="pill">authoritative DNS server</span>
+    <span class="pill">resolver</span>
+    <span class="pill">TTL</span>
+    <span class="pill">GeoDNS / latency routing</span>
+    <span class="pill">EDNS Client Subnet</span>
+    <span class="pill">anycast</span>
+    <span class="pill">BGP</span>
+    <span class="pill">unicast</span>
+    <span class="pill">health check</span>
+    <span class="pill">failover</span>
+    <span class="pill">drain</span>
+    <span class="pill">split-brain</span>
+    <span class="pill">AP vs CP routing</span>
+  </p>
+  <p>That's Lesson 50, built on Lesson 10's consensus / split-brain / fencing (why write-promotion can't be a routing decision), Lesson 11's CAP (a health check can't tell dead from unreachable — the partition dilemma at the routing layer), Lesson 14's speed-of-light tax (proximity priced in whole continents), Lesson 23's multi-region active-active (the spare regions this layer makes reachable), Lesson 31's canary / weighting (weighted DNS records), Lesson 34's readiness &amp; health checks (lifted to the region as the unit), and Lesson 42's load balancing (what runs one level below — region selection above, server selection within). <b>Ask me follow-ups</b> — e.g. "how does EDNS Client Subnet actually get the user's location to the authoritative server?", "why is anycast fine for DNS and QUIC but risky for a long-lived TCP upload?", "how do providers like Route 53 / Cloudflare combine GeoDNS and anycast under the hood?", "what's a sensible TTL for a failover record, and when do you go lower?", or "how do I fail over a stateful primary across regions without a split-brain?" When you're ready, say <b>next</b> and we'll go deeper on <i>chaos engineering — confidence in resilience vs the risk of the experiment.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your service runs in three regions (Virginia, Frankfurt, Singapore), but shop.example.com resolves to one fixed IP in Virginia. A Sydney user complains the app is slow, and last month a Virginia outage took everyone offline — even users nowhere near it. What's the core problem, and what does global traffic management fix?",
+    options: [
+      {t:"A fixed address fails on both of Lesson 23's axes at once. Proximity: every request is dragged to Virginia, so Sydney pays the ~230 ms trans-Pacific round trip (~290 ms extra on a cold load) that a Singapore stack would serve in ~95 ms. Availability: when Virginia dies, 100% of users are down — including the Sydney user a healthy Singapore region could have served — so the second and third regions you paid for are unreachable spares. The fix is a steering layer (GeoDNS and/or anycast, health-gated) that hands each user the near, healthy region's IP and stops sending anyone to a dead region.",
+       ok:true,
+       fb:"Right. Multi-region redundancy is only as good as your ability to route to it: a static IP forfeits both proximity (everyone pays the ocean) and availability (a region death is a total outage, wasting the spare regions). Steering to the nearest healthy region wins both back."},
+      {t:"The problem is that Virginia's region is under-provisioned. Add more servers there (Lesson 27) and both the Sydney latency and the outage go away.",
+       ok:false,
+       fb:"More servers in Virginia can't shorten the ~16,000 km to Sydney — that latency is the speed of light in fiber (Lesson 14), not a capacity problem — and it can't help when the whole Virginia region is down. The issue is which REGION users reach, not how big one region is. You need steering across regions, not a bigger single region."},
+      {t:"Just move the fixed IP to Singapore, since that's closest to the complaining user. That fixes proximity and, being newer, that region is more reliable.",
+       ok:false,
+       fb:"Pinning to Singapore just moves the ocean tax to your European and American users and still leaves a single point of failure — when Singapore dies, everyone is down again. A single fixed region can't be near everyone or survive its own failure; the answer is per-user steering to the nearest HEALTHY region, not a better-chosen single anchor."}
+    ]
+  },
+  {
+    stem: "You need failover to kick in fast when a whole region dies. One engineer says 'use GeoDNS and set a low TTL'; another says 'use anycast — the same IP announced from every region.' What's the real distinction between these two mechanisms?",
+    options: [
+      {t:"They steer in different places. GeoDNS decides at name-resolution time, so it gives rich control (route by geo, latency, weight, and pull an unhealthy region from the answer set) — but every answer is cached for its TTL at resolvers/OS/browser, so a failover only propagates as those caches expire (tens of seconds, and some caches ignore your TTL). Anycast announces one IP from many regions via BGP and lets the network deliver each packet to the nearest announcement, so failover is just withdrawing a route and the internet reconverges in seconds with no DNS cache to wait out — but control is coarse (nearest by topology, not latency or weight) and a mid-session re-route can reset a live TCP connection. You often layer both.",
+       ok:true,
+       fb:"Exactly. DNS steering = rich control bounded by cached TTLs; anycast = seconds-fast, network-level failover but coarse and rough on long-lived connections. Real systems combine them: anycast (or anycast DNS) for the fast path, GeoDNS for rich region selection."},
+      {t:"They're basically the same thing — anycast is just GeoDNS implemented at a lower layer — so pick whichever your provider offers; the behavior is identical.",
+       ok:false,
+       fb:"They behave very differently. GeoDNS returns different IPs and is bounded by DNS caching (a failover waits out the TTL); anycast uses ONE IP and fails over by BGP reconvergence in seconds with no DNS involved. Their failover speed, control granularity, and effect on live TCP connections all differ — the choice between them is a real trade, not an implementation detail."},
+      {t:"Anycast is strictly better: it fails over in seconds and needs no health checks, so you should always prefer it and drop GeoDNS entirely.",
+       ok:false,
+       fb:"Anycast still needs health checks (something has to decide to withdraw a dead region's announcement), and it's coarse — no latency-based or weighted routing — and can reset live TCP connections on a re-route. It's excellent for fast failover and stateless traffic but not a full replacement for GeoDNS's rich, health-gated region selection. The usual answer is to layer them, not to drop one."}
+    ]
+  },
+  {
+    stem: "Singapore's region fails at t=0. Your health checker probes every 10 s and declares a region dead after 3 failures; your DNS records have a 60 s TTL. A colleague expects traffic to move off Singapore 'basically instantly.' What actually happens, and why can't you just make it instant with DNS?",
+    options: [
+      {t:"It's not instant. Detection takes ~30 s (3 probes × 10 s), and only THEN is Singapore's IP pulled from the answer set — but users whose resolver already cached the Singapore IP keep hitting the dead region until that cache entry expires, up to the 60 s TTL, so already-cached users can see errors for ~detection + TTL ≈ 90 s before re-resolving to Frankfurt. You can shrink the window by lowering the TTL (say 20 s → ~50 s tail) but you pay in DNS query volume (3× at TTL 20 vs 60), and past a point browsers/resolvers that pin or round up the TTL ignore you — DNS failover is fundamentally a tens-of-seconds, best-effort mechanism. For true seconds-fast failover you put anycast in front rather than chasing an ever-lower TTL.",
+       ok:true,
+       fb:"Right. DNS failover is bounded below by detection + TTL + caches you don't control; the TTL is a request, not a command. Lower TTL shrinks the window at the cost of DNS load, but you beat the floor by layering anycast for the fast path, not by fighting DNS caching forever."},
+      {t:"Traffic moves the instant the health check fails at ~30 s, because pulling the record from the authoritative server immediately updates every client's view of the IP.",
+       ok:false,
+       fb:"Pulling the record only changes what NEW lookups return — clients (and resolvers) that already cached the Singapore IP keep using it until their cache entry expires, up to the TTL, and some caches ignore your TTL entirely. That cached tail is exactly why DNS failover isn't instant; the authoritative change doesn't reach into existing caches."},
+      {t:"Set the TTL to 0 and failover becomes truly instant with no downside — DNS will simply never cache the answer.",
+       ok:false,
+       fb:"A TTL of 0 doesn't reliably disable caching — many resolvers and browsers round tiny/zero TTLs up to a minimum of their own and browsers pin a resolved IP for a tab's life — so you don't get instant failover, and you'd drive DNS query volume way up in the attempt. The floor is caches you don't control; the real fix is anycast for the fast path, not TTL=0."}
+    ]
+  },
+  {
+    stem: "Your health checker runs in Virginia. A network partition cuts Virginia off from Singapore, but Singapore is up and happily serving Sydney users. The checker sees Singapore as 'down.' What's the danger, and what's the right principle?",
+    options: [
+      {t:"A health check can't distinguish 'region is dead' from 'region is unreachable from the checker' — that's CAP at the routing layer (Lesson 11). Acting on it naively triggers a FALSE failover: Sydney gets yanked to Frankfurt for no reason (worse latency, a needless reconnect). Far worse, if failover also PROMOTES a new primary in Frankfurt while Singapore is still alive and taking writes, you now have two primaries at once — split-brain (Lessons 10/11) — and divergent, lost data. The principle: check health from multiple vantage points and agree by quorum before draining, and keep ROUTING (AP — send users to whoever's up, a stale route just costs a retry) SEPARATE from PROMOTION (CP — who may accept writes needs consensus and fencing). Route eagerly; promote carefully.",
+       ok:true,
+       fb:"Exactly. The checker's view is a guess from one place, and a partition makes a live region look dead. Stateless routing failover is safe to do eagerly (worst case: a needless reroute); write-promotion must go through consensus, or a routing hiccup becomes a split-brain that corrupts data."},
+      {t:"The checker is authoritative, so trust it: pull Singapore and, since it's clearly unreliable, promote Frankfurt to primary immediately to protect writes.",
+       ok:false,
+       fb:"Trusting a single-vantage-point checker is exactly the mistake — Singapore is fine; only the path from Virginia is broken. Promoting Frankfurt while Singapore still takes writes creates two primaries (split-brain) and divergent data. Failover decisions, especially write-promotion, must not hinge on one checker's possibly-partitioned view."},
+      {t:"Split-brain is a database problem, not a routing one, so the traffic layer can ignore it — just fail Sydney over to Frankfurt and let the databases sort out any conflicts later.",
+       ok:false,
+       fb:"The routing layer is precisely where this split-brain can be TRIGGERED — a failover that promotes a writer based on a partitioned health view is what creates two primaries. And 'let the databases sort it out later' is the AP reconciliation bill (Lesson 11) for data (a scalar balance) that often can't be safely merged. Routing must keep write-promotion behind consensus rather than assume someone downstream will fix the divergence."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
