@@ -909,11 +909,36 @@
     brain/fencing, L11 CAP dead-vs-unreachable, L14 speed-of-light, L23 multi-region spares, L31 weighting/canary,
     L34 readiness/health/flap, L42 load balancing (region-above, server-within). Trade: proximity & availability
     vs routing staleness & complexity. (Lesson 0050)
-51. Chaos engineering & fault injection — deliberately breaking things (kill a node, add latency, drop a
-    region, partition the network) to VERIFY the failure designs actually hold (L07 timeouts/breakers, L34
-    health checks, L36 cells, L46 failover, L50 regional failover); blast-radius control, steady-state
-    hypotheses, and running it in production safely. Trade: confidence in resilience vs the risk of the
-    experiment itself.
+51. ✅ **Chaos engineering & fault injection** — a checkout flow (payment/inventory/recommendation svcs,
+    L07/25/36/49/50) whose fifty lessons of DEFENSES are all untested CLAIMS: a defense you've never
+    triggered is a hypothesis, not a fact. Estimate the odds one is silently broken: ~50 resilience
+    mechanisms each ~10% wrong → `0.90^50 ≈ 0.5%` all-work → ~99.5% at least one broken, found at 3 AM at
+    100% blast unless you look first; a controlled 1%/30-s experiment (~1,500 reqs) vs a live 100%/30-min
+    outage (~9,000,000) = ~6,000× less damage. Model the experiment as the SCIENTIFIC METHOD (not a
+    wrecking ball): a **steady-state hypothesis** in OUTPUT terms (checkout success ≥99.9%, p99<300ms, not
+    CPU), a single injected **fault** (kill/latency/exhaustion/partition/region-drop/clock-skew — LATENCY
+    the most revealing, because slow holds a thread/slot open where dead fails fast = L07's reason), a tiny
+    **blast radius** + control group (L31 canary / L36 cell as the natural boundary), and an AUTOMATIC
+    **abort/halt condition** (L31 rollback gate pointed at a fault). Trace: (A) kill 1 payment-svc instance
+    → L34/42 eject+reroute + L07 retry + L13 idem key → HOLDS (confidence earned, widen); (B) +5s latency
+    on nice-to-have recommendation-svc → EXPECT L07/49 timeout+degrade, ACTUAL no timeout set → BFF blocks
+    → thread-pool freeze (L07/13) → checkout craters to 82% on 1% in 28s = the payoff, the 6,000× the
+    estimate promised, fix the timeout & re-run → HOLDS; (C) partition inventory-svc but the abort+monitoring
+    run THROUGH the partitioned path → dashboard stale-green, abort never arrives → controlled experiment
+    becomes an incident (L36 shared-component trap in the TOOLING); (D) run it all in staging → passes
+    everything, proves nothing (no real load/skew/hot-keys/cross-region latency = L31 unrepresentative-canary
+    trap). First wall = the SAFETY OF THE EXPERIMENT ITSELF: value only unlocks in production (staging lies)
+    but production = real customers, so the practice lives on (1) small SHRINKABLE-to-zero blast radius,
+    (2) a safety plane (monitor+abort) that does NOT share fate with the target (L36 applied to tooling —
+    partition the net, your abort can't cross it), (3) detection FASTER than harm (L17 observability, L27
+    knee), and (4) a **blameless** culture — load-bearing, not soft: punish a failed experiment and no one
+    runs the one that finds the expensive bug. Four traps: no steady-state hypothesis (vandalism); unbounded
+    blast radius (experiment = outage); safety plane sharing fate with target; proving it only in staging.
+    Reuses L07 timeouts/breakers/bulkhead/retry (the defenses under test, slow-vs-dead), L10/11 partition &
+    split-brain (the fault), L13 idempotency (safe retry under fault), L17 observability (the abort's signal),
+    L27 knee (fault at peak cascades where staging can't), L31 canary+auto-rollback (blast radius+abort),
+    L34/42/50 health-check/failover (verified in Path A), L36 cells (blast boundary + shared-component trap).
+    Trade: confidence in resilience vs the risk of the experiment itself. (Lesson 0051)
 
 ### Advanced topics (next batch — queued so the course never runs dry)
 52. Content moderation & abuse systems at scale — classify a firehose of user content (spam, fraud, harmful
