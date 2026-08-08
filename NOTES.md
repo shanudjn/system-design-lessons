@@ -941,10 +941,31 @@
     Trade: confidence in resilience vs the risk of the experiment itself. (Lesson 0051)
 
 ### Advanced topics (next batch — queued so the course never runs dry)
-52. Content moderation & abuse systems at scale — classify a firehose of user content (spam, fraud, harmful
-    posts) with a cheap-model-first funnel (L16/L29 narrow-before-expensive), human-review queues, appeals,
-    and the precision/recall dial (L16) where both errors are costly. Trade: safety coverage vs false-positive
-    harm & review cost.
+52. ✅ **Content moderation & abuse systems at scale** — one content stream, 500M posts/day (~5,787/s): why
+    human-review-everything is a two-orders-of-magnitude non-starter (10 s/post × 2,160/mod-day → 231k
+    moderators ≈ $9.3B/yr, still slow) → a **cheap-model-first funnel** (L16 two-phase / L29 narrow-before-
+    expensive, aimed at CLASSIFICATION): blocklist (exact+**fuzzy/perceptual hash**, ~µs) → cheap classifier
+    (~0.5 ms/all 500M, ~3 cores) → big multimodal (~50 ms/uncertain 4% = 20M, ~12 GPUs) → human (~10 s/the
+    0.4% = 2M, ~926 mods, **250×** fewer, $37M/yr). The **precision/recall dial** where BOTH errors cost
+    (FP = silence an innocent = censorship; FN = miss abuse = harm): one threshold can't win — at 1% bad
+    (5M/day) aggressive = 80% recall / **40% precision** (6M innocents removed/day), conservative = 95%
+    precision / **38% recall** (miss 62%) → **two thresholds** (auto-remove ≥0.95 @ ~99% precision, auto-allow
+    ≤0.20, escalate the UNCERTAIN band; band-WIDTH = safety-vs-cost dial, band-POSITION = **per category**:
+    favor precision for spam, recall+hash+report for imminent-harm/illegal). Trace: near-free clean post (94%,
+    publish-immediately not block-on-review), hash-caught spam (cheapest = the repeated/known), ambiguous news
+    photo escalated → human verdict = the answer AND next model's training label, and a **false positive**
+    rescued by an **appeal** (straight to a human; reinstated-rate = a quality metric; FN caught by user
+    REPORT [reactive], FP by appeal). First wall = **the human review queue** (bounded resource, L28 with
+    PEOPLE as the bound): can't be FIFO (a 10k-views/min post waits 60 min → reaches 600k) → order by expected
+    harm = **severity × reach**, triage the low-risk tail to auto-decide (SLA). Second wall = **adversarial**
+    (unlike L16's static corpus): attackers mutate (V1agra, 2px crop dodges exact hash, coded language) →
+    recall silently decays 95%→70% with NO alert → **fuzzy hashing** + continuous **feedback loop** (human
+    labels + reports + appeal reversals → retrain). Deepest wall = every dial is a choice between two harms on
+    different people that engineering makes tunable/measurable/per-category but never removes (+ protect the
+    moderators absorbing the worst 0.4%). Four traps: one global threshold; FIFO queue; classifier-as-"done";
+    auto-remove with no appeal/reason. Reuses L02/48 hot-lookup cache (blocklists), L16 two-phase + precision/
+    recall, L28 backpressure/bounded-queue, L29 narrow-before-scan, L13 record-once decision. Trade: safety
+    coverage vs false-positive harm & review cost. (Lesson 0052)
 53. Feature stores & ML serving infrastructure — serve features to a model at request time with online/offline
     consistency (train-serve skew), point-in-time correctness, low-latency feature lookup (L02/L48 caching),
     and batch vs streaming feature computation (L29 lambda/kappa). Trade: feature freshness vs serving latency
