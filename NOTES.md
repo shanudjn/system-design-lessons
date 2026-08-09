@@ -966,10 +966,33 @@
     auto-remove with no appeal/reason. Reuses L02/48 hot-lookup cache (blocklists), L16 two-phase + precision/
     recall, L28 backpressure/bounded-queue, L29 narrow-before-scan, L13 record-once decision. Trade: safety
     coverage vs false-positive harm & review cost. (Lesson 0052)
-53. Feature stores & ML serving infrastructure — serve features to a model at request time with online/offline
-    consistency (train-serve skew), point-in-time correctness, low-latency feature lookup (L02/L48 caching),
-    and batch vs streaming feature computation (L29 lambda/kappa). Trade: feature freshness vs serving latency
-    & training-serving consistency.
+53. ✅ **Feature stores & ML serving infrastructure** — one fraud scorer approving a payment in ~50 ms needs
+    ~200 **features** (computed signals: `card_txn_count_1m`, `user_avg_amount_30d`, `merchant_fraud_rate_7d`).
+    Estimate kills request-time computation on BOTH axes: 10k txns/s × 200 = 2M aggregations/s = 400× a DB's
+    safe 5k q/s (melts checkout) AND 200 sequential 5 ms aggs = ~1,000 ms = 20× the 50 ms budget; precomputed,
+    the latest values are 100M users × 200 × 8 B = 160 GB served as one ~2 ms KV lookup (L15 precompute-the-read
+    for model inputs). Model = TWO stores shaped for opposite jobs — **online store** (KV cache, latest-per-entity,
+    fast, L02/48) for serving vs **offline store** (columnar warehouse, full time-series history, L29) for training
+    — fed by ONE shared **feature definition** (the anti-drift mechanism), held to two rules: **train-serve
+    consistency** (serve the number you trained on; break it = **train-serve skew**, silent accuracy loss) and
+    **point-in-time correctness** (build each training row from values AS OF that past instant, never now; break it
+    = **leakage**, the offline store keeps HISTORY precisely so an as-of join can't peek at the future — a latest-
+    only store CAN'T train honestly). Trace: (A) serving read = one 2 ms batched KV lookup of ~200 precomputed
+    values → model → approve, store never computes on the hot path; (B) freshness PER FEATURE = batch a 30-day avg
+    (~1% shift/txn, 6 h stale harmless, cheap) vs stream `card_txn_count_1m` (0→50 in a 60 s card-testing attack =
+    the fraud signal, a batch would finish the attack before updating → L29 kappa off the L09/33 event log, ~1-2 s);
+    (C) training build = join old labels to CURRENT values → merchant_fraud_rate_7d "now" includes this txn's own
+    later chargeback → offline AUC 0.99, production flatlines → point-in-time/as-of join over offline history fixes
+    it. First wall = train-serve skew SURVIVES a shared definition because the two stores drift (streaming writes
+    online at 12:00:03, batch materializes offline at a different window edge → disagree exactly at fast-moving
+    moments that matter most) → honest fix = **feature logging**: write down the exact served feature vector, join
+    the delayed label to it, so "trained on" and "served" are one recorded fact (L13 decide-once-record-it) — also
+    gives point-in-time for free. Secondary walls = online store is a hot dependency (L03/04/48 shard/replicate/hot-
+    key) + freshness lag never zero (L06/26 propagation window). Four traps: compute at request time; train on
+    current values (leakage); two code paths per feature (skew); one freshness for all. Reuses L15 precompute-the-
+    read, L29 serving-vs-analytics-shapes + lambda/kappa, L02/48 cache + hot-key, L39 tier-by-need (freshness per
+    feature), L06/26 replication/propagation lag, L13 decide-once. Trade: feature freshness vs serving latency &
+    training-serving consistency. (Lesson 0053)
 54. Billing & metering systems — turn a usage firehose into correct invoices: idempotent event ingestion
     (L13), aggregation into usage counters (L21), pricing/rating, and the reconciliation that catches drift
     against the ledger (L25). Trade: billing accuracy vs metering cost & latency.

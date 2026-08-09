@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 53 — Feature Stores &amp; ML Serving: Feeding a Model the Same Numbers It Trained On</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 53 · Worked Example</div>
+  <h1>Feature Stores &amp; ML Serving: Feeding a Model the Same Numbers It Trained On</h1>
+  <p class="lead">Lesson 52's moderation funnel leaned on a <b>classifier</b>; Lesson 16's search leaned on a <b>ranker</b>; recommenders, fraud scorers, and churn predictors all lean on the same thing. A model is a function, and a function is only as good as its <b>inputs</b>. Those inputs are <b>features</b> — computed signals about a user, an item, a merchant: "how many times did this card pay in the last minute," "what's this user's average order over 30 days." The model itself is the glamorous part; the unglamorous part that decides whether it works in production is <b>getting the right feature values to it, fast enough, and computed the exact same way they were in training.</b> Get the plumbing wrong and the model that scored 99% in the lab quietly performs like a coin flip on real traffic — with no error in the code and no alert firing. We'll take one concrete model call — a <b>fraud scorer</b> deciding whether to approve a payment in ~50&nbsp;ms — and <b>estimate</b> why you can't just compute features when the request arrives. We'll <b>model</b> the <b>feature store</b>: an <b>online</b> store for serving, an <b>offline</b> store for training, and one shared <b>definition</b> that keeps them honest. We'll <b>trace</b> a serving read, a feature update (batch vs streaming), and the training-set build. And we'll hit the wall the whole thing stands on: <b>the number the model trained on and the number it's served must be identical, and three separate leaks pull them apart.</b> The trade underneath: <b>feature freshness vs serving latency &amp; training-serving consistency.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0053-feature-stores-ml-serving.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>A payments company runs a <b>fraud model</b>. Every time a card is charged, the model must score the transaction — <b>fraud</b> or <b>legit</b> — and return a decision fast enough to approve or decline before the customer is left waiting: a budget of about <b>50&nbsp;ms</b> end to end. The model doesn't look at the raw transaction alone; a single "$80 at a coffee shop" tells you almost nothing. It looks at <b>features</b> — precomputed signals that put this charge in context:</p>
+<ul>
+  <li><code>card_txn_count_1m</code> — how many charges this card made in the last minute (a stolen card being <i>tested</i> fires dozens in seconds).</li>
+  <li><code>user_avg_amount_30d</code> — the cardholder's average charge over 30 days (is $80 normal for them, or 40&times; their usual?).</li>
+  <li><code>merchant_fraud_rate_7d</code> — how often charges at this merchant turned out fraudulent last week.</li>
+  <li><code>amount_vs_user_avg</code> — this charge divided by the 30-day average. ...and ~200 more.</li>
+</ul>
+<p>So the real question of this lesson is not "is the model good?" — assume it is. It's <span class="key">"how do we hand this model ~200 correct, current feature values in a few milliseconds, ten thousand times a second, computed the <i>same way</i> they were when the model learned from them?"</span> That plumbing is the <b>feature store</b>, and it is where most real ML systems live or die.</p>
+
+<div class="diagram"><pre>
+  A feature store: ONE definition, TWO stores, feeding TWO very different jobs.
+
+                        +---------------------------+
+                        |   FEATURE DEFINITION       |   the ONE piece of code
+                        |   "card_txn_count_1m =     |   that computes a feature.
+                        |    count(txns, card, 1m)"  |   Shared by both paths so
+                        +------------+--------------- +   they can't diverge.
+                                     |
+                 computed over history|and over the live stream
+              +----------------------+----------------------+
+              v                                             v
+   +----------------------+                     +--------------------------+
+   |   OFFLINE STORE      |                     |   ONLINE STORE           |
+   |   (warehouse, L29)   |                     |   (KV cache, L02/L48)    |
+   |   FULL HISTORY of    |                     |   LATEST value per       |
+   |   every value over   |                     |   entity only. Small,    |
+   |   time. Huge, cheap,  |                    |   fast (~2 ms), current. |
+   |   slow. ~years.      |                     |   ~160 GB in RAM.        |
+   +----------+-----------+                     +------------+-------------+
+              |                                              |
+              v  point-in-time join (as-of t)               v  one batched read
+   +----------------------+                     +--------------------------+
+   |  TRAINING            |                     |  SERVING                 |
+   |  build labeled rows  |                     |  score a live txn in     |
+   |  as features WERE at |                     |  ~50 ms: lookup features |
+   |  each past moment    |                     |  -> model -> approve/deny|
+   +----------------------+                     +--------------------------+
+
+  Same feature, two shapes: training needs it AS IT WAS at each past instant
+  (history); serving needs only NOW (latest), but blazing fast. The store's whole
+  job is to serve both from ONE definition so the model is fed identical numbers.
+</pre></div>
+
+<p class="note"><span class="key">A feature store is the system that computes named signals (features) once from a shared definition, keeps their full history in an offline store for building training sets and their latest value in a fast online store for serving, so a model is fed the same values at serving time that it learned from at training time — with a chosen freshness for each feature.</span> It is <b>not</b> a database you query at request time. It's a <i>precomputation pipeline</i> plus <i>two stores shaped for two jobs</i>, held together by <i>one definition</i> whose entire purpose is to stop the training numbers and the serving numbers from drifting apart.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Feature</b> — a named, computed number describing an <b>entity</b>, fed to a model as input (e.g. <code>card_txn_count_1m</code>).</li>
+  <li><b>Entity</b> — the thing a feature is about, identified by a key: a <code>user_id</code>, <code>merchant_id</code>, <code>card_id</code>. Features are looked up <i>by entity key</i>.</li>
+  <li><b>Feature definition</b> — the single piece of transformation code that computes a feature from raw data. The anti-drift mechanism: both paths run the same one.</li>
+  <li><b>Online store</b> — a low-latency key-value store (Lesson 2/48's cache shape) holding only the <i>latest</i> value of each feature per entity. Read at serving time.</li>
+  <li><b>Offline store</b> — a big columnar warehouse (Lesson 29) holding the <i>full history</i> of every feature value over time. Read to build training sets.</li>
+  <li><b>Serving / inference</b> — running the model on a live request to get a score, under a tight latency budget.</li>
+  <li><b>Training</b> — building the model from historical examples, each a set of feature values plus a known <b>label</b> (was it actually fraud?).</li>
+  <li><b>Label</b> — the known-correct answer for a past example, used to train. For fraud it arrives late (a chargeback lands weeks after the charge).</li>
+  <li><b>Train-serve skew</b> — when a feature is computed <i>differently</i> in training than in serving, so the model is fed one distribution in the lab and another in production. Silent accuracy loss.</li>
+  <li><b>Point-in-time correctness</b> — building each training row from feature values <i>as they were at that past moment</i>, never as they are now — so training can't peek at the future (<b>leakage</b>).</li>
+  <li><b>Leakage</b> — a training feature that secretly contains information from after the moment being predicted, making the model look great offline and fail in production.</li>
+  <li><b>Batch vs streaming</b> — two ways to compute a feature: a periodic job over history (batch, Lesson 29) vs an incremental update off the live event stream (streaming, Lesson 29's kappa).</li>
+  <li><b>Freshness</b> — how up-to-date a feature's serving value is: the lag between the event that should change it and the online store reflecting it.</li>
+</ul>
+
+<h2>Move 1 — Estimate: you can't compute features at request time, so you precompute and look them up</h2>
+<p>Two numbers rule the design: how much work "just compute the features when the charge arrives" would be, and how small the precomputed answers are once you stop recomputing them.</p>
+
+<div class="card calc">
+  <p><b>1. Why request-time computation is off the table — twice over.</b> Peak load is <b>10,000 transactions/s</b>, and each needs <b>~200 features</b>. Suppose you compute each feature the honest way at request time — <code>card_txn_count_1m</code> is a <code>COUNT(*)</code> over the transactions table (Lesson 12), <code>user_avg_amount_30d</code> an <code>AVG</code> over 30 days, and so on. That's <code>10,000 &times; 200 = <b>2,000,000</b></code> aggregation queries per second against your OLTP database. A database that safely serves ~5,000 heavy queries/s (Lesson 27's knee, Lesson 48) is <code>2,000,000 &divide; 5,000 = <b>400&times;</b></code> underwater — it melts, and takes checkout down with it. And even for <i>one</i> request, running 200 aggregations — say 5&nbsp;ms each — is <code>200 &times; 5 ms = <b>1,000 ms</b></code>, twenty times over the 50&nbsp;ms budget. <span class="key">Request-time computation fails on throughput and on latency at the same time; there is no faster database that fixes a 400&times; and a 20&times; wall together.</span> The work must be done <i>ahead</i> of the request.</p>
+  <p><b>2. What the precomputed answers cost to hold.</b> Flip it around: compute each feature <i>once</i>, ahead of time, and store just the <b>latest value per entity</b>. For <b>100M active users</b> &times; <b>200 features</b> &times; <b>8 bytes</b> each: <code>100M &times; 200 &times; 8 B = <b>160 GB</b></code>. That fits comfortably in a modest in-memory key-value cluster (Lesson 48), sharded by entity key (Lesson 4). Now serving is <i>one</i> lookup — "give me all of user X's features" — returning ~200 values in <b>~2 ms</b>, not 1,000. The 400&times; write-side firehose is gone too: a feature is recomputed only when its inputs change, not once per read. <span class="key">Precompute-and-look-up converts an impossible 2,000,000 reads/s of computation into a 160&nbsp;GB table and a 2&nbsp;ms point read — the exact "precompute the read" move from Lesson 15, now applied to model inputs.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off — feature freshness vs serving latency &amp; training-serving consistency.</b> Precomputing buys the 2&nbsp;ms lookup, but it introduces a gap: the stored value is only as current as the last time you computed it. How hard you chase that gap (a nightly batch vs a second-by-second stream) is the <b>freshness</b> dial, and it costs money and pipeline complexity. Meanwhile splitting the work into "compute ahead, serve later" opens the door to the deeper hazard — the ahead-of-time computation and the training-time computation must produce the <i>same number</i>, or the model is quietly fed inputs it never learned from. The whole rest of the lesson is those two tensions.</p>
+
+<h2>Move 2 — Model: one definition, two stores, and the two correctness rules that keep them honest</h2>
+<p>Three ideas make the system: a <b>two-store split</b> shaped for two opposite jobs, a <b>single feature definition</b> that feeds both, and the two rules — <b>train-serve consistency</b> and <b>point-in-time correctness</b> — that are the only reasons this is hard rather than a cache with extra steps.</p>
+
+<h3>1. Two stores, because serving and training want opposite things</h3>
+<p>Serving wants <b>one entity, latest values, in 2&nbsp;ms</b> — and it never cares what a feature was last Tuesday. Training wants <b>the full history of every feature over years</b>, so it can reconstruct what each value was at every past moment — and it doesn't care about latency, because it runs offline over hours. These are the read patterns of two different worlds (Lesson 29 already taught that serving and analytics have opposite shapes and must not share one store). So you keep <b>two</b>: an <b>online store</b> (a low-latency KV cache, Lesson 2/48, holding only the latest value per entity — small and fast) and an <b>offline store</b> (a columnar warehouse, Lesson 29, holding the whole time-series of values — huge, cheap, slow). Same features, two physical shapes, because "fast latest lookup" and "complete history scan" cannot be the same storage engine.</p>
+
+<h3>2. One definition, or you've already lost</h3>
+<p>Here is the discipline that separates a feature store from "two teams computing similar-looking numbers." A feature is defined <b>once</b> — one piece of transformation code, <code>card_txn_count_1m = count(txns for this card in the last 60 s)</code> — and <i>both</i> the offline history and the online latest value are produced by that same definition. <span class="key">The instant training computes a feature one way (a data scientist's SQL over the warehouse) and serving computes it another way (an engineer's hand-written stream aggregation), they will disagree — different window edges, different rounding, a bug in one but not the other — and the model, trained on one, is served the other.</span> The single definition isn't tidiness; it's the mechanism that makes the next rule even possible to keep.</p>
+
+<h3>3. The two correctness rules — and why they're the whole difficulty</h3>
+<div class="card">
+  <p><b>Train-serve consistency.</b> The feature value the model sees at <i>serving</i> time must be computed identically to the one it saw at <i>training</i> time. Break it and you get <b>train-serve skew</b>: the model learned that "<code>user_avg_amount_30d</code> = 42.10" means one thing, but serving computes 41.80 for the same state (a different rounding, a timezone slip in the window) — a small, silent shift, repeated across 200 features, that moves every input off the distribution the model was fit on. Nothing errors. The model just gets worse, and no dashboard says why.</p>
+  <p><b>Point-in-time correctness.</b> To build a training row for "was the charge at time <code>t</code> fraud?", you must gather each feature's value <b>as it was at <code>t</code></b> — not its value now. Miss this and you get <b>leakage</b>: you join the label (fraud, confirmed by a chargeback 30 days later) against <i>today's</i> feature values, so <code>merchant_fraud_rate_7d</code> "now" already includes the very fraud you're trying to predict. The model looks brilliant offline (it's peeking at the answer) and is useless in production, where the future genuinely doesn't exist yet. <span class="key">This is exactly why the offline store keeps <i>history</i> and not just the latest value — a "latest value" store literally cannot answer "what was this on day&nbsp;60," so it cannot build a leak-free training set.</span></p>
+</div>
+
+<p class="note why"><b>The two rules are why you can't just cache features and call it done.</b> A plain cache (Lesson 48) serves the latest value fast — that solves latency, and nothing else. It has no notion of "the same way training computed it" (train-serve skew) and no notion of "as it was at a past instant" (point-in-time). A feature store is a cache <i>plus</i> a shared definition <i>plus</i> a time-versioned history — and those two additions are the entire reason the discipline exists.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Follow the same feature through the three journeys that matter: a serving read, the two ways a feature gets updated, and the training-set build where point-in-time correctness earns its keep.</p>
+
+<h3>Path A — a serving read (the 50&nbsp;ms hot path)</h3>
+<div class="diagram"><pre>
+  A $80 charge arrives on card C, user U, merchant M.
+
+   t=0     the entity keys are already on the request: card_id=C, user_id=U,
+           merchant_id=M. No lookup needed to KNOW who; only to fetch features.
+   t~2ms   ONE batched read to the online store: GET features for {C, U, M}
+           -> ~200 latest values come back in a single round trip (~2 ms).
+           NOT 200 queries; the values were precomputed, this is a KV lookup.
+   t~22ms  model inference on those 200 numbers -> fraud score 0.03 -> APPROVE.
+   t~25ms  decision returned, well inside the 50 ms budget.
+
+  The online store is NEVER asked to compute anything or scan history on this path.
+  It hands back numbers someone else already computed. That's the whole point of
+  Move 1: the expensive work happened ahead of time, off the request's critical path.
+</pre></div>
+
+<h3>Path B — how a feature stays current: batch vs streaming, chosen per feature</h3>
+<div class="diagram"><pre>
+  Two features, two completely different freshness needs.
+
+  user_avg_amount_30d  (slow-moving)
+   -> a BATCH job (L29) runs every 6 h: scan the warehouse, recompute the 30-day
+      average for every user, write the latest value to the online store.
+   -> Is 6 h of staleness ok? A 30-day average over ~100 txns moves ~1/100 = ~1%
+      per new charge. Six hours stale barely changes it. BATCH is fine, and cheap.
+
+  card_txn_count_1m  (fast-moving -- this IS the fraud signal)
+   -> a stolen card gets TESTED: 50 tiny charges in 60 seconds. This feature must
+      go 0 -> 50 within a second or it's worthless.
+   -> a BATCH job at midnight would report whatever it was at midnight -> the entire
+      attack finishes before the feature updates -> the model is blind exactly when
+      it matters. So this feature is STREAMING: a stream processor consumes the txn
+      event log (L09/L33), keeps a rolling 60 s count, writes to the online store
+      within ~1-2 s. Costs a streaming pipeline; buys the freshness the signal needs.
+
+  RULE: freshness is chosen PER FEATURE. Pay for streaming only where the signal
+  moves fast; use cheap batch where staleness is harmless. (L29 lambda/kappa,
+  L39 tier-by-need -- the same "spend freshness where it pays" shape.)
+</pre></div>
+
+<h3>Path C — building the training set (where point-in-time correctness is life or death)</h3>
+<div class="diagram"><pre>
+  Goal: teach the model from history. We have labels: txns from 60 days ago,
+  each now KNOWN fraud/legit (the chargebacks have settled). For each past txn at
+  time t we need its feature values AS THEY WERE AT t.
+
+  WRONG (leakage):  join each old txn to the online store's CURRENT values.
+     merchant_fraud_rate_7d "now" includes fraud that happened AFTER t --
+     including this txn's own chargeback. The model learns to read the answer.
+     -> offline AUC 0.99 (!). In production: no better than the old rules, because
+        at decision time the future values it leaned on simply don't exist.
+
+  RIGHT (point-in-time / "as-of" join):  for each txn at t, fetch each feature's
+     value from the OFFLINE history as of the last update BEFORE t.
+        txn at t=day60 12:00:00  ->  merchant_fraud_rate_7d as of day60 11:59:xx
+     No future information enters any row. Offline score now reflects reality.
+
+  This is ONLY possible because the offline store kept the full time-series. A
+  latest-value-only store cannot answer "what was this at day 60" -> cannot train
+  honestly. History in offline, latest in online: not duplication -- two jobs.
+</pre></div>
+
+<p>Path A is why the system is fast: the model-serving hot path is a single 2&nbsp;ms key-value read of values computed earlier, never a computation. Path B is the freshness dial made concrete — the <i>same machinery</i> (one definition, written to the online store) fed by two engines, batch where staleness is harmless and streaming where the signal moves faster than a batch interval. Path C is the trap that sinks more ML projects than any modeling mistake: <span class="key">a training set built from today's feature values silently leaks the future, producing a model that dazzles in the notebook and flatlines in production — and the only defense is a time-versioned offline store and a point-in-time join that reconstructs the past exactly.</span> Notice that Paths B and C are two views of one thing: the offline store records the <i>history</i> of every value the streaming/batch pipeline ever wrote, and the training join reads that history back.</p>
+
+<h2>Move 4 — Find the first bottleneck: the served number and the trained number must be identical</h2>
+<p>The online store makes serving fast and the offline store makes training honest — but the model is one function stretched across both, and it only works if the number it's fed in production equals the number it learned from. <span class="key">Train-serve skew is the wall, and even after you share one definition it sneaks back in through the gap between the two stores.</span> Two forces press on it, and one clean fix cuts under both.</p>
+
+<div class="card calc">
+  <p><b>1. The skew that survives a shared definition — the two stores drift.</b> You did the right thing: one definition computes <code>card_txn_count_1m</code>. But the <i>streaming</i> pipeline writes it to the <b>online</b> store at 12:00:03, while the <i>batch</i> materialization lands it in the <b>offline</b> history at a slightly different instant, with a slightly different window edge. Now training (reading offline) and serving (reading online) see values that agree <i>almost</i> always — and disagree exactly at the fast-moving moments that matter most for fraud. The model is trained on the offline version and served the online version; the skew is small, silent, and concentrated where the stakes are highest. Sharing the definition removed the <i>code</i> divergence but not the <i>store</i> divergence.</p>
+  <p><b>2. The honest fix — log what you actually served.</b> Stop trying to <i>reconstruct</i> the training features from the offline store and hope they match serving. Instead, at serving time, <b>write down the exact feature vector the model was given</b> (Path A's 200 values) alongside the request id. Weeks later, when the label arrives, join the label to the <i>logged</i> features. Now the training row contains, by construction, the <i>literal numbers serving used</i> — skew is impossible because there's only one number, recorded once (Lesson 13's "decide once, record it" habit, applied to features). This also fixes point-in-time correctness for free: the logged vector <i>is</i> the state as of the request instant, so there's nothing to reconstruct and nothing to leak. Feature logging is the strongest anti-skew technique because it makes "the value trained on" and "the value served" the same physical fact.</p>
+</div>
+
+<p>There are two more walls behind that one, familiar from earlier lessons. <b>The online store is a hot dependency</b> on every model call: at 10,000 req/s it's a shared, latency-critical KV tier, so it inherits Lesson 48's whole toolkit — shard by entity key (Lesson 4), replicate for reads, and beware the hot entity (a giant merchant's features read on every one of its transactions is a Lesson 3 hot key, coalesce it). And <b>freshness lag is never zero</b>: even streaming has a second or two between the event and the online store reflecting it (Lesson 6's replication lag, Lesson 26's propagation window), so a feature is always <i>slightly</i> behind reality — you shrink that window where the signal is fast-moving and accept it where it isn't, which is just Path B's per-feature dial seen from the other side. <span class="key">The deepest point stands, though: a model in production is only as good as the promise that the numbers it's scored on are the numbers it learned from — and that promise is a systems problem, not a modeling one.</span></p>
+
+<h3>The scoreboard: which need, which lever</h3>
+<table>
+  <tr><th>Need</th><th>Reach for</th><th>Pay in</th></tr>
+  <tr><td>Serve ~200 features in a few ms at high QPS</td><td>Online store = KV cache, latest-per-entity (L2/48)</td><td>only holds "now"; can't answer historical questions</td></tr>
+  <tr><td>Build leak-free training sets</td><td>Offline store = time-versioned history (L29) + point-in-time join</td><td>huge, slow; the as-of join is expensive at scale</td></tr>
+  <tr><td>Stop training and serving from diverging</td><td>One shared feature definition for both paths</td><td>discipline + tooling to enforce a single source</td></tr>
+  <tr><td>Keep a fast-moving feature current</td><td>Streaming compute off the event log (L29 kappa)</td><td>a stream pipeline per feature family; more moving parts</td></tr>
+  <tr><td>Keep a slow-moving feature cheap</td><td>Batch recompute on an interval (L29)</td><td>stale up to one interval; wrong for fast signals</td></tr>
+  <tr><td>Kill skew and leakage at the root</td><td>Log the exact served feature vector; train on it</td><td>storage for logged vectors; a delayed-label join</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — computing features at request time.</b> Running the aggregations when the charge arrives is 400&times; over the database's safe throughput and 20&times; over the latency budget at once. Precompute each feature ahead of time and serve it as a single key-value lookup (Lesson 15's precompute-the-read, aimed at model inputs); the request path should <i>fetch</i>, never <i>compute</i>.</li>
+  <li><b>Trap 2 — training on current feature values (leakage).</b> Joining old labels to today's feature values lets information from after the predicted moment leak in, so the model reads the answer and scores ~0.99 offline, then flatlines in production. Keep a time-versioned offline history and build every training row with a point-in-time (as-of) join — or better, train on the features you logged at serving time.</li>
+  <li><b>Trap 3 — two code paths for one feature (train-serve skew).</b> A data scientist's SQL and an engineer's stream aggregation for "the same" feature will disagree at the edges, silently shifting every input off the trained distribution with no error and no alert. Compute each feature from <b>one</b> definition, and close the residual store-to-store gap by logging and training on the actually-served values.</li>
+  <li><b>Trap 4 — one freshness for everything.</b> Streaming every feature is expensive overkill for a 30-day average; batching every feature blinds the model to a card being tested in real time. Choose freshness <b>per feature</b>: streaming where the signal moves faster than a batch interval, cheap batch where staleness is harmless (Lesson 29's lambda/kappa, Lesson 39's tier-by-need).</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>A model is only as good as the numbers it's fed, and feeding them is a systems problem. <b>Estimate</b> killed the obvious approach: computing ~200 features per request at 10,000 req/s is <code>2,000,000</code> aggregations/s (<code>400&times;</code> a database's safe rate) and <code>~1,000 ms</code> of latency (<code>20&times;</code> the 50&nbsp;ms budget) — impossible on both axes — while the precomputed answers are just <code>160 GB</code> served as a <code>2 ms</code> lookup. <b>Model</b> split the work into an <b>online store</b> (KV cache, latest-per-entity, fast) and an <b>offline store</b> (warehouse, full history, for training), fed by <b>one shared definition</b>, and named the two rules that make it hard: <b>train-serve consistency</b> (serve the number you trained on) and <b>point-in-time correctness</b> (build each training row from values as they were then, never now). <b>Tracing</b> walked the 2&nbsp;ms serving read, the per-feature freshness choice (batch for a 30-day average, streaming for a 1-minute count that <i>is</i> the fraud signal), and the training-set build where a naive join to current values leaks the future and yields a model that scores 0.99 offline and fails live. The <b>first bottleneck</b> is <b>skew between the two stores</b>: even one definition can't stop the online and offline values from drifting at the fast-moving moments that matter, and the honest fix is to <b>log the exact feature vector served</b> and train on it — one number, recorded once, so "trained on" and "served" are the same fact — with the online store's hot-key/latency care (Lessons 3/4/48) and an irreducible freshness lag (Lessons 6/26) sitting behind it. <span class="key">The model is the last mile; the feature store is the road, and a model in production is exactly as trustworthy as the promise that the numbers scoring it are the numbers it learned from. The standing tension: feature freshness vs serving latency &amp; training-serving consistency.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>We've fed the model its inputs and kept them honest. The next lesson follows the money the fraud model was guarding — turning a firehose of usage into correct bills:</b></p>
+  <p style="margin:.2rem 0">• <b>Billing &amp; metering systems:</b> every API call, GB stored, and minute streamed is a usage event, and at month's end it must become an invoice that is <i>correct to the cent</i> — no event double-counted, none dropped, and every charge reconcilable against the ledger (Lesson 25). The next lesson takes one usage firehose and builds the pipeline: <b>idempotent event ingestion</b> (Lesson 13, so a retried meter event doesn't bill twice), aggregation into usage counters (Lesson 21's sketches vs exact counts), pricing/rating rules, and the <b>reconciliation</b> that catches drift before a customer is overcharged. The trade shifts to <b>billing accuracy vs metering cost &amp; latency.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">feature</span>
+    <span class="pill">entity</span>
+    <span class="pill">feature definition</span>
+    <span class="pill">online store</span>
+    <span class="pill">offline store</span>
+    <span class="pill">serving / inference</span>
+    <span class="pill">training</span>
+    <span class="pill">label</span>
+    <span class="pill">train-serve skew</span>
+    <span class="pill">point-in-time correctness</span>
+    <span class="pill">leakage</span>
+    <span class="pill">batch vs streaming</span>
+    <span class="pill">freshness</span>
+    <span class="pill">feature logging</span>
+    <span class="pill">point-in-time (as-of) join</span>
+  </p>
+  <p>That's Lesson 53, built on Lesson 15's precompute-the-read (the online store is the read, precomputed — now for model inputs), Lesson 29's opposite serving-vs-analytics shapes and lambda/kappa (the two stores + batch/streaming compute), Lesson 2/48's cache shape and hot-key care (the online store), Lesson 39's tier-by-need (freshness chosen per feature), Lesson 6/26's replication/propagation lag (freshness is never zero), and Lesson 13's decide-once-record-it habit (feature logging kills skew at the root). <b>Ask me follow-ups</b> — e.g. "how does a point-in-time join actually run efficiently over billions of rows?", "when is feature logging worth it vs recomputing from the offline store?", "how do teams detect train-serve skew in production before accuracy drops?", "what does a streaming feature pipeline for <code>card_txn_count_1m</code> look like end to end?", or "how do embeddings and on-the-fly features fit a feature store built for scalar signals?" When you're ready, say <b>next</b> and we'll go deeper on <i>billing &amp; metering — billing accuracy vs metering cost &amp; latency.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your fraud model needs ~200 features per transaction and must decide in ~50 ms at 10,000 txns/s. An engineer proposes computing each feature with a fresh SQL aggregation when the charge arrives, 'so the numbers are always current.' Why is this the wrong foundation, and what's the right one?",
+    options: [
+      {t:"It fails on throughput AND latency at once: 10,000 txns/s × 200 features = 2,000,000 aggregation queries/s, ~400× a database's safe ~5,000 q/s (it melts and takes checkout with it), and even one request running 200 aggregations at ~5 ms each is ~1,000 ms — 20× the 50 ms budget. The right foundation is to precompute each feature ahead of time and store the latest value per entity in a fast key-value online store (~160 GB for 100M users × 200 × 8 B), so serving is a single ~2 ms lookup, not a computation. The request path fetches; it never computes.",
+       ok:true,
+       fb:"Right. This is Lesson 15's precompute-the-read aimed at model inputs: the expensive aggregation happens off the request's critical path, and serving becomes a KV point read. No faster database fixes a simultaneous 400× and 20× wall."},
+      {t:"It's fine as long as you put a big enough read replica behind it; add ten replicas and the 2,000,000 queries/s spread out to 200,000 each, which any modern database handles.",
+       ok:false,
+       fb:"200,000 heavy aggregations/s per replica is still far past a safe rate, and — more fatally — replicas do nothing about the LATENCY wall: 200 sequential aggregations is still ~1,000 ms for a single request, 20× over budget. The fix isn't more machines doing the expensive thing; it's not doing the expensive thing on the request path at all."},
+      {t:"Request-time computation is actually ideal because it's always perfectly fresh; the only change needed is to raise the latency budget from 50 ms to a few seconds so the 200 queries have time to finish.",
+       ok:false,
+       fb:"A payment can't wait seconds for approval, and even if it could, 2,000,000 aggregations/s still melts the database on throughput. 'Perfectly fresh' isn't worth an impossible load and a broken user experience — precompute and look up, then choose freshness per feature where it actually matters."}
+    ]
+  },
+  {
+    stem: "You build a training set by joining each historical transaction's known label (fraud/legit, settled weeks later) to the CURRENT feature values in your store. Offline, the model scores an astonishing 0.99 AUC. In production it performs no better than the old rules. What happened?",
+    options: [
+      {t:"Leakage from missing point-in-time correctness: a feature like merchant_fraud_rate_7d computed 'now' includes fraud that happened AFTER the transaction you're predicting — including that transaction's own chargeback — so the model learned to read the answer. It looks brilliant offline because it's peeking at the future, and it fails live because at decision time those future values don't exist yet. The fix is to keep a time-versioned offline history and build each training row from feature values as of just before that transaction's timestamp (an as-of join) — or better, train on the exact feature vector you logged at serving time.",
+       ok:true,
+       fb:"Exactly. The offline store keeps history precisely so you can reconstruct 'what was this value at time t' with no future information. A latest-value-only store literally can't build a leak-free training set — which is why online and offline are two stores, not one."},
+      {t:"The model is overfit; retrain it with more regularization and a simpler architecture and the 0.99 will hold up in production.",
+       ok:false,
+       fb:"Regularization fights variance on a correctly-built dataset; it can't fix a dataset that leaks the future. Every row still contains information the model won't have at serving time, so a simpler model just leaks a bit less obviously. The problem is the point-in-time correctness of the DATA, not the capacity of the model."},
+      {t:"The production model is being served stale features; increase the online store's refresh rate to streaming for every feature and the offline 0.99 will reproduce live.",
+       ok:false,
+       fb:"Freshness isn't the issue — the offline score is inflated by leakage, so there's no real 0.99 to reproduce. Making serving fresher can't recover accuracy the model never actually had; it only ever looked good because training peeked at the future. Fix the training join (point-in-time / logged features) first."}
+    ]
+  },
+  {
+    stem: "A data scientist computes user_avg_amount_30d in a SQL notebook to train the model; an engineer re-implements 'the same' feature as a hand-written stream aggregation for serving. The model works in the lab but is mediocre in production, with no errors and no alerts. What's the diagnosis and the durable fix?",
+    options: [
+      {t:"Train-serve skew: two separate implementations of one feature disagree at the edges (window boundaries, rounding, a bug in one path), so every served input is subtly off the distribution the model was trained on — silent, because nothing errors. The durable fix is to compute each feature from ONE shared definition used by both paths, and to close the residual gap between the online and offline stores by LOGGING the exact feature vector served and training on it, so 'the value trained on' and 'the value served' are the same recorded fact.",
+       ok:true,
+       fb:"Right. One definition removes the code divergence; feature logging removes the store divergence by making training consume the literal numbers serving used. That single-fact approach also gives you point-in-time correctness for free."},
+      {t:"The two implementations are fine; the model is just underpowered. Swap in a larger model and the production gap disappears.",
+       ok:false,
+       fb:"A bigger model trained on skewed inputs is still served skewed inputs — it may even amplify the mismatch by fitting the training distribution more tightly. The gap is between the numbers in training and the numbers in serving, not the model's capacity. You must make those numbers identical, not make the model bigger."},
+      {t:"This isn't a real problem — as long as both implementations are 'approximately equal,' small differences wash out across 200 features and don't affect the score.",
+       ok:false,
+       fb:"They don't wash out; they compound. A small consistent shift in each of 200 inputs moves the whole feature vector off the trained distribution in a correlated way, and the skew is usually WORST at exactly the fast-moving moments (a card being tested) that matter most. 'Approximately equal' is how skew hides — one definition plus logged serving values is how you kill it."}
+    ]
+  },
+  {
+    stem: "You must pick how to keep two features current: user_avg_amount_30d and card_txn_count_1m. An architect says 'stream everything so it's all maximally fresh.' What's the better call?",
+    options: [
+      {t:"Choose freshness PER FEATURE. user_avg_amount_30d moves ~1% per new charge over ~100 txns, so 6-hour batch staleness is harmless — use cheap batch. card_txn_count_1m goes 0→50 during a 60-second card-testing attack and IS the fraud signal, so a nightly (or even hourly) batch would report a stale value while the attack completes — it must be streaming, updated within a second or two. Pay for streaming only where the signal moves faster than a batch interval; use batch where staleness costs nothing (Lesson 29 lambda/kappa, Lesson 39 tier-by-need).",
+       ok:true,
+       fb:"Exactly. Freshness is a per-feature dial, not a global setting. Streaming a 30-day average is expensive overkill; batching a 1-minute count blinds the model exactly when it matters. Match the compute mode to how fast each signal actually moves."},
+      {t:"Stream everything — freshness is always strictly better, and the extra pipeline cost is negligible, so there's no reason to ever use batch.",
+       ok:false,
+       fb:"A streaming pipeline per feature family is real operational cost and complexity, and it buys nothing for a 30-day average that barely moves between batches. Maximal freshness everywhere spends a lot to make slow-moving features 'fresher' in ways no model can tell apart. Spend freshness where the signal is fast; batch the rest."},
+      {t:"Batch everything on a nightly schedule — it's the simplest and cheapest, and one day of staleness is acceptable for any feature.",
+       ok:false,
+       fb:"Nightly batch is fine for user_avg_amount_30d but catastrophic for card_txn_count_1m: the entire card-testing attack finishes long before midnight's value updates, so the model is blind precisely when fraud is happening. A fast-moving signal with day-old freshness is a useless feature — that one needs streaming."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
