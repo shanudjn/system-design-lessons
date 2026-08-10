@@ -993,9 +993,33 @@
     read, L29 serving-vs-analytics-shapes + lambda/kappa, L02/48 cache + hot-key, L39 tier-by-need (freshness per
     feature), L06/26 replication/propagation lag, L13 decide-once. Trade: feature freshness vs serving latency &
     training-serving consistency. (Lesson 0053)
-54. Billing & metering systems — turn a usage firehose into correct invoices: idempotent event ingestion
-    (L13), aggregation into usage counters (L21), pricing/rating, and the reconciliation that catches drift
-    against the ledger (L25). Trade: billing accuracy vs metering cost & latency.
+54. ✅ **Billing & metering systems** — a cloud platform metering 50B events/day (~579k/s, 10 TB/day raw,
+    3.65 PB/yr audit) turns a usage firehose into invoices correct to the cent on a $50M/mo book, where a
+    quiet 0.5% error = $3M/yr mischarged (invisible on a dashboard, seven figures on a bill; metering error is
+    asymmetric — undercount leaks revenue, overcount overbills → disputes). Four stages / four guards: **ingest**
+    dedups an at-least-once firehose (L09) to counted-once via emitter-stamped **event_id** + atomic insert-if-
+    absent (L13/L25/L06), durable-append-before-ACK against drops; **aggregate** into EXACT usage counters
+    (L06 atomic add), NEVER a sketch — L21's approximate counters are disqualified for the billed number
+    (keep a sketch ALONGSIDE only for the live "usage so far" dashboard: exact-slow bill vs approx-fast view,
+    L29/53 two-shapes); **rate** tier-by-tier + **point-in-time** on event-time buckets (12.5M calls → $0+$4.50+
+    $1.00=$5.50; a mid-cycle price change must rate each unit at the price in effect THEN, L53 PIT / L35 event-
+    time); **reconcile** — every derived number (aggregate, invoice) is a sum of the durable raw log, so re-sum
+    it independently and check against the invoice + the L25 ledger (billed-but-uncollected / collected-but-
+    unbilled = drift classes) → HOLD a wrong invoice before it ships. Trace: one event→line item; a retried
+    duplicate the event_id claim drops before double-charging (exactly-once EFFECT on at-least-once delivery,
+    L13/09); month-end close held behind a **watermark** + grace (L29) so a straggler ingested next month bills
+    to THIS cycle by event-time (L35), later stragglers → compensating line next invoice (L25/32). First wall =
+    **the dedup memory**: "never counted twice" = remember every event_id for the whole retry horizon = 5.6 TB
+    (7-day window × 800 GB/day of 16 B keys), the L13 **TTL trap** in dollars (forget too soon → late dup
+    double-charges; keep forever → unbounded) → bound by the max retry horizon, and you may NOT shrink it with a
+    sketch (approximate dedup = approximate bill). A **Bloom filter** over the FULL window cuts LOOKUPS the safe
+    way — "definitely not seen" (no false negatives) → accept; "maybe" → exact check; its only error, a false
+    positive, costs one extra lookup, never a wrong bill (L21 Bloom-as-guard) — but age a key out early and
+    "not seen" becomes a lie → double-charge. Secondary walls = hot-account counter = EXACT sharded counter
+    (L03/06/21/25, merged total still exact) + late events never fully stop (a cycle is closed-with-correction,
+    never sealed, L25/32). Reuses L13 idempotency+TTL, L21 exact-vs-approx + Bloom guard, L25 ledger +
+    compensating entries, L09 at-least-once, L29 watermark + batch-exact/stream-fast, L35 event-time, L53 PIT.
+    Trade: billing accuracy vs metering cost & latency. (Lesson 0054)
 55. Edge computing & compute-at-the-edge — push not just cached bytes (L14) but CODE to the edge (L50's PoPs):
     the cold-start vs locality trade, state at the edge (eventual consistency, L11/23), and what can/can't run
     far from the data. Trade: latency & offload vs consistency & operational reach.

@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 54 — Billing &amp; Metering: Turning a Usage Firehose into a Bill Correct to the Cent</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 54 · Worked Example</div>
+  <h1>Billing &amp; Metering: Turning a Usage Firehose into a Bill Correct to the Cent</h1>
+  <p class="lead">Lesson 53 fed a fraud model the right numbers to guard the money. This lesson follows the money the other way — <b>into the bill</b>. A pay-as-you-go platform charges for what customers actually use: every API call, every GB stored for an hour, every GB shipped out. Each of those is a tiny <b>usage event</b>, and at month's end billions of them must become an <b>invoice that is correct to the cent</b> — no event counted twice, none dropped, each priced by the plan in force when it happened, and every figure reconcilable against the ledger. This is where "approximate is fine" — the friendly shortcut of Lesson 21 — becomes a liability, because a rounding error here is not noise on a dashboard, it is <b>money moved wrongly</b>, and it hurts in <i>both</i> directions: undercount and you leak revenue silently; overcount and you overbill a customer, who disputes, refunds, and leaves. We'll take one concrete pipeline — a cloud platform metering <b>50&nbsp;billion billable events a day</b> — and <b>estimate</b> the firehose and the true cost of a small error. We'll <b>model</b> the four stages that turn usage into an invoice (<b>ingest → aggregate → rate → reconcile</b>) and the four properties that make it trustworthy. We'll <b>trace</b> one event to a line item, a duplicate that must not double-charge, and a month-end close that catches drift before the customer sees it. Then we'll hit the wall the whole thing leans on: <b>to promise "no event counted twice" you must remember every event you've ever seen — and you cannot make that memory approximate.</b> The trade underneath: <b>billing accuracy vs metering cost &amp; latency.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0054-billing-metering.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>A cloud platform sells three metered products. Customers don't pay a flat fee; they pay for exactly what they consume:</p>
+<ul>
+  <li><b>API calls</b> — every request to the platform's API is one billable unit.</li>
+  <li><b>Storage</b> — every GB kept, charged per GB-hour it sits there.</li>
+  <li><b>Egress</b> — every GB shipped out to the internet.</li>
+</ul>
+<p>The whole book is about <b>$50&nbsp;million a month</b> across roughly <b>1&nbsp;million paying accounts</b>. Every one of those charges traces back to a <b>usage event</b> — a small record emitted by the service that did the work: <i>"account A made 1 API call at 12:00:03,"</i> <i>"account B held 40 GB for this hour."</i> The billing system's only job is unglamorous and unforgiving: <span class="key">take the firehose of usage events and turn it into an invoice that is exactly right — no double-counts, no drops, correctly priced, and provable against the money that actually changed hands.</span></p>
+<p>Why is "exactly right" the whole game? Because a metering error is not symmetric noise you can wave away. It breaks two ways, and both are bad:</p>
+<ul>
+  <li><b>Undercount</b> (you drop events) → you bill less than the customer used → <b>revenue leakage</b>, silent, forever.</li>
+  <li><b>Overcount</b> (you double-count events) → you bill more than they used → the customer disputes, you refund, trust erodes, and in regulated markets you have an <b>overbilling</b> problem, not a bug.</li>
+</ul>
+
+<div class="diagram"><pre>
+  A billing pipeline: usage firehose -> invoice, with a reconciliation loop.
+
+   services emit                                              customer
+   usage events                                              gets billed
+       |                                                          ^
+       v                                                          |
+  +----------+   +--------------+   +-----------+   +-----------+  |
+  | INGEST   |-->| AGGREGATE    |-->| RATE      |-->| INVOICE   |--+
+  | dedup by |   | EXACT sum    |   | apply the |   | sum charges|
+  | event_id |   | per account, |   | price plan|   | at cycle  |
+  | (L13)    |   | meter, hour  |   | in effect |   | close     |
+  |          |   | (L21 exact!) |   | THEN (PIT)|   |           |
+  +----+-----+   +------+-------+   +-----+-----+   +-----+-----+
+       |                |                 |               |
+       v                v                 v               v
+  +-----------------------------------------------------------+
+  |  RAW EVENT LOG (append-only, durable, kept for audit)     |
+  +-----------------------------------------------------------+
+       |                                                  ^
+       |   RECONCILE: independently re-sum the raw log,   |
+       +-->  compare to aggregates + invoice + LEDGER (L25)+
+            any mismatch = drift = HOLD the invoice, alert.
+
+  The raw log is the source of truth. Aggregates, invoices, and dashboards are
+  all DERIVED from it -- so any of them can be recomputed and checked against it.
+</pre></div>
+
+<p class="note"><span class="key">A billing/metering system ingests a firehose of usage events exactly once each, aggregates them into per-account usage counters, rates those counters against the pricing plan in effect when the usage happened, sums the result into an invoice, and independently reconciles every derived number against the durable raw event log and the ledger — so the bill is provably correct to the cent.</span> It is <b>not</b> a counter with a price sign taped on. The hard parts are all about <i>exactness under an unreliable firehose</i>: making at-least-once delivery count once, keeping the aggregate exact rather than approximate, pricing by time, and being able to <i>prove</i> the total.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Usage event</b> — a small durable record that some unit of billable work happened: <code>{account, meter, quantity, event_time, event_id}</code>.</li>
+  <li><b>Meter</b> — a named thing you count and charge for: <code>api_calls</code>, <code>storage_gb_hours</code>, <code>egress_gb</code>.</li>
+  <li><b>Event id / idempotency key</b> — a unique id the emitter stamps on each event (Lesson 13), so a retried event can be recognized as the same one and counted once.</li>
+  <li><b>Dedup window</b> — how far back the system remembers event ids to reject duplicates. Bounded by how late a duplicate can possibly arrive (Lesson 13's TTL).</li>
+  <li><b>Usage counter / aggregate</b> — the running exact sum of a meter for one account over a time bucket (e.g. account A's <code>api_calls</code> for this hour).</li>
+  <li><b>Rating</b> — turning a usage quantity into money by applying the price plan. Also called pricing.</li>
+  <li><b>Tiered pricing</b> — a plan where the per-unit price changes as usage grows (first 1M calls free, next block cheaper, and so on). Rating is a function over the aggregate, not one multiply.</li>
+  <li><b>Point-in-time pricing</b> — rating each unit of usage at the price that was in effect <i>when it was consumed</i>, not the price today (the Lesson 53 point-in-time idea, applied to money).</li>
+  <li><b>Invoice</b> — the customer-facing bill at cycle close: the summed, rated charges.</li>
+  <li><b>Reconciliation</b> — independently recomputing totals from the raw log and comparing them to the aggregates, the invoice, and the ledger to catch drift.</li>
+  <li><b>Drift</b> — any disagreement between two numbers that should be equal (raw log vs aggregate, invoiced vs collected). Drift = a bug you catch before the customer does.</li>
+  <li><b>Event-time vs processing-time</b> — <i>when the usage happened</i> vs <i>when the billing system saw it</i>. Bills must use event-time (Lesson 35).</li>
+  <li><b>Watermark</b> — a moving "we've now seen all events up to time T" marker that lets you close a billing period without cutting off stragglers (Lesson 29).</li>
+</ul>
+
+<h2>Move 1 — Estimate: the firehose is huge, and a tiny error is expensive money</h2>
+<p>Two numbers set the whole design: how big the stream is (so you know what "keep every event" costs), and what a fraction-of-a-percent error is worth (so you know why you can't approximate it away).</p>
+
+<div class="card calc">
+  <p><b>1. The firehose.</b> Peak billable volume is <b>50&nbsp;billion events/day</b>. That's <code>50,000,000,000 &divide; 86,400 s &approx; <b>579,000 events/s</b></code> on average (call it ~1.2M/s at peak). Each event is small — <code>{account, meter, quantity, event_time, event_id}</code> at about <b>200 bytes</b> — so the raw stream is <code>50e9 &times; 200 B = <b>10 TB/day</b></code>. You cannot bill from a stream you've thrown away (a dispute six weeks later needs the evidence), so the raw log is retained: a 30-day cycle alone is <code>300 TB</code>, and a 12-month audit window is <code>365 &times; 10 TB &approx; <b>3.65 PB/yr</b></code>. That number forces tiered storage later (Lesson 39) — but note what you can <i>not</i> do: you cannot down-sample or sketch the raw log to shrink it, because it is the evidence you reconcile against.</p>
+  <p><b>2. Why "exactly right" is not fussiness — it's money.</b> The book is <b>$50M/month</b>. Suppose the pipeline has a quiet <b>0.5%</b> metering error (half a percent — the kind a naive design leaks through duplicate retries and dropped events). That is <code>0.5% &times; $50,000,000 = <b>$250,000/month</b></code> mischarged, <code>= <b>$3,000,000/yr</b></code>. If it leans undercount, that's $3M/yr of revenue gone with no alarm. If it leans overcount, that's $3M/yr of overbilling — disputes, refunds, churn, and regulatory exposure. <span class="key">A 0.5% error that would be invisible on an analytics dashboard is a seven-figure problem on an invoice. That single fact is why billing is the one place the cheap approximate counters of Lesson 21 are disqualified for the number you actually charge.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off — billing accuracy vs metering cost &amp; latency.</b> You could meter cheaply and fast: sample events, sum with a Count–Min sketch, skip the dedup store. That's perfect for a live "usage so far this month" dashboard, where being a hair off and a minute stale costs nothing. It is <i>fatal</i> for the invoice, where the number is money and must be exact and provable. Exactness is bought with real resources: storing every event, remembering every event id to dedup, and accepting that the authoritative total lags (you close the period after the stragglers are in). The whole lesson is spending accuracy where it's money and approximation where it's only a dashboard.</p>
+
+<h2>Move 2 — Model: four stages, and the four properties that make the bill trustworthy</h2>
+<p>The pipeline is four stages — <b>ingest, aggregate, rate, reconcile</b> — and each exists to protect one of four properties. Miss any property and the bill is wrong in a specific, nameable way.</p>
+
+<h3>1. Ingest — count each event exactly once (the double-count / drop guard)</h3>
+<p>Events arrive from thousands of services over a queue (Lesson 9), which delivers <b>at-least-once</b>: a producer that times out and retries, or a broker that redelivers after a blip, will hand you the <i>same</i> event twice. Count both and you overbill. So every emitter stamps each event with a unique <b>event id</b> (Lesson 13's idempotency key), and ingestion does an <b>atomic insert-if-absent</b> keyed on that id — the exact same move as Lesson 25's <code>UNIQUE(idem_key)</code> and Lesson 6's compare-and-set. If the insert wins, the event is new: append it to the raw log and let it count. If it collides, it's a duplicate: drop it. The flip side is <b>durability</b>: an accepted event must be on durable storage before it's acknowledged, or a crash drops it (undercount). <span class="key">Ingest is where "at-least-once delivery" is converted into "counted exactly once" — not by making the wire exactly-once (you can't, Lesson 9), but by deduplicating on a durable key.</span></p>
+
+<h3>2. Aggregate — sum exactly, not approximately</h3>
+<p>You don't rate 50 billion individual events; you roll them into <b>usage counters</b>: for each <code>(account, meter, hour)</code>, the exact running sum. Here is the discipline that separates billing from analytics: <span class="key">this sum must be <b>exact</b>. A HyperLogLog or Count–Min sketch (Lesson 21) is gorgeous for "roughly how many distinct users this month" but it <i>over- or under-estimates by design</i>, and that estimate is now dollars.</span> So the counter is a plain exact accumulator (Lesson 6's atomic increment). You <i>may</i> keep an approximate sketch <i>alongside</i> it to power the customer's live "usage so far" dashboard cheaply — fast and slightly stale is fine there — but the billed number always comes from the exact aggregate. Two views of one meter, shaped for two jobs: the same split as Lesson 29 (batch-exact vs stream-fast) and Lesson 53 (offline-honest vs online-fast).</p>
+
+<h3>3. Rate — price each unit by the plan in effect when it happened</h3>
+<div class="card calc">
+  <p>Rating turns a usage counter into money. It is rarely one multiply, because plans are <b>tiered</b>. Take this API-call plan and a customer who made <b>12,500,000</b> calls this month:</p>
+  <pre style="color:var(--muted)">  Tier 1  first 1,000,000 calls .............. free
+  Tier 2  next  9,000,000 (up to 10M) ....... $0.50 per million
+  Tier 3  everything above 10,000,000 ....... $0.40 per million</pre>
+  <p><b>Walk it, block by block:</b></p>
+  <p>• Tier 1: first <code>1,000,000</code> &rarr; <b>$0.00</b>.<br>
+     • Tier 2: next <code>9,000,000</code> &rarr; <code>9 &times; $0.50 = <b>$4.50</b></code>.<br>
+     • Tier 3: remaining <code>12,500,000 &minus; 10,000,000 = 2,500,000</code> &rarr; <code>2.5 &times; $0.40 = <b>$1.00</b></code>.<br>
+     • Invoice line = <code>$0.00 + $4.50 + $1.00 = <b>$5.50</b></code>.</p>
+  <p><b>Now the point-in-time twist.</b> Suppose the Tier-3 price dropped from $0.40 to $0.30 per million on the 15th. You cannot rate all 12.5M calls at today's price — the calls <i>before</i> the 15th were consumed under the old plan. So usage stays bucketed by <b>event-time</b>, and each bucket is rated at the price in effect <i>then</i>: pre-15th tiers at the old prices, post-15th at the new. <span class="key">Rating reads the price <i>as of</i> the usage instant, never "now" — the exact point-in-time rule from Lesson 53, now protecting money instead of a model.</span> Get this wrong and every mid-cycle price change silently misprices half the month.</p>
+</div>
+
+<h3>4. Reconcile — prove the total, don't trust it</h3>
+<p>Every number the customer sees is <b>derived</b> from the raw log: the aggregate is a sum of it, the invoice is a sum of aggregates. So you can <i>independently recompute</i> each level and check it. Reconciliation re-sums the raw event log for the cycle and asserts it equals the sum of the usage counters, which equals the sum of the invoice lines. Then it checks the money side against the <b>ledger</b> (Lesson 25): invoiced amounts should become receivables, payments should land as ledger entries, and <i>billed-but-never-collected</i> or <i>collected-but-never-billed</i> are drift classes reconciliation surfaces. <span class="key">Any mismatch is a bug caught <i>before</i> the invoice is sent — you hold the bill and alert, rather than shipping a wrong number and refunding later.</span> This is only possible because the raw log was kept (Move 1's durability) and never approximated (Move 2's exactness). Reconciliation is the property that turns "we think it's right" into "we can prove it."</p>
+
+<p class="note why"><b>The four properties, named:</b> counted-once (ingest dedup), summed-exactly (exact aggregate), priced-as-of-then (point-in-time rating), and provable (reconciliation vs the raw log and ledger). Each maps to one failure: double-count/drop, approximation error, misprice, and undetected drift. A billing system is exactly these four guards bolted to a firehose.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Follow the same meter through the three journeys that decide correctness: one event to a line item, a duplicate that must not double-charge, and the month-end close where reconciliation earns its keep.</p>
+
+<h3>Path A — one usage event becomes a line item</h3>
+<div class="diagram"><pre>
+  Account A makes an API call at 12:00:03. The API service emits an event.
+
+   t=0      service stamps: {account:A, meter:api_calls, qty:1,
+            event_time:12:00:03, event_id:"e-9f3a..."} and enqueues it (L09).
+   ingest   atomic insert-if-absent on event_id:
+            -> id is NEW -> append to raw log (durable) -> ACK. Counts once.
+   aggregate the exact counter (A, api_calls, hour=12:00) += 1.
+   rate     at cycle close, the hour buckets sum to A's monthly total, rated
+            tier-by-tier at the price in effect in each bucket -> $5.50.
+   invoice  the $5.50 lands as one line on A's invoice; the total reconciles
+            back to the exact sum of A's raw events. Nothing was estimated.
+
+  The hot path (emit -> ingest) is cheap and fast; the expensive exactness work
+  (aggregate, rate, reconcile) runs off the request, on event-time buckets.
+</pre></div>
+
+<h3>Path B — a duplicate that must not double-charge (at-least-once, L09/L13)</h3>
+<div class="diagram"><pre>
+  The API service emits the event, then times out waiting for the queue ACK,
+  and RETRIES -- so the SAME event arrives twice.
+
+  FIRST copy   event_id "e-9f3a" -> insert-if-absent WINS -> logged, counted.
+  SECOND copy  event_id "e-9f3a" -> insert-if-absent COLLIDES -> dropped.
+               A's counter stays +1, not +2. No double-charge.
+
+  Contrast the naive design (no event_id, count every arrival):
+     the retry adds a second +1 -> A billed for 2 calls, made 1 -> overcount.
+     Across the book at 0.5% duplication that is ~$3M/yr of overbilling.
+
+  The dual failure -- a DROPPED event (crash before durable append) -> undercount
+  -- is NOT caught here. It is caught later, by reconciliation (Path C): the raw
+  log is missing an event the emitter's own sequence numbers say should exist.
+</pre></div>
+
+<h3>Path C — month-end close: watermark, then reconcile</h3>
+<div class="diagram"><pre>
+  It's 23:59:59 on the last day. Can you close the invoice? Not yet.
+
+  STRAGGLERS: an event with event_time 23:59:58 might be INGESTED at 00:00:07
+  next month (queue lag, a retried emitter). Bill by EVENT-TIME (L35), so it
+  belongs to THIS invoice even though you saw it next month.
+   -> hold the period open behind a WATERMARK (L29): "all events up to T are in."
+      Close only once the watermark passes the cycle end + a grace window.
+   -> a straggler later than the grace window -> a correcting adjustment on the
+      NEXT invoice (a compensating line, L25/L32) -- never silently dropped.
+
+  RECONCILE before sending:
+     sum(raw log for cycle)  ==?  sum(usage counters)  ==?  sum(invoice lines)
+     invoiced amounts        ==?  receivables posted to the LEDGER (L25)
+   -> all equal        -> send the invoice.
+   -> any mismatch     -> HOLD, alert, investigate. A wrong bill never ships.
+
+  Trade named: close FAST (customer gets billed promptly) vs WAIT for stragglers
+  (accuracy). The watermark + grace window is exactly that dial.
+</pre></div>
+
+<p>Path A is the happy path: an event stamped with an id, deduplicated once, summed exactly, rated by event-time, reconciled. Path B is why the id exists — <span class="key">at-least-once delivery guarantees duplicates, and the only thing standing between a retry and a double-charge is the atomic claim on the event id</span> (Lesson 13's exactly-once <i>effect</i> on at-least-once <i>delivery</i>, no exactly-once on the wire). Path C is the part everyone underestimates: a billing cycle has a <i>boundary</i>, events straddle it, and closing on <b>processing-time</b> ("whatever we'd seen by midnight") bills the wrong month — so you close on <b>event-time</b> behind a watermark, and you never send until the derived totals reconcile against the raw log and the ledger.</p>
+
+<h2>Move 4 — Find the first bottleneck: to promise "counted once," you must remember every event — exactly</h2>
+<p>The dedup in Move 1 is what makes billing trustworthy, and it is also the wall. <span class="key">"No event is ever counted twice" is a promise about <i>memory</i>: to reject a duplicate you must remember that you already saw its event id. Remember for how long, and in how much space?</span> Two forces press here, and the escape is precise about what you may and may not approximate.</p>
+
+<div class="card calc">
+  <p><b>1. The dedup store grows with the firehose, and you can't sketch it away.</b> Event ids are ~16 bytes (a UUID). At 50 billion/day that's <code>50e9 &times; 16 B = <b>800 GB/day</b></code> of ids just to remember them. If a duplicate can arrive up to <b>7 days</b> late (an emitter that was partitioned and retried), the dedup window must cover 7 days: <code>7 &times; 800 GB = <b>5.6 TB</b></code> of live keys, sharded across an in-memory tier (Lesson 4/48). This is the Lesson 13 <b>TTL trap</b> in dollars: forget too <i>soon</i> and a late duplicate sails through and double-charges; keep ids <i>forever</i> and the store grows without bound. You bound the window by the <b>maximum retry horizon</b> — how late a duplicate can physically be — and no longer. And you cannot shrink it with a sketch: <span class="key">a Count–Min or plain probabilistic counter would make the dedup itself approximate, and an approximate dedup is an approximate bill.</span></p>
+  <p><b>2. A Bloom filter can cut the <i>lookups</i> — but only because of which way its error points.</b> Most arriving events are first-timers, so most exact-store lookups return "not seen" and are wasted. Put a <b>Bloom filter</b> (Lesson 21) in front, covering the full dedup window: if it says <b>"definitely not seen,"</b> the event is genuinely new — accept it — because a Bloom has <i>no false negatives</i>. If it says <b>"maybe seen,"</b> fall through to the exact insert-if-absent to be sure. <span class="key">The Bloom's only error is a <i>false positive</i> — "maybe seen" for something new — and that costs one extra exact lookup, never a wrong bill. Its impossible error, a false negative, is the only one that could drop a real duplicate. So the safe error points the safe way</span> (Lesson 21's Bloom-as-guard, sized at ~9.6 bits/key). One caveat that is easy to get lethally wrong: the Bloom must cover the <i>whole</i> dedup window — age a key out early and "not seen" becomes a lie, and the duplicate double-charges. Bloom trims cost; the exact store still owns correctness.</p>
+</div>
+
+<p>Two more walls sit behind that one, both familiar. <b>The hot account is a hot aggregate:</b> one giant customer emitting a huge share of the events makes their usage counter a contended row (Lesson 6's lost-update race, Lesson 3's hot shard). The fix is the exact <b>sharded counter</b> — split the counter into N per-shard sub-counters, increment locally, and <i>sum</i> at read (Lesson 21/25's mergeable counter) — but every shard is an <i>exact</i> integer, so the merged total is still exact, unlike the approximate version. <b>And late events never fully stop:</b> even after the watermark and grace window, a straggler can arrive, so a billing cycle is never truly "sealed" — it's closed with a correction path (a compensating line on the next invoice, Lesson 25/32), the same way a ledger appends a reversal rather than editing the past. <span class="key">The deepest point: everything a customer is charged must trace back, exactly and provably, to a durable event that really happened — billing is the discipline of never losing, never doubling, and always being able to <i>show your work</i>.</span></p>
+
+<h3>The scoreboard: which need, which lever</h3>
+<table>
+  <tr><th>Need</th><th>Reach for</th><th>Pay in</th></tr>
+  <tr><td>Count each event once despite at-least-once delivery</td><td>Emitter-stamped <code>event_id</code> + atomic insert-if-absent (L13/L25)</td><td>a durable dedup store the size of the retry window</td></tr>
+  <tr><td>Not drop an accepted event</td><td>Durable append before ACK (L09 durability)</td><td>write latency; raw log storage (10 TB/day)</td></tr>
+  <tr><td>A billed total that's correct to the cent</td><td>Exact usage counters, never sketches (L06 atomic add)</td><td>can't use L21's cheap approximate counters for the bill</td></tr>
+  <tr><td>A cheap live "usage so far" view</td><td>An approximate sketch <i>alongside</i> (L21), for the dashboard only</td><td>slightly off &amp; stale — fine for a dashboard, not a bill</td></tr>
+  <tr><td>Correct price across a mid-cycle plan change</td><td>Point-in-time rating on event-time buckets (L53/L35)</td><td>keep usage bucketed by time; rate per bucket</td></tr>
+  <tr><td>Bill the right period when events straddle the boundary</td><td>Close on event-time behind a watermark + grace (L29/L35)</td><td>invoice latency; a correction path for late stragglers</td></tr>
+  <tr><td>Prove the invoice, catch drift before the customer</td><td>Reconcile raw log ↔ aggregate ↔ invoice ↔ ledger (L25)</td><td>an independent recompute; keeping the raw log to check against</td></tr>
+  <tr><td>Cut dedup lookups without risking a wrong bill</td><td>Bloom filter over the full window as a negative guard (L21)</td><td>false positives cost an extra exact lookup (safe direction)</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — counting every arrival (double-charge).</b> Without an emitter-stamped event id, at-least-once redelivery adds a second <code>+1</code> for the same usage, and 0.5% duplication becomes ~$3M/yr of overbilling and customer disputes. Stamp a unique <code>event_id</code> and dedup with an atomic insert-if-absent (Lesson 13/25); the retry then collides and is dropped, counted exactly once.</li>
+  <li><b>Trap 2 — approximating the billed number.</b> A HyperLogLog or Count–Min sketch (Lesson 21) is cheap and perfect for a dashboard, but its inherent over/under-estimate <i>is</i> a billing error once it's money. Keep the billed aggregate exact; use a sketch only for the live "usage so far" view, never for the invoice.</li>
+  <li><b>Trap 3 — rating at today's price (mispricing time).</b> Applying the current plan to the whole cycle silently misprices every unit consumed before a mid-cycle price change. Bucket usage by event-time and rate each bucket at the price in effect <i>then</i> — point-in-time pricing (Lesson 53's rule applied to money).</li>
+  <li><b>Trap 4 — closing on processing-time, and trusting the total.</b> Cutting the invoice at "whatever we'd ingested by midnight" bills stragglers to the wrong month; sending it without an independent recompute ships wrong bills you refund later. Close on event-time behind a watermark with a grace window (Lesson 29/35), and reconcile every derived total against the raw log and the ledger (Lesson 25) before the invoice leaves.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>A bill is a promise about money, and keeping it is a systems problem, not an accounting one. <b>Estimate</b> sized the firehose — <code>50 billion events/day &approx; 579,000/s</code>, <code>10 TB/day</code> of raw events that must be <i>kept</i> (<code>3.65 PB/yr</code> for audit) — and priced the danger: a quiet <code>0.5%</code> error on a <code>$50M/month</code> book is <code>$3M/yr</code> mischarged, so approximation that's harmless on a dashboard is a seven-figure fault on an invoice. <b>Model</b> built the four-stage pipeline — <b>ingest</b> (dedup an at-least-once firehose to counted-once), <b>aggregate</b> (exact counters, never sketches), <b>rate</b> (tiered, point-in-time pricing: a 12.5M-call month rated block-by-block to <code>$5.50</code>), and <b>reconcile</b> (recompute every derived total against the durable raw log and the ledger) — mapped to the four properties: counted-once, summed-exactly, priced-as-of-then, and provable. <b>Tracing</b> walked one event to a line item, a retried duplicate that the atomic <code>event_id</code> claim drops before it double-charges, and a month-end close held behind a watermark so stragglers bill to the right cycle and no invoice ships until it reconciles. The <b>first bottleneck</b> is the dedup memory: to promise "never counted twice" you must remember every event id for the whole retry horizon — <code>5.6 TB</code> of keys — and you may cut the <i>lookups</i> with a Bloom filter (whose only error, a false positive, costs an extra check, never a wrong bill) but you may <b>not</b> make the dedup itself approximate, with the hot-account counter sharded (still exact) and a permanent late-event correction path behind it. <span class="key">Billing is the discipline of never losing an event, never doubling one, pricing each by the moment it happened, and always being able to show your work. The standing tension: billing accuracy vs metering cost &amp; latency.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>We've turned usage into a correct bill. The next lesson pushes the platform's <i>compute</i> outward — running not just cached bytes but code close to the user:</b></p>
+  <p style="margin:.2rem 0">• <b>Edge computing &amp; compute-at-the-edge:</b> Lesson 14 pushed cached <i>bytes</i> to the edge PoPs; Lesson 50 steered traffic to them. The next step is pushing <b>code</b> — running functions at hundreds of edge locations so logic executes milliseconds from the user instead of an ocean away. The next lesson takes one request and traces the trade: the <b>cold-start vs locality</b> tension (a function that isn't warm nearby costs more than the round trip it saved), <b>state at the edge</b> (you can't keep a strongly-consistent database in 300 places — Lessons 11/23's eventual consistency returns), and what genuinely can and cannot run far from the data it needs. The trade shifts to <b>latency &amp; offload vs consistency &amp; operational reach.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">usage event</span>
+    <span class="pill">meter</span>
+    <span class="pill">event id / idempotency key</span>
+    <span class="pill">dedup window</span>
+    <span class="pill">usage counter</span>
+    <span class="pill">rating / pricing</span>
+    <span class="pill">tiered pricing</span>
+    <span class="pill">point-in-time pricing</span>
+    <span class="pill">invoice</span>
+    <span class="pill">reconciliation</span>
+    <span class="pill">drift</span>
+    <span class="pill">event-time vs processing-time</span>
+    <span class="pill">watermark</span>
+    <span class="pill">exact vs approximate</span>
+    <span class="pill">hot aggregate</span>
+  </p>
+  <p>That's Lesson 54, built on Lesson 13's idempotency key + TTL trap (the dedup that makes at-least-once count once), Lesson 21's exact-vs-approximate counters and Bloom-as-guard (exact for the bill, sketch for the dashboard, Bloom to cut lookups the safe way), Lesson 25's double-entry ledger + compensating entries (what the invoice reconciles against, and how late corrections post), Lesson 9's at-least-once delivery (the duplicates that force the dedup), Lesson 29's watermark and batch-exact vs stream-fast split (closing the cycle), Lesson 35's event-time vs processing-time (bill by when it happened), and Lesson 53's point-in-time correctness (rate by the price in effect then). <b>Ask me follow-ups</b> — e.g. "how do you dedup at 579k events/s without the store becoming the bottleneck?", "what does reconciliation against the ledger actually compare, row by row?", "how do credits, refunds, and mid-cycle plan changes flow through rating?", "how late is 'too late' for a straggler, and how do correction invoices work?", or "when is metering allowed to be approximate and when is it never?" When you're ready, say <b>next</b> and we'll go deeper on <i>edge computing — latency &amp; offload vs consistency &amp; operational reach.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Usage events arrive over a queue that delivers at-least-once, so retries and redeliveries hand you the same event twice. An engineer says 'just count every event as it arrives — the queue is reliable.' At a 0.5% duplication rate on a $50M/month book, what breaks and what's the fix?",
+    options: [
+      {t:"Every duplicate adds a second +1 for usage that happened once, so customers are billed for more than they used — overcounting. At 0.5% that's ~$250,000/month (~$3M/yr) of overbilling, which surfaces as disputes, refunds, and lost trust. The fix is to have each emitter stamp a unique event_id (an idempotency key) and dedup at ingest with an atomic insert-if-absent: the first copy wins and counts, the retry collides and is dropped, so each event counts exactly once — exactly-once EFFECT on at-least-once delivery, without needing exactly-once on the wire.",
+       ok:true,
+       fb:"Right. At-least-once delivery guarantees duplicates; the wire can't be made exactly-once (Lesson 9). The only thing between a retry and a double-charge is the atomic claim on the event id (Lesson 13/25). 'The queue is reliable' means it won't LOSE messages — it says nothing about not repeating them."},
+      {t:"Nothing breaks — a good queue guarantees exactly-once delivery, so duplicates never actually reach the billing system in the first place.",
+       ok:false,
+       fb:"No queue delivers true exactly-once on the wire (Lesson 9): a producer that times out and retries, or a broker that redelivers after a blip, will hand you the same event twice. 'Exactly-once' is achieved at the CONSUMER by deduplicating on an idempotency key, not promised by the transport. Counting every arrival double-charges."},
+      {t:"It's real but negligible — a 0.5% error rounds out across millions of customers, so the overcounts and undercounts cancel and the total book is still correct.",
+       ok:false,
+       fb:"They don't cancel: duplicate retries are overcounts, and they don't come paired with matching drops, so the error has a direction. Even if the book-wide total looked fine, each individual customer's bill is wrong — the customer who was double-charged disputes their invoice, and 'the aggregate averages out' is no answer to them. Bills are correct per-account or not at all."}
+    ]
+  },
+  {
+    stem: "To make live usage dashboards cheap, an architect proposes computing ALL usage counts — including the ones on the invoice — with a Count–Min sketch, since Lesson 21 showed sketches use constant memory. Why is this the wrong call for billing, and where DOES the sketch belong?",
+    options: [
+      {t:"A sketch over- or under-estimates by design — that's the price of its constant memory — and on an invoice that estimate is literally dollars mischarged, so the billed number must come from an EXACT aggregate (a plain atomic sum), never a sketch. The sketch belongs alongside it, powering only the live 'usage so far this month' dashboard, where being a little off and a little stale costs nothing. Two views of one meter shaped for two jobs: exact-and-slow for the bill, approximate-and-fast for the dashboard.",
+       ok:true,
+       fb:"Exactly. This is the lesson's core discipline and the same exact-vs-approximate split as Lesson 29/53. Approximation is a feature for a dashboard and a defect for a bill. Spend exactness where it's money; spend cheapness where it's only a screen."},
+      {t:"Sketches are fine for billing as long as you pick a large enough width and depth to push the error below 0.1%; at that accuracy the mischarge is too small for any customer to notice.",
+       ok:false,
+       fb:"Even a 0.1% error is a real, wrong number on a bill — and it's an error whose sign and size you can't fully control per customer, so a large customer can be mischarged meaningfully. More fundamentally, a billed figure must be EXACT and provable on reconciliation; 'small enough to ignore' is an audit failure. Bigger sketches shrink the error but never make it zero, and billing needs zero."},
+      {t:"The problem is only latency — sketches are too slow to query at invoice time, so you should precompute exact totals nightly but still store them in the sketch for space savings.",
+       ok:false,
+       fb:"Sketches aren't slow to query; they're INACCURATE by construction, and you can't 'store an exact total in a sketch' — a sketch doesn't hold exact values, it holds a lossy summary. The issue is accuracy, not speed. Keep the billed aggregate as an exact counter; use the sketch only for the dashboard view."}
+    ]
+  },
+  {
+    stem: "It's 23:59:59 on the last day of the cycle. An event with event_time 23:59:58 won't actually be ingested until 00:00:07 next month (queue lag + a retried emitter). The billing job is about to close the invoice on 'everything we've ingested by midnight.' What's wrong, and what's the right design?",
+    options: [
+      {t:"Closing on processing-time ('what we'd ingested by midnight') bills that straggler to the WRONG month — it was consumed this cycle but seen next cycle. Bill by EVENT-TIME instead, and hold the period open behind a watermark ('all events up to time T are now in') plus a short grace window before closing; a straggler later than the grace window posts as a correcting adjustment on the next invoice rather than being dropped. The trade is close-fast (prompt bill) vs wait-for-stragglers (accuracy), and the watermark + grace window is that dial.",
+       ok:true,
+       fb:"Right. Event-time vs processing-time (Lesson 35) decides which cycle a straggler belongs to, and the watermark (Lesson 29) lets you close without cutting stragglers off. A cycle is never truly sealed — late events post as compensating corrections (Lesson 25/32), never silent drops."},
+      {t:"Just close at midnight on ingest time — an event that arrives 7 seconds late is close enough that billing it to the next month is fine and much simpler.",
+       ok:false,
+       fb:"'Close enough' isn't a billing property. Systematically pushing end-of-cycle usage into the next month understates every cycle's revenue and misplaces usage relative to the customer's plan tiers and price changes — and it compounds at every boundary. Bill by when the usage HAPPENED (event-time), not when you happened to see it."},
+      {t:"Wait indefinitely and never close the cycle until you're 100% certain no straggler will ever arrive, so the invoice is always perfectly complete.",
+       ok:false,
+       fb:"You can never be 100% certain no late event will ever arrive, so 'wait indefinitely' means the invoice never ships — customers must be billed promptly. The right answer bounds the wait with a watermark + grace window and handles anything later as a correction on the next invoice. Perfect completeness before sending is neither achievable nor necessary; provable correctness with a correction path is."}
+    ]
+  },
+  {
+    stem: "Your dedup store must remember every event_id to reject duplicates, and it's growing fast (5.6 TB of keys for a 7-day window at 50B events/day). Someone suggests two space-savers: (a) drop event_ids after 1 hour to shrink the store, and (b) put a Bloom filter in front to cut lookups. Which is safe?",
+    options: [
+      {t:"(b) is safe, (a) is not. A Bloom filter covering the FULL dedup window is a safe guard: 'definitely not seen' means genuinely new (a Bloom has no false negatives) → accept; 'maybe seen' → fall through to the exact insert-if-absent. Its only error is a false positive, which costs one extra exact lookup, never a wrong bill. But (a) — aging ids out after 1 hour when duplicates can arrive up to 7 days late — means a real duplicate finds an empty store, gets accepted, and double-charges. The dedup window must cover the maximum retry horizon; you bound it by that, not by whatever's cheap.",
+       ok:true,
+       fb:"Exactly. This is Lesson 21's Bloom-as-guard (the safe error points the safe way) plus Lesson 13's TTL trap: forget too soon and a late duplicate double-charges. Bloom cuts COST; the exact store (sized to the retry horizon) owns CORRECTNESS — and even the Bloom must cover the whole window or 'not seen' becomes a lie."},
+      {t:"Both are safe — the Bloom filter's guarantee means even if you age ids out after an hour, the Bloom will still catch any duplicate, so shrinking the store to 1 hour is fine.",
+       ok:false,
+       fb:"A Bloom filter only preserves 'no false negatives' for keys it still contains; if you age a key out (from the store OR a rolled Bloom) before the retry horizon, a later duplicate hits 'not seen' and is wrongly accepted → double-charge. The Bloom's guarantee doesn't rescue an under-sized window — it must cover the SAME full window. Aging out early is exactly the TTL trap."},
+      {t:"Neither is safe — any optimization to the dedup path risks correctness, so you must do a full exact-store lookup for every one of the 579k events/s and never add a Bloom filter.",
+       ok:false,
+       fb:"Too conservative. A Bloom filter over the full window is provably safe because its only error (a false positive) merely triggers an extra exact lookup — it can never cause a duplicate to be accepted. Refusing it just wastes lookups on the flood of first-time events. The unsafe idea is (a), shrinking the WINDOW below the retry horizon — not adding a correctly-scoped guard in front."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
