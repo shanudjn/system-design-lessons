@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 55 — Edge Computing: Running Code Milliseconds From the User</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 55 · Worked Example</div>
+  <h1>Edge Computing: Running Code Milliseconds From the User</h1>
+  <p class="lead">Lesson 14 pushed cached <b>bytes</b> out to hundreds of edge locations so a photo loaded from 20&nbsp;km away instead of across an ocean; Lesson 50 steered each user to the nearest one. This lesson pushes the next thing outward — <b>code</b>. Instead of every request crossing the planet to a single origin to be authenticated, personalized, and routed, we run that logic <i>at the edge</i>: a small function executes at the PoP nearest the user, milliseconds away, and only the requests that genuinely need the authoritative database travel home. Done right, this cuts tail latency and takes load off the origin. Done wrong, it does something worse than nothing: a function that isn't already running nearby has to <b>start</b> first, and if starting costs more than the round trip you were trying to save, you have paid to be slower. We'll take one concrete system — a global app on <b>300 edge PoPs</b> fronting a Virginia origin — and <b>estimate</b> both the latency it can win and the trap hiding inside "run it everywhere." We'll <b>model</b> what an edge function actually is, why the isolation mechanism (isolate vs container) decides whether the idea even works, and the hard rule for state. We'll <b>trace</b> a request the edge fully answers, a cold start that either wins or loses depending on one number, and a request that must go home because it touches authoritative data. Then the wall the whole thing leans on: <b>you can push code to 300 places, but you cannot push a strongly-consistent database there</b> — so the edge runs the decision, never the source of truth. The trade underneath: <b>latency &amp; offload vs consistency &amp; operational reach.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0055-edge-computing.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>A global web app serves users on every continent. Its authoritative systems — the database (Lesson 25's ledger, Lesson 12's orders table), the application services — live in <b>one origin region, Virginia</b>. In front of them sit <b>300 edge PoPs</b> (Lesson 14/50): small points of presence in cities worldwide, each already terminating TLS and caching static bytes for the users nearest it. Global request rate is <b>40,000 req/s</b> (Lesson 27's fleet).</p>
+<p>Today every dynamic request — even one the origin will just reject or redirect — makes the full trip to Virginia and back. We want to move the cheap, near-the-user work <i>onto the PoPs</i>: verify the login token, pick the A/B test variant, choose which region to route to, rewrite the URL, block the obvious bot, serve a personalized-but-cacheable shell. Each of those is a small piece of <b>code</b>, and we want it to run at the PoP the user already reached — not an ocean away. <span class="key">The goal: answer at the edge everything that can be answered with only local or slightly-stale data, and send home only what truly needs the authoritative database.</span></p>
+<p>Why bother? Two payoffs, and one trap that eats them if you're careless:</p>
+<ul>
+  <li><b>Latency</b> — a request the edge can fully answer skips the ~200&nbsp;ms round trip to Virginia. For a user in Sydney that's the difference between ~215&nbsp;ms and ~15&nbsp;ms.</li>
+  <li><b>Offload</b> — every request the edge finishes is one the origin never sees, so the origin fleet shrinks and its tail calms (Lesson 27's knee).</li>
+  <li><b>The trap</b> — spreading compute across 300 locations means each location runs each function <i>rarely</i>, so functions keep going <b>cold</b>. If starting a cold function costs more than the trip you avoided, edge compute is a net loss. This is the whole tension, and we'll size it exactly.</li>
+</ul>
+
+<div class="diagram"><pre>
+  A request in Sydney: what the edge answers vs what goes home to Virginia.
+
+     user (Sydney)
+         |
+         v  ~5 ms
+   +--------------------------- EDGE PoP (Sydney) ---------------------------+
+   |  isolate runs the function (starts in ~5 ms if cold):                   |
+   |    - verify signed JWT with cached public key   (no origin call)        |
+   |    - pick A/B variant from signed cookie        (no origin call)        |
+   |    - read config/catalog from edge KV           (LOCAL, ~ms, stale sec) |
+   |    - serve personalized shell from edge cache   (L14)                   |
+   |                                                                         |
+   |  CAN answer here? --YES--> respond in ~15 ms. Origin never touched.     |
+   |                   \                                                     |
+   |                    --NO (needs authoritative data / a write)--          |
+   +---------------------------------|---------------------------------------+
+                                     |  ~200 ms round trip (speed of light)
+                                     v
+                        +--------- ORIGIN (Virginia) ---------+
+                        |  strongly-consistent DB (L11/L25):  |
+                        |  place order, move money, read live |
+                        |  balance, anything that must be     |
+                        |  authoritative and exactly right.   |
+                        +-------------------------------------+
+
+  Rule: the edge runs the DECISION (auth, route, personalize, filter);
+  the origin owns the TRUTH. Move the logic outward, not the database.
+</pre></div>
+
+<p class="note"><span class="key">Edge computing runs short, stateless-or-eventually-consistent functions at the PoP nearest each user, so requests that need only local or slightly-stale data are answered milliseconds away and never reach the origin — while anything needing the authoritative, strongly-consistent database is forwarded home.</span> It is <b>not</b> "move the app to the edge." The origin database does not move (it can't, and stay consistent — that's the whole lesson). What moves is the decision layer in front of it.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Edge / PoP (point of presence)</b> — one of the hundreds of small datacenters near users (Lesson 14/50), close in network distance so a round trip is a few ms, not ~200.</li>
+  <li><b>Origin</b> — the central region holding the authoritative services and database. The single source of truth.</li>
+  <li><b>Edge function</b> — a small piece of code that runs at a PoP, triggered per request, short-lived, with a tight CPU and memory budget and no durable local disk.</li>
+  <li><b>Cold start</b> — the time to get a function ready to run when nothing is already warm for it: load the code, build its sandbox, initialize. Paid on the request that finds it cold.</li>
+  <li><b>Isolate</b> — a lightweight sandbox <i>inside</i> one already-running process (a V8 isolate is the common form). Starts in ~5&nbsp;ms, costs ~3&nbsp;MB. Many thousands share one process.</li>
+  <li><b>Container / micro-VM</b> — a heavier sandbox with its own OS/runtime. Stronger isolation, but ~250&nbsp;ms&ndash;seconds to cold-start and 100s of MB each.</li>
+  <li><b>Warm window</b> — how long a runtime keeps a function loaded after its last request before evicting it to reclaim memory.</li>
+  <li><b>Edge KV</b> — a key–value store replicated to every PoP: reads are local and fast, writes go to a center and propagate to the edges over seconds (eventually consistent, Lesson 11/23).</li>
+  <li><b>Offload</b> — the fraction of requests the edge finishes so the origin never sees them.</li>
+  <li><b>Blast radius / operational reach</b> — how far a bad change spreads, and how hard it is to deploy, observe, and debug code that now runs in 300 places (Lesson 17/31/36).</li>
+</ul>
+
+<h2>Move 1 — Estimate: the latency you win, and the cold start that can eat it</h2>
+<p>Three numbers decide whether edge compute helps: the round trip you save, the cost to start a cold function, and how often functions actually go cold when you spread them across 300 PoPs. Get the third wrong and the first two are a fantasy.</p>
+
+<div class="card calc">
+  <p><b>1. The round trip you win.</b> Virginia to Sydney is ~15,500&nbsp;km. Light in fiber travels at ~⅔&nbsp;c ≈ 200,000&nbsp;km/s, so one way is <code>15,500 &divide; 200,000 = 77.5&nbsp;ms</code> and a round trip is <code>~155&nbsp;ms</code> at the theoretical floor — call it <b>~200&nbsp;ms</b> in practice with routing (Lesson 14's speed-of-light tax). A request the edge fully answers pays ~5&nbsp;ms to reach the Sydney PoP plus ~10&nbsp;ms of work = <code>~15&nbsp;ms</code>, versus <code>~215&nbsp;ms</code> going home. <span class="key">That ~200&nbsp;ms gap is the prize — and it is also the budget a cold start must stay under, or the edge is slower than the origin it replaced.</span></p>
+  <p><b>2. The cold-start budget.</b> Here is the number that makes or breaks the design. An <b>isolate</b> starts in <code>~5&nbsp;ms</code>; a <b>container</b> starts in <code>~250&nbsp;ms</code> or more.
+  <br>• Isolate cold start <code>5&nbsp;ms</code> &laquo; <code>200&nbsp;ms</code> saved &rarr; even a cold request is a big win.
+  <br>• Container cold start <code>250&nbsp;ms</code> &gt; <code>200&nbsp;ms</code> saved &rarr; a cold request is <b>slower than just calling Virginia would have been</b>.
+  <br><span class="key">Same idea, opposite outcome, decided entirely by the isolation mechanism. This is why edge platforms run isolates, not containers: at the edge, cold start is not an edge case — it's the common case.</span></p>
+  <p><b>3. Why functions go cold at the edge (the counter-intuitive part).</b> At the <i>origin</i>, one function serving all <code>40,000&nbsp;req/s</code> is invoked constantly — it is <b>permanently warm</b>, and its cold start is amortized to zero. Spread that same traffic across 300 PoPs and each PoP sees <code>40,000 &divide; 300 &approx; 133&nbsp;req/s</code>. Now spread <i>that</i> across, say, <b>1,000 different tenant functions</b> per PoP and each individual function sees <code>133 &divide; 1,000 &approx; 0.13&nbsp;req/s</code> — one request every <code>~7.5&nbsp;s</code>. If the warm window is 5&nbsp;s, the function is evicted <i>between</i> requests, so nearly every request pays a cold start. <span class="key">The very thing that makes the edge fast — being in 300 places — is what makes each place cold, because it divides your traffic 300 ways. Locality and warmth pull against each other, and near-zero cold start (isolates) is the only thing that lets you have both.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off — latency &amp; offload vs consistency &amp; operational reach.</b> Moving code to the edge buys latency (skip the round trip) and offload (spare the origin). You pay in two currencies. First, <b>consistency</b>: the edge can hold only local or eventually-consistent state, so anything authoritative still goes home. Second, <b>operational reach</b>: your code now runs in 300 places you must deploy to, observe, and debug — a bad change has a 300-PoP blast radius. The rest of the lesson is spending latency where the data allows it and keeping the truth where it must stay.</p>
+
+<h2>Move 2 — Model: what an edge function is, why isolates, and the one rule for state</h2>
+<p>An edge function is not a shrunken server. It is a deliberately constrained thing, and each constraint exists to make "run it in 300 places, cold most of the time" actually work.</p>
+
+<h3>1. The execution model — small, short, stateless-by-default</h3>
+<p>An edge function is triggered <b>per request</b>, runs for a tight CPU budget (tens of milliseconds), gets a small memory cap, and has <b>no durable local disk</b>. It is designed to be started cheaply, run briefly, and thrown away — because at 0.13&nbsp;req/s per function per PoP, it will be started and thrown away constantly. Statelessness isn't a style choice here; anything it needs to remember has to live somewhere that survives the function's disposal, which is the whole state question below.</p>
+
+<h3>2. Isolate vs container — the choice that decides feasibility</h3>
+<p>To run thousands of tenants' functions across 300 PoPs, each PoP must pack <i>many</i> functions into limited hardware and start any of them almost instantly. That rules out one-container-per-function:</p>
+<div class="card calc">
+  <p><b>Container / micro-VM:</b> own OS and runtime, <code>~250&nbsp;ms+</code> cold start, <code>~100&ndash;170&nbsp;MB</code> each. Strong isolation, but a PoP can hold only hundreds of them and every cold request blows the latency budget. <b>Isolate:</b> a sandbox inside <i>one</i> already-running process (a V8 isolate), <code>~5&nbsp;ms</code> cold start, <code>~3&nbsp;MB</code> each. One process holds <b>thousands</b> of tenants; starting one more is cheap.</p>
+  <p>The memory math is as decisive as the latency math: at ~3&nbsp;MB per isolate, a modest PoP node holds thousands of tenant functions resident; at ~150&nbsp;MB per container, the same node holds ~50× fewer. <span class="key">Edge compute is only affordable because isolates make a cold start ~5&nbsp;ms and a resident function ~3&nbsp;MB. The trade you accept: isolates share a process, so isolation is weaker than a container's — you lean on the language sandbox (no arbitrary native code, tight syscall surface) instead of an OS boundary.</span></p>
+</div>
+
+<h3>3. The one rule for state — the edge runs the decision, the origin owns the truth</h3>
+<p>You cannot put a strongly-consistent database in 300 places. This is not a limitation of today's tools; it is Lesson 11 and Lesson 23 restated: 300 replicas plus the speed of light means a write can't be seen everywhere at once, so you either accept <b>eventual consistency</b> or you <b>coordinate</b> back to a center — and coordinating is exactly the round trip the edge was meant to avoid. So edge state comes in three honest flavors, chosen by <i>how stale the data is allowed to be</i>:</p>
+<ul>
+  <li><b>No shared state</b> — the function needs only what's in the request: verify a signed JWT with a cached public key, read a signed cookie, rewrite a URL. Perfectly edge-native, nothing to replicate.</li>
+  <li><b>Eventually-consistent edge KV / cache</b> — config, feature flags, A/B assignments, the product catalog (Lesson 48). Reads are local and fast; writes go to a center and reach the edges in seconds. Fine when "seconds stale" is harmless.</li>
+  <li><b>Forward to origin</b> — anything authoritative and strongly consistent: place an order, move money (Lesson 25), read a live balance before a charge, check inventory before overselling (Lesson 32). The edge does the cheap near-user part (TLS, auth, bot filter) and pays the round trip for the authoritative op.</li>
+</ul>
+<p class="note why"><b>The four properties that make edge compute work, named:</b> near-zero cold start (isolates, so cold is cheap), bounded execution (small/short, so 300 PoPs stay affordable), local-or-eventual state (never strong consistency at the edge), and graceful fallback (forward home what can't be answered locally). Miss any one and edge compute turns into a slow, inconsistent, unmanageable second copy of your app.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Follow three requests through the Sydney PoP: one the edge fully answers, one that hits a cold start (and wins or loses on a single number), and one that must go home.</p>
+
+<h3>Path A — a request the edge fully answers (the payoff)</h3>
+<div class="diagram"><pre>
+  A logged-in user in Sydney requests their personalized home page.
+
+  t=0     request reaches the Sydney PoP (~5 ms from the user).
+  edge    isolate runs the function:
+            - verify the signed JWT with the cached public key  (no origin)
+            - pick the A/B variant from the signed cookie       (no origin)
+            - read feature flags from edge KV                   (local, ~1 ms)
+            - assemble the personalized shell from edge cache   (L14)
+  respond ~15 ms total. Origin in Virginia is NEVER contacted.
+
+  vs the old way: ~215 ms (5 ms to PoP + ~200 ms round trip to Virginia
+  + work) for the SAME answer. ~14x faster, and one fewer request the
+  origin fleet had to serve (offload).
+</pre></div>
+
+<h3>Path B — a cold start that wins or loses on one number</h3>
+<div class="diagram"><pre>
+  This tenant's function is rarely hit at THIS PoP (0.13 req/s = 1 per 7.5 s),
+  and the warm window is 5 s -- so this request finds it COLD.
+
+  ISOLATE runtime:   cold start ~5 ms + ~10 ms work = ~15 ms.
+                     5 ms << 200 ms saved -> STILL A WIN, even cold.
+
+  CONTAINER runtime: cold start ~250 ms + ~10 ms work = ~260 ms.
+                     260 ms > 215 ms (just calling Virginia) -> A LOSS.
+                     You paid MORE to run it "nearby" than to go home.
+
+  Same code, same PoP, same request. The isolation mechanism is the
+  whole difference. At the edge, most requests are cold (traffic split
+  300 ways), so cold start isn't a corner case to tolerate -- it's the
+  design center. Near-zero cold start is a REQUIREMENT, not a nicety.
+</pre></div>
+
+<h3>Path C — a request that must go home (state at the edge)</h3>
+<div class="diagram"><pre>
+  The user clicks "Buy" -- a write against the authoritative order/ledger.
+
+  edge    does the cheap near-user work first:
+            - terminate TLS, verify the JWT, filter the obvious bot,
+            - rate-limit the abusive client (L08) -- all local, ~ms.
+          then: this needs the AUTHORITATIVE DB. The edge does NOT hold it.
+   -> forward to Virginia. Pay the ~200 ms round trip. The order is placed
+      exactly once (L13/L25/L32) against the single source of truth.
+
+  Contrast two READS to show the dial:
+    catalog page (stale by seconds is fine)  -> edge KV, ~1 ms, no trip.
+    live account balance before a charge      -> authoritative, must be
+       current -> forward to origin, pay the trip. Staleness here = wrong money.
+
+  The edge still HELPED even on the write: it did auth, filtering, and
+  rate-limiting near the user, so only clean, authenticated writes reach
+  the origin. It moved the DECISION outward; the TRUTH stayed home.
+</pre></div>
+
+<p>Path A is the win: local-only data, answered in ~15&nbsp;ms, origin untouched. Path B is the knife-edge — <span class="key">at the edge, cold start is the common case, so the runtime must make it ~5&nbsp;ms (isolate) or the whole idea inverts into "slower than the origin"</span>. Path C is the boundary everyone gets wrong at first: <span class="key">the edge is a decision layer, not a database. It authenticates, personalizes, filters, and routes near the user, and forwards anything authoritative home — because a strongly-consistent write in 300 places is a contradiction (Lesson 11/23), and pretending otherwise trades correct money for saved milliseconds.</span></p>
+
+<h2>Move 4 — Find the first bottleneck: you can push code to 300 places, not a consistent database</h2>
+<p>Cold start, the scary number in Move 1, is <i>solved</i> by isolates — ~5&nbsp;ms is comfortably under the round trip. The wall that remains is the one that doesn't go away with a better runtime: <span class="key">state. The edge can run any decision, but it cannot own the truth, because a strongly-consistent database cannot exist in 300 places at once and stay both consistent and fast.</span></p>
+
+<div class="card calc">
+  <p><b>1. The consistency wall (Lesson 11/23, at the edge).</b> Say you tried to keep the live inventory count at all 300 PoPs so "Buy" could be answered locally. A sale in Sydney must be seen in Frankfurt before Frankfurt sells the same last unit — that requires cross-PoP coordination on every write, and the speed of light makes that a global round trip (Lesson 23's ~90&nbsp;ms+ per hop) on the hot path. You've re-imported the latency you left home to escape, times 300. So you <i>don't</i>: authoritative inventory and orders stay at the origin (or a small set of regions), and the edge forwards to them. Eventually-consistent data (flags, catalog, A/B buckets) rides edge KV and is allowed to be <b>seconds stale</b>; strongly-consistent data (balance, inventory, orders) goes home. <span class="key">The dial is exactly "how stale can this be?" — and it's the same dial as Lesson 2's cache TTL, Lesson 14's freshness-vs-speed, and Lesson 23's local-writes-vs-global-order, now applied to <i>where compute is allowed to answer</i>.</span></p>
+  <p><b>2. The operational-reach wall.</b> Your code now runs in 300 places. A bad deploy isn't one region's problem — it's a 300-PoP, global blast radius (Lesson 31/36). So edge deploys need canary + health-gated promotion (Lesson 31): roll to a few PoPs, watch error rate and p99 (Lesson 17), then widen. Observability must aggregate across 300 PoPs (Lesson 17's trace/metric firehose, now geographically smeared). And there's a seductive trap: keep pushing "just one more thing" to the edge and you grow a <b>thick edge</b> — a distributed monolith copied 300 times, coupled to origin schemas, that you can't change in one place. <span class="key">The discipline is a thin edge: auth, routing, personalization, filtering, caching — the stateless decision layer — and nothing that wants the authoritative database.</span></p>
+</div>
+
+<p>Two smaller walls sit behind those, both familiar. <b>Cold start still bites the long tail:</b> even at ~5&nbsp;ms it's non-zero, and for latency-critical paths you keep the hottest functions warm (pay idle memory to remove even the 5&nbsp;ms — Lesson 27's warm-pool dial, shrunk). <b>And edge KV writes are eventually consistent by construction:</b> a flag flipped at the center reaches all 300 PoPs over seconds, so two users in two cities can briefly see different config — fine for a flag, a bug if you mistook it for a lock (it isn't one — Lesson 22 lives at the origin). <span class="key">The deepest point: edge computing does not move your system to the edge. It moves the <i>decision</i> to the edge and leaves the <i>truth</i> at the origin — because latency is cheap to spread and consistency is not.</span></p>
+
+<h3>The scoreboard: which need, which lever</h3>
+<table>
+  <tr><th>Need</th><th>Reach for</th><th>Pay in</th></tr>
+  <tr><td>Answer near the user, skip the ~200 ms round trip</td><td>Edge function at the PoP, local-only data (L14/L50)</td><td>only requests that need no authoritative state qualify</td></tr>
+  <tr><td>Cold start cheaper than the trip you saved</td><td>Isolates (~5 ms, ~3 MB), never containers (~250 ms)</td><td>weaker isolation than an OS boundary; language sandbox limits</td></tr>
+  <tr><td>Run thousands of tenants per PoP affordably</td><td>Small, short, stateless functions in shared processes</td><td>tight CPU/memory budget; no durable local disk</td></tr>
+  <tr><td>Read config/flags/catalog at the edge</td><td>Eventually-consistent edge KV (L23/L48)</td><td>seconds of staleness; not a lock, not the source of truth</td></tr>
+  <tr><td>Do anything authoritative (order, money, balance)</td><td>Forward to the origin's strongly-consistent DB (L11/L25)</td><td>the full round trip for that op — consistency isn't at the edge</td></tr>
+  <tr><td>Remove even the ~5 ms cold start on hot paths</td><td>Keep hot functions warm (L27 warm-pool, shrunk)</td><td>idle memory held per warmed function</td></tr>
+  <tr><td>Ship edge code without a global outage</td><td>Canary + health-gated promotion across PoPs (L31/L36)</td><td>slower rollout; cross-PoP observability (L17)</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — running edge code in containers.</b> A ~250&nbsp;ms container cold start is <i>larger</i> than the ~200&nbsp;ms round trip you were saving, and at the edge most requests are cold (traffic split 300 ways). The function is then slower than just calling the origin. Use isolates (~5&nbsp;ms, ~3&nbsp;MB) so a cold start stays far under the trip and a PoP can hold thousands of tenants.</li>
+  <li><b>Trap 2 — putting authoritative state at the edge.</b> Trying to keep a strongly-consistent count (inventory, balance) at 300 PoPs re-imports global coordination onto the hot path (Lesson 11/23) — the exact latency you fled, times 300, or a correctness bug when you skip it. Keep the truth at the origin; put only local or eventually-consistent data at the edge, chosen by how stale it may be.</li>
+  <li><b>Trap 3 — the thick edge.</b> Pushing "one more thing" to the edge until it's a distributed monolith copied 300 times, coupled to origin schemas and impossible to change in one place. Keep the edge thin: auth, routing, personalization, filtering, caching — the stateless decision layer — and leave data-heavy logic at the origin.</li>
+  <li><b>Trap 4 — ignoring the 300-PoP blast radius.</b> Deploying edge code everywhere at once makes a bug a global outage, and running blind across 300 PoPs hides where latency lives. Canary + health-gate the rollout (Lesson 31/36) and aggregate traces/metrics across PoPs (Lesson 17).</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>Edge computing is Lesson 14's idea — put it near the user — applied to code instead of bytes, and it lives or dies on two numbers and one rule. <b>Estimate</b> sized the prize (a ~200&nbsp;ms round trip skipped, ~215&nbsp;ms → ~15&nbsp;ms for a Sydney user) and the trap: spreading 40,000&nbsp;req/s across 300 PoPs and 1,000 functions gives each function <code>~0.13&nbsp;req/s</code> — one request every ~7.5&nbsp;s — so functions go <b>cold</b> constantly, and a cold start must stay under the round trip or the edge is slower than the origin. <b>Model</b> showed why that makes <b>isolates</b> (~5&nbsp;ms, ~3&nbsp;MB) non-negotiable where containers (~250&nbsp;ms) invert the win, and gave the one rule for state: local-only, eventually-consistent edge KV, or forward home — chosen by how stale the data may be. <b>Tracing</b> walked a request the edge fully answered in ~15&nbsp;ms (origin untouched), a cold start that <i>won</i> on an isolate and <i>lost</i> on a container from the very same code, and a "Buy" that the edge authenticated and filtered near the user but forwarded home because the truth isn't at the edge. The <b>first bottleneck</b> is exactly that: <span class="key">you can push code to 300 places but not a strongly-consistent database, so the edge runs the decision and the origin owns the truth</span> — with a thin-edge discipline and canary rollouts to keep the 300-PoP blast radius survivable. <span class="key">Move the logic outward; keep the source of truth home. The standing tension: latency &amp; offload vs consistency &amp; operational reach.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>We've spread compute across 300 places and derived copies across caches, warehouses, and edge KVs. The next lesson asks the uncomfortable question that sprawl creates:</b></p>
+  <p style="margin:.2rem 0">• <b>Data privacy, deletion &amp; the right to be forgotten:</b> when a user says "delete me," where does their data actually live? An event-sourced log that's immutable by design (Lesson 38), backups, dozens of caches (Lesson 48) and edge KVs (this lesson), a warehouse (Lesson 29), and every derived read model (Lesson 37) — deletion has to reach <i>all</i> of them. The next lesson traces one deletion request across that sprawl, weighs <b>crypto-shredding</b> (throw away the key, Lesson 30) against true deletion, and shows why "delete the row" is the easy 1% of the problem. The trade shifts to <b>compliance &amp; privacy vs immutability &amp; derived-data sprawl.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">edge / PoP</span>
+    <span class="pill">origin</span>
+    <span class="pill">edge function</span>
+    <span class="pill">cold start</span>
+    <span class="pill">isolate</span>
+    <span class="pill">container / micro-VM</span>
+    <span class="pill">warm window</span>
+    <span class="pill">edge KV</span>
+    <span class="pill">eventual consistency</span>
+    <span class="pill">offload</span>
+    <span class="pill">thin vs thick edge</span>
+    <span class="pill">blast radius / operational reach</span>
+  </p>
+  <p>That's Lesson 55, built on Lesson 14's push-bytes-to-the-edge and speed-of-light round trip (now pushing code), Lesson 50's steer-to-nearest-PoP, Lesson 11 &amp; 23's eventual consistency and the impossibility of strong consistency across many replicas (why the truth stays home), Lesson 27's utilization/warm-pool dial (keeping hot functions warm), Lesson 13/25/32's exactly-once authoritative writes (what gets forwarded to the origin), Lesson 48's cache/KV replication (edge KV), and Lesson 31/36's canary + blast-radius control (deploying to 300 PoPs). <b>Ask me follow-ups</b> — e.g. "how do isolates actually sandbox untrusted tenant code without an OS boundary?", "what belongs in edge KV vs origin, concretely, for a given feature?", "how would you keep p99 low when the long tail is still cold starts?", "how do you canary a change across 300 PoPs safely?", or "when is forwarding to origin from the edge worse than just letting the client hit origin directly?" When you're ready, say <b>next</b> and we'll go deeper on <i>data privacy, deletion &amp; the right to be forgotten — compliance &amp; privacy vs immutability &amp; derived-data sprawl.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "An architect proposes running each tenant's edge function in its own lightweight container for strong isolation, spread across 300 PoPs. In load tests from Sydney (origin in Virginia, ~200 ms round trip), the edge version is often SLOWER than just calling the origin. What's going on, and what's the fix?",
+    options: [
+      {t:"At the edge, traffic is split 300 ways (and across many tenant functions), so any given function is invoked rarely and keeps going cold between requests — cold start is the COMMON case, not a corner case. A container's cold start (~250 ms) is LARGER than the ~200 ms round trip it was trying to save, so a cold request is slower than just calling Virginia. The fix is isolates: a sandbox inside one shared process starts in ~5 ms and costs ~3 MB, so a cold start stays far under the round trip and a PoP can pack thousands of tenants. The trade is weaker isolation than an OS boundary, handled by the language sandbox.",
+       ok:true,
+       fb:"Right. Spreading compute to be near the user divides your traffic 300 ways, which makes each location COLD for each function — so near-zero cold start (isolates) is a requirement, not a nicety. Containers invert the win; ~5 ms isolates preserve it."},
+      {t:"The containers are fine; the problem is the network path to the PoPs is slower than the direct path to the origin, so you should route users straight to Virginia and drop the edge entirely.",
+       ok:false,
+       fb:"The PoP is by definition closer in network distance than the origin (~5 ms vs ~200 ms) — that's the premise of Lesson 14/50. The slowness isn't the network; it's the ~250 ms CONTAINER cold start being paid on most requests because traffic split 300 ways keeps functions cold. Fix the runtime (isolates), don't abandon the edge."},
+      {t:"Cold start is unavoidable everywhere, so the only real fix is to keep every tenant's container permanently warm at all 300 PoPs.",
+       ok:false,
+       fb:"Keeping thousands of tenant containers warm at 300 PoPs is economically impossible — at ~150 MB each, a PoP holds only dozens, and paying to warm all of them everywhere defeats the point. The right fix changes the mechanism: isolates make a cold start ~5 ms and resident cost ~3 MB, so cold is cheap and you needn't warm everything. Warming is a targeted tool for a few hot paths, not the base design."}
+    ]
+  },
+  {
+    stem: "To make checkout fast for everyone, an engineer wants to replicate the authoritative inventory count to all 300 edge PoPs so 'Buy' can be answered locally without the round trip to Virginia. Why is this the wrong place for that data, and what belongs at the edge instead?",
+    options: [
+      {t:"Inventory must be strongly consistent — the last unit can't be sold twice — but a consistent count across 300 replicas requires cross-PoP coordination on every write, which the speed of light turns into a global round trip on the hot path (Lesson 11/23). You'd re-import the exact latency you left home to escape, times 300, or get a correctness bug if you skip the coordination. So authoritative inventory stays at the origin and the edge FORWARDS 'Buy' to it. What belongs at the edge is local or eventually-consistent data — auth checks, A/B buckets, feature flags, the catalog — where seconds of staleness is harmless.",
+       ok:true,
+       fb:"Exactly. You can push code to 300 places but not a strongly-consistent database — that's Lesson 11/23 restated at the edge. The edge runs the decision (auth, filter, route); the origin owns the truth. Staleness is the dial: fine for a flag, wrong money for inventory or a balance."},
+      {t:"It's fine as long as the edge KV replicates fast enough — sub-second propagation makes the 300 copies effectively consistent, so overselling won't happen in practice.",
+       ok:false,
+       fb:"'Fast eventual' is still eventual: during the propagation window two PoPs can both see the last unit and both sell it. Sub-second doesn't make it strongly consistent; it just shrinks — never closes — the window where the invariant (never oversell) breaks. Correctness invariants can't ride eventually-consistent replication (Lesson 23's convergence ≠ invariant preservation). Keep it authoritative at the origin."},
+      {t:"The real issue is memory — an inventory table is too big to fit in edge KV at 300 PoPs — so the fix is just to shard the inventory across the PoPs.",
+       ok:false,
+       fb:"Size isn't the blocker; consistency is. Even if it fit perfectly, sharding a strongly-consistent count across 300 places still needs coordination on every write to prevent double-selling, which reintroduces the global round trip. The problem is the consistency requirement, not the byte count — so this data belongs at the origin regardless of how it's sharded."}
+    ]
+  },
+  {
+    stem: "A team keeps adding logic to their edge functions — auth, routing, then price calculation, then order validation reading three origin tables, then a bit of the checkout flow. Latency creeps up and every change now requires a coordinated 300-PoP deploy. What principle did they violate, and what's the healthier design?",
+    options: [
+      {t:"They grew a 'thick edge' — a distributed monolith copied to 300 places, coupled to origin schemas and impossible to change in one spot, with a global blast radius on every deploy. The edge should stay THIN: the stateless decision layer (auth, routing, personalization, filtering, caching) that needs only local or eventually-consistent data. Data-heavy, authoritative logic (order validation against live tables, the checkout write) belongs at the origin, which the edge forwards to. Keep the edge deciding and the origin owning the truth.",
+       ok:true,
+       fb:"Right. The thin-edge discipline is the antidote to sprawl: the edge answers what local/eventual data allows and forwards the rest. Reading three authoritative tables from the edge both couples you to origin schemas and pays multiple round trips — worse than just forwarding the request home once."},
+      {t:"Nothing's wrong in principle — more logic at the edge is always faster since it's closer to the user; they just need bigger CPU limits on the edge functions.",
+       ok:false,
+       fb:"Closer isn't faster when the logic needs authoritative data that only lives at the origin: reading three origin tables from the edge means several round trips, worse than one forward-to-origin. And a thick edge's real costs — schema coupling, 300-PoP deploys, global blast radius — aren't solved by more CPU. The problem is WHAT runs at the edge, not how much CPU it gets."},
+      {t:"The problem is purely deployment tooling; with good CI they could deploy to 300 PoPs instantly and the thick edge would be fine.",
+       ok:false,
+       fb:"Faster deploys don't fix the core issues: a thick edge is still coupled to origin schemas, still pays extra round trips for authoritative reads, and instant global deploys actually make the blast radius WORSE (a bug reaches all 300 PoPs faster). You want canary + health-gating (slower, safer) plus a thin edge — not a quicker way to ship a monolith everywhere."}
+    ]
+  },
+  {
+    stem: "Which single request is the BEST fit to answer entirely at an edge PoP (no origin round trip), and why?",
+    options: [
+      {t:"Verifying a signed JWT and choosing an A/B variant from a signed cookie to serve a personalized-but-cacheable page shell. Everything it needs is in the request (the token, the cookie) plus locally cached data (the public key, feature flags in edge KV) — no authoritative, strongly-consistent state is touched — so the isolate answers in ~15 ms and the origin is never contacted. This is exactly the local-only / eventually-consistent work the edge is for.",
+       ok:true,
+       fb:"Right. The edge shines when the answer needs only request-local data plus local-or-stale-OK state. Auth verification (public key is cached and rarely changes) and A/B selection (a signed cookie + flags that may be seconds stale) are textbook edge work."},
+      {t:"Charging a customer's card and recording the payment in the ledger, because putting the payment logic near the user makes checkout feel instant.",
+       ok:false,
+       fb:"A payment is an authoritative, exactly-once write against the ledger (Lesson 25/13) — the definition of what must stay strongly consistent at the origin. Doing it 'at the edge' either forwards to origin anyway (so the edge didn't own it) or risks double-charging. The edge can auth and filter near the user, but the charge goes home."},
+      {t:"Reading a user's exact current account balance right before deciding whether to approve a withdrawal, because balances are small and easy to cache at the edge.",
+       ok:false,
+       fb:"A balance read that gates a money decision must be CURRENT — a seconds-stale cached balance can approve a withdrawal that the real balance forbids (Lesson 23's invariant break). Small size doesn't make it edge-appropriate; the consistency requirement does, and this one needs the authoritative value. Forward it to the origin."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

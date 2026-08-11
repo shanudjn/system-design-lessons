@@ -1020,12 +1020,42 @@
     never sealed, L25/32). Reuses L13 idempotency+TTL, L21 exact-vs-approx + Bloom guard, L25 ledger +
     compensating entries, L09 at-least-once, L29 watermark + batch-exact/stream-fast, L35 event-time, L53 PIT.
     Trade: billing accuracy vs metering cost & latency. (Lesson 0054)
-55. Edge computing & compute-at-the-edge — push not just cached bytes (L14) but CODE to the edge (L50's PoPs):
-    the cold-start vs locality trade, state at the edge (eventual consistency, L11/23), and what can/can't run
-    far from the data. Trade: latency & offload vs consistency & operational reach.
+55. ✅ **Edge computing & compute-at-the-edge** — push not just cached bytes (L14) but CODE to L50's 300 PoPs:
+    one global app (Virginia origin, 40k req/s) runs auth/routing/personalization/filtering at the PoP nearest
+    the user so a request that needs only local data is answered in ~15 ms instead of ~215 ms (the ~200 ms
+    round trip skipped, L14 speed-of-light). The counter-intuitive trap: spreading 40k/s across 300 PoPs × 1,000
+    functions gives each function ~0.13 req/s (1 per ~7.5 s) → functions keep going COLD, so cold start is the
+    COMMON case and must stay under the round trip or the edge is SLOWER than the origin → **isolates** (~5 ms,
+    ~3 MB, shared process) are non-negotiable where **containers** (~250 ms > 200 ms saved, ~150 MB) invert the
+    win (weaker isolation traded for near-zero start). One rule for STATE: the edge runs the DECISION, the origin
+    owns the TRUTH — local-only (JWT verify w/ cached key, signed cookie), eventually-consistent edge KV (flags/
+    catalog, L23/L48, seconds stale OK), or FORWARD HOME for anything authoritative (order/money/balance, L11/23/
+    25 — a strongly-consistent DB can't exist in 300 places without re-importing the round trip ×300). Trace:
+    edge fully answers (~15 ms, origin untouched); cold start WINS on an isolate / LOSES on a container from the
+    same code; a "Buy" the edge auths+filters near the user but forwards home. First wall = state (consistency
+    can't spread) + operational reach (300-PoP blast radius → thin edge + canary, L31/36 + cross-PoP observability
+    L17). Four traps: containers at the edge; authoritative state at the edge; the thick-edge distributed monolith;
+    ignoring the blast radius. Trade: latency & offload vs consistency & operational reach. (Lesson 0055)
 56. Data privacy, deletion & compliance (GDPR/right-to-be-forgotten) — actually deleting a user across an
     event-sourced log (L38), backups, caches (L48), warehouses (L29), and derived copies (L37); crypto-shredding
     (L30) vs true deletion, and audit trails. Trade: compliance & privacy vs immutability & derived-data sprawl.
+
+### Advanced topics (next batch — queued so the course never runs dry)
+57. Bulk data pipelines & backfills — reprocessing history at scale: one-off migrations/backfills over billions
+    of rows (L24/29), rate-limiting against live load (L28), checkpointing + resumability, and idempotent
+    re-runs (L13). Trade: throughput vs impact on the live system.
+58. Multi-cloud & vendor portability — running across two providers for resilience/leverage: the data-gravity
+    and egress-cost walls, lowest-common-denominator services vs managed lock-in, and where a control plane can
+    span clouds vs where it can't. Trade: portability & resilience vs complexity & cost.
+59. Cost-aware architecture (FinOps) — designing for the bill: the dominant cost drivers (egress L14, storage
+    tiers L39, compute utilization L27), attributing spend per tenant/feature (L40/54), and when the cheapest
+    design is the wrong one. Trade: unit cost vs performance & headroom.
+60. Rendering & delivery at scale (SSR/edge rendering) — getting HTML to the user fast: server-side vs client
+    vs edge rendering (L55), streaming responses, the cache-vs-personalization tension (L14), and hydration
+    cost. Trade: time-to-first-byte & offload vs freshness & compute.
+61. Bot detection & traffic authenticity — telling real users from automated traffic at the edge (L52/55):
+    signals, challenges, rate-based vs behavioral detection, and the false-positive cost of blocking real users.
+    Trade: abuse reduction vs friction & false positives.
 
 ## Lesson format conventions
 - Four reusable "moves" framing introduced in Lesson 01: estimate → model →

@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0055-edge-computing.html">
+    <div class="num">LESSON 55</div>
+    <div class="title">Edge Computing: Running Code Milliseconds From the User</div>
+    <div class="blurb">Lesson 14 pushed cached <b>bytes</b> to hundreds of PoPs; Lesson 50 steered traffic to them. This lesson pushes <b>code</b> — running a small function at the PoP nearest the user so auth, routing, personalization, and filtering execute milliseconds away instead of an ocean from a single origin. Take a global app on <b>300 edge PoPs</b> fronting a Virginia origin at <b>40k req/s</b>. <b>Estimate</b> the prize (a ~200&nbsp;ms round trip skipped — <code>~215&nbsp;ms → ~15&nbsp;ms</code> for a Sydney user) and the trap: split 40k/s across 300 PoPs and 1,000 functions and each function sees <code>~0.13&nbsp;req/s</code> (one request every ~7.5&nbsp;s), so functions keep going <b>cold</b> — and a cold start must stay under the round trip or the edge is <i>slower</i> than the origin. <b>Model</b> why that makes <b>isolates</b> (~5&nbsp;ms, ~3&nbsp;MB) non-negotiable where containers (~250&nbsp;ms) invert the win, and the one rule for state: local-only, eventually-consistent edge KV, or forward home — chosen by how stale the data may be. <b>Trace</b> a request the edge fully answers in ~15&nbsp;ms (origin untouched), a cold start that <i>wins</i> on an isolate and <i>loses</i> on a container from the same code, and a "Buy" the edge authenticates near the user but forwards home because the truth isn't at the edge. First wall = <b>state</b>: you can push code to 300 places but not a strongly-consistent database (L11/L23), so the edge runs the <b>decision</b> and the origin owns the <b>truth</b> — kept survivable by a thin edge and canary rollouts across the 300-PoP blast radius (L31/L36). Four traps: containers at the edge; authoritative state at the edge; the thick edge; ignoring the 300-PoP blast radius. Trade named throughout: latency &amp; offload vs consistency &amp; operational reach.</div>
+  </a>
   <a class="lesson" href="lessons/0054-billing-metering.html">
     <div class="num">LESSON 54</div>
     <div class="title">Billing &amp; Metering: Turning a Usage Firehose into a Bill Correct to the Cent</div>
