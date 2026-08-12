@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 56 — Data Deletion &amp; the Right to Be Forgotten: Erasing a User Across an Immutable, Sprawling System</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 56 · Worked Example</div>
+  <h1>Data Deletion &amp; the Right to Be Forgotten: Erasing a User Across an Immutable, Sprawling System</h1>
+  <p class="lead">For fifty-five lessons we made data <b>spread</b> and <b>survive</b>: cached in a hundred places (Lesson 48), replicated to edge KVs at 300 PoPs (Lesson 55), copied into a warehouse (Lesson 29), projected into read models (Lesson 37), and — the sharpest turn — written into an <b>append-only event log we promised never to change</b> (Lesson 38). Every one of those was a good idea. Together they build a trap: a user clicks <b>"Delete my account,"</b> and her data is now in fifteen places, thirty-five nightly backups, and an immutable log by design. The law (GDPR's right to erasure, and its cousins) says you must actually make her gone — and "make her gone" now fights every durability decision you made. This lesson takes one concrete request — <b>delete user U&#8209;8842, "Alice," from a 200-million-user platform</b> — and traces it end to end. We'll <b>estimate</b> how many copies of Alice exist and why deleting "her row" is the easy 1%. We'll <b>model</b> the two mechanisms that actually work — <b>true deletion</b> where you can rewrite, and <b>crypto-shredding</b> (throw away her key, Lesson 30) where you can't — plus the deletion registry and the suppression tombstone that keep her from coming back. We'll <b>trace</b> the trivial primary-DB delete, the immutable event log that <i>cannot</i> be edited, and the backups/warehouse/edge/third-party sprawl. Then the wall: <span class="key">you cannot delete what you cannot find, and you cannot rewrite what you made immutable</span> — so deletion cost grows with every copy your architecture creates. The trade underneath: <b>compliance &amp; privacy vs immutability &amp; derived-data sprawl.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0056-privacy-deletion.html"</code></p>
+</header>
+
+<h2>The one system we'll design</h2>
+<p>Our platform has <b>200 million users</b>. Over fifty-five lessons we built it: a primary orders database (Lesson 12/24), an append-only <b>event log</b> that is the source of truth (Lesson 38), read models projected off that log via change data capture (Lesson 33/37), a product/profile <b>cache</b> layer (Lesson 48), an <b>edge KV</b> replicated to 300 PoPs (Lesson 55), a <b>data warehouse</b> for analytics (Lesson 29), a search index (Lesson 16), tracing/logs (Lesson 17), nightly <b>backups</b>, and <b>webhooks</b> that shipped some of Alice's data to third parties we don't own (Lesson 45).</p>
+<p>Today Alice exercises her <b>right to erasure</b>: "delete everything you have about me." Legally we have about <b>30 days</b> to comply (GDPR gives one month). The naive engineer runs <code>DELETE FROM users WHERE id = 'U-8842'</code>, sees "1 row affected," and calls it done. <span class="key">That single row is roughly 1% of the problem.</span> Alice's data is also sitting in fourteen other systems, in thirty-five sealed nightly backups, and — worst of all — inside an event log we <i>promised the rest of the architecture we would never rewrite</i>. Erasure has to reach all of it, and some of it was deliberately built to resist change.</p>
+<p>Why is this hard, in one sentence per force:</p>
+<ul>
+  <li><b>Sprawl</b> — every copy you made for speed or analysis (cache, projection, warehouse, edge, export) is a new place deletion must reach. The number of copies is the number of deletes.</li>
+  <li><b>Immutability</b> — the event log (Lesson 38), backups, and any WORM audit store were built to be un-editable. You literally cannot <code>DELETE</code> one user's rows out of a sealed snapshot without rebuilding the whole thing.</li>
+  <li><b>Resurrection</b> — even after you delete Alice, a backup restore or a replayed event can bring her <i>back</i>. Deletion isn't a one-shot event; it's a state you must defend.</li>
+  <li><b>Retention conflict</b> — the law that says "delete her" coexists with laws that say "keep financial records seven years" (Lesson 25). Erasure is not absolute; it yields to legal holds.</li>
+</ul>
+
+<div class="diagram"><pre>
+  Where "Alice" (U-8842) actually lives — and how each copy gets erased.
+
+   "Delete my account"  ->  DELETION ORCHESTRATOR (idempotent, retriable; L13/L32/L46)
+                              |
+        +---------+----------+-----------+------------+-------------+
+        v         v          v           v            v             v
+   [primary   [read      [cache      [search      [warehouse   [edge KV
+    orders DB] models     L48]        index L16]   L29]         300 PoPs
+    L12/24]    L37/L33]                                          L55]
+        |         |          |           |            |             |
+     DELETE    DELETE     evict/TTL   DELETE       partition     propagate
+     the row   (via CDC)  (ages out)  the doc      rewrite or    delete /
+                                                   crypto-shred   TTL
+        |
+        |   ============ THE PART YOU CANNOT REWRITE ============
+        v
+   [event log L38]  ...append-only, hash-chained. You CANNOT delete
+                       event #4,412. Instead: its PII was encrypted with
+                       Alice's key -> DROP THE KEY (crypto-shred, L30).
+   [35 nightly       ...sealed snapshots. Can't edit one user out.
+    backups]            Their ciphertext is unreadable once the key is gone;
+                        each ages out on its own retention clock.
+   [3rd parties       ...you already exported it (L45). FORWARD the
+    L45]                deletion request; you no longer hold the copy.
+
+   AND: write a TOMBSTONE (hash(U-8842) + when) to a suppression list, so a
+   restore or replayed webhook can't RESURRECT her. Keep proof, not the PII.
+</pre></div>
+
+<p class="note"><span class="key">Deleting a user means reaching every copy of their personal data across a sprawling, partly-immutable system — by truly deleting it where you can rewrite, and by destroying the key that decrypts it where you can't (crypto-shredding) — while keeping a minimal tombstone so the deletion survives restores and replays.</span> "Delete the row" is the visible tip; the lesson is the fourteen other stores, the thirty-five backups, and the immutable log underneath.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>PII (personally identifiable information)</b> — any data that identifies a person: name, email, address, device id, and often behavior tied to them. The stuff erasure must remove.</li>
+  <li><b>Right to erasure / right to be forgotten</b> — a legal right (GDPR Article 17, and similar laws) letting a person demand you delete their personal data, usually within about a month.</li>
+  <li><b>True deletion</b> — actually removing the bytes: <code>DELETE</code> the row, overwrite the record, drop the document. Works only where the store lets you rewrite.</li>
+  <li><b>Crypto-shredding (crypto-erase)</b> — encrypt each user's data with a <i>per-user</i> key; to "delete" the user, destroy their key. The bytes remain but are now unreadable noise. The one method that works on immutable stores (Lesson 30).</li>
+  <li><b>DEK (data encryption key)</b> — the per-user key that encrypts one user's data. Small (32 bytes), stored in a key store / KMS, and the single thing crypto-shredding destroys.</li>
+  <li><b>Data map / personal-data registry</b> — the inventory of every system that holds PII. You cannot delete what you cannot find; this is the map that says where to look.</li>
+  <li><b>Deletion orchestrator</b> — the job that fans the deletion out to every registered store, idempotently and with retries until each one acknowledges (Lesson 13/32/46).</li>
+  <li><b>Tombstone / suppression list</b> — a tiny record that "this user was deleted," so a backup restore or replayed event can't silently re-create them. Holds a hashed id, not the PII.</li>
+  <li><b>Legal hold / retention obligation</b> — a rule that forces you to <i>keep</i> certain data (tax, financial, litigation) even against an erasure request. The exception that makes erasure not absolute.</li>
+</ul>
+
+<h2>Move 1 — Estimate: how many copies of Alice exist, and why the row is 1%</h2>
+<p>Two counts decide the shape of this problem: how many <i>places</i> hold Alice, and how expensive it is to reach the immutable ones. Get the second wrong and you'll try to edit a backup — which is where designs die.</p>
+
+<div class="card calc">
+  <p><b>1. The copy count.</b> Alice's data lives in roughly <b>15 systems</b> (primary DB, event log, ~3 read models, cache, edge KV, search index, warehouse, logs/traces, plus exports). Nightly backups keep <b>35 daily snapshots</b> (a 35-day retention window), so the backup tier alone holds <code>35</code> more copies of her. The primary-DB row you'd <code>DELETE</code> is <b>1 of ~50 copies</b> — about <code>2%</code>. <span class="key">"1 row affected" is a rounding error against the real surface. The work is the other ~49 copies, and a third of them are immutable.</span></p>
+  <p><b>2. Why you can't just rewrite the immutable ones.</b> Suppose the primary DB is <b>10 TB</b>. A nightly backup is a sealed 10 TB snapshot; you cannot surgically remove Alice from it. To truly edit her out you'd restore it, delete her, and re-seal — <code>10 TB</code> of work <i>per backup</i>, <code>× 35 backups = 350 TB</code> moved for one user. At even <code>100,000</code> erasure requests a month (a modest <code>0.05%</code> of 200M users) that's <code>350 TB × 100,000 = 35 exabytes</code> of restore-edit-reseal per month. <span class="key">That's not "expensive," it's arithmetic that says <i>impossible</i>. Rewriting immutable stores per user does not scale — you need a method whose cost per deletion is O(1), not O(data).</span></p>
+  <p><b>3. The size of the thing crypto-shredding actually deletes.</b> Give every user one 256-bit (<code>32-byte</code>) DEK. All 200M keys together are <code>200,000,000 × 32 B = 6.4 GB</code> — a rounding error you can keep in a fast key store. Deleting Alice becomes <b>"delete one 32-byte key,"</b> and her ciphertext everywhere — event log, all 35 backups, the warehouse — turns to noise at once, without touching a single one of them. <span class="key">Crypto-shredding converts an O(exabytes) hunt-and-rewrite into an O(32 bytes) key delete. That single trade is the whole reason the problem is tractable.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off — compliance &amp; privacy vs immutability &amp; derived-data sprawl.</b> Every earlier lesson bought performance and auditability by making data <i>durable and copied</i>: immutable logs you can replay, backups you can restore, projections and caches and edge replicas everywhere. Erasure is the bill for all of it. You pay in two currencies: <b>reach</b> (deletion must touch every copy the sprawl created) and <b>rewritability</b> (immutability was a feature you now have to defeat). Crypto-shredding pays both at once — but shifts the burden onto <b>key management</b>: now the key is the thing that must be perfectly findable and perfectly destroyable.</p>
+
+<h2>Move 2 — Model: two deletion mechanisms, one registry, one tombstone</h2>
+<p>Deletion is not one operation. It's a small kit of four parts, each answering a question the naive <code>DELETE</code> ignores: <i>where is she, how do I erase each place, and how do I keep her gone?</i></p>
+
+<h3>1. The data map — you can't delete what you can't find</h3>
+<p>The first and hardest part isn't code, it's an <b>inventory</b>: every system that stores PII, what field, and how to delete it there. New table, new cache, new export? It joins the registry, or erasure silently misses it. <span class="key">A deletion is only as complete as your map of where personal data went — and derived-data sprawl means the map grows every time someone adds a projection or a pipeline.</span> This is why privacy is an architecture property, not a feature you bolt on: an untracked copy is an undeletable copy.</p>
+
+<h3>2. True deletion vs crypto-shredding — pick by "can I rewrite this store?"</h3>
+<div class="card calc">
+  <p><b>True deletion</b> works wherever the store is <i>mutable</i>: the primary DB row, read models (Lesson 37 — re-derive them without Alice), the search index, a cache entry. You issue a real <code>DELETE</code>/overwrite and the bytes are gone. Simple, complete, auditable — where it's allowed.</p>
+  <p><b>Crypto-shredding</b> works wherever the store is <i>immutable or unreachable</i>: the append-only event log (Lesson 38), sealed backups, WORM audit stores, and anything already flushed to slow tiers. You encrypted each user's PII with their DEK at write time; to erase, you destroy the DEK. The event stays in the log (chain intact, history honest — "an event happened") but its personal payload is now undecryptable noise. <span class="key">The rule is mechanical: rewrite where you can (true delete), destroy the key where you can't (crypto-shred). One dial — is this store rewritable? — chooses the mechanism.</span></p>
+  <p><b>The catch that makes or breaks crypto-shred:</b> "delete the key" only counts if <i>every</i> copy of the key is gone. A key sitting in a key-store backup, a config file, or a warm cache means the ciphertext is still readable — so it's <b>not</b> deleted. Crypto-shredding doesn't remove the deletion problem; it <i>moves</i> it from "reach every copy of the data" to "reach every copy of the key" — a far smaller, more controllable surface (6.4 GB of keys vs petabytes of data), which is exactly why it wins. Keep keys in a store with short backup retention and explicit crypto-erase, and the key surface stays small.</p>
+</div>
+
+<h3>3. The tombstone — stop the resurrection</h3>
+<p>Delete Alice today; tomorrow a backup restore for an unrelated outage brings her row back, or a webhook you sent last week gets replayed and re-imports her. Deletion is a <b>state to defend, not an event.</b> So you keep a <b>suppression tombstone</b>: a tiny record — <code>hash(U-8842)</code> + deletion timestamp + status — that every re-materialization path checks. A restore or replay that tries to re-create a tombstoned user is dropped. <span class="key">The paradox: to prove someone is forgotten, you must remember that you forgot them — so you keep the <i>fact</i> of deletion (a hashed id, no PII), never the data.</span> That same tombstone is your audit trail: proof to a regulator that erasure happened, and when.</p>
+
+<h3>4. The orchestrator — idempotent fan-out with retries</h3>
+<p>Fifteen stores plus a key-delete plus third-party forwards won't all succeed on the first try. So deletion runs like a <b>saga</b> (Lesson 32) or a durable job (Lesson 46): fan out to each registered store, each step <b>idempotent</b> (Lesson 13 — deleting an already-deleted user is a no-op, not an error) and <b>retried</b> until it acknowledges. The request is complete only when every store has confirmed — then you record completion on the tombstone.</p>
+
+<p class="note why"><b>The four properties that make erasure real, named:</b> <b>completeness</b> (a data map so no copy is missed), <b>irreversibility</b> (true-delete or key-destroy so the bytes can't be recovered), <b>durability of the deletion</b> (a tombstone so restores/replays can't resurrect), and <b>provability</b> (an audit record you can show a regulator). Miss completeness and you leak a copy; miss irreversibility and you only hid the data; miss durability and she comes back; miss provability and you can't prove any of it happened.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Follow Alice's deletion through three tiers: the trivial mutable store, the immutable log that refuses to be edited, and the backup/warehouse/edge/third-party sprawl.</p>
+
+<h3>Path A — the primary DB and read models (the easy 1%)</h3>
+<div class="diagram"><pre>
+  DELETE FROM users, orders WHERE user_id = 'U-8842'   -> a few ms, bytes gone.
+
+  The read models (L37) are PROJECTIONS off the log (L33 CDC). Two options:
+    (a) emit a "user-deleted" event -> the projector removes Alice's rows, or
+    (b) re-derive the projection from the (now crypto-shredded) log; her
+        entries decode to noise and are dropped on rebuild.
+  Search index (L16): DELETE the doc. Cache (L48): evict / let TTL expire.
+
+  This tier is genuinely easy: every store here is MUTABLE. This is the part
+  the naive engineer does -- and then stops. It's ~1-2% of the copies.
+</pre></div>
+
+<h3>Path B — the immutable event log (the part you cannot rewrite)</h3>
+<div class="diagram"><pre>
+  Alice generated ~5,000 events over her lifetime, scattered through an
+  append-only, hash-chained log (L38). You want event #4,412 gone.
+
+  NAIVE:  "just delete event #4,412 from the log."
+  REALITY: the log is immutable BY DESIGN. Deleting one event breaks the
+           hash chain and invalidates every event after it, and every read
+           model and replay that depends on the log. You'd be un-building
+           Lesson 38 to satisfy Lesson 56.
+
+  CRYPTO-SHRED:  at write time, each event's PII fields were encrypted with
+                 Alice's DEK. To erase:  destroy Alice's DEK (32 bytes).
+     -> event #4,412 STILL EXISTS (chain intact, "an event happened at T"),
+        but its personal payload is now undecryptable noise. History stays
+        honest; the person is gone. One key delete erases ALL 5,000 events
+        at once, without touching the log.
+
+  This is why you encrypt-per-user at write time even before anyone asks to
+  be deleted: crypto-shred only works if the data was BORN encrypted.
+</pre></div>
+
+<h3>Path C — backups, warehouse, edge, and the data you already gave away</h3>
+<div class="diagram"><pre>
+  BACKUPS (35 sealed snapshots): you cannot edit one user out of a snapshot.
+    -> crypto-shred covers them: Alice's ciphertext is in every backup, but
+       the key is gone, so it's unreadable. Each backup also AGES OUT on its
+       own retention clock (<=35 days), after which the ciphertext is gone too.
+
+  WAREHOUSE (L29, 3.65 PB, partitioned by day): Alice is smeared across
+    thousands of daily Parquet files. Per-row deletes are ruinous.
+    -> crypto-shred, OR a scheduled partition-rewrite job (L46) that rebuilds
+       affected partitions without her on the next compaction.
+
+  EDGE KV (L55, 300 PoPs): propagate a delete / let the short TTL expire.
+    Eventually consistent -- gone from all PoPs within seconds-to-minutes.
+
+  THIRD PARTIES (L45): you already SHIPPED some of Alice's data out via
+    webhooks. You no longer hold that copy. You must FORWARD the erasure
+    request to them (a contractual/legal duty) and record that you did.
+    You control your reach; you can only REQUEST theirs.
+
+  Every one of these copies exists because an earlier lesson made data spread
+  or survive. Deletion is the bill for durability + sprawl.
+</pre></div>
+
+<p>Path A is the 1% everyone does. Path B is where the design is decided: <span class="key">you cannot delete from a store you built to be immutable, so you delete the <i>key</i> instead — which only works if the data was encrypted per-user before anyone asked.</span> Path C is the reminder that sprawl is unbounded: <span class="key">every backup, warehouse partition, edge replica, and export is another copy erasure must reach, and the ones you already handed to third parties you can only ask them to delete.</span>
+
+<h2>Move 4 — Find the first bottleneck: you can't delete what you can't find, or rewrite what you made immutable</h2>
+<p>There's no clever runtime that makes this cheap the way isolates made cold starts cheap (Lesson 55). The wall is structural, and it has two faces that crypto-shredding pushes against but never fully removes.</p>
+
+<div class="card calc">
+  <p><b>1. The reach wall (derived-data sprawl).</b> Deletion cost is proportional to how many copies your architecture made. Every cache (Lesson 48), projection (Lesson 37), warehouse table (Lesson 29), edge replica (Lesson 55), and export (Lesson 45) is one more place a delete must land — and one more place a <i>missed</i> registry entry silently leaks Alice forever. The number of deletes is the number of copies, and copies are what all our performance work produced. <span class="key">The only scalable defense is to make deletion O(1) regardless of copy count — encrypt per-user everywhere, so a single key-destroy erases every copy at once. Then reach stops mattering, because you never chase the copies; you kill what makes them readable.</span></p>
+  <p><b>2. The immutability wall.</b> The event log (Lesson 38), backups, and WORM audit stores were deliberately un-editable — that was the point. Erasure directly contradicts that guarantee. You do <i>not</i> resolve it by weakening immutability (that un-builds Lesson 38); you resolve it by separating <b>the fact</b> from <b>the payload</b>: keep the immutable event ("something happened at T"), encrypt the <b>personal payload</b> with the user's key, and let key-destruction remove the person while the honest, replayable history survives. <span class="key">Immutability and erasure only coexist because encryption lets you delete the <i>meaning</i> of a record without deleting the record.</span></p>
+</div>
+
+<p>Two more walls sit behind those. <b>Key management becomes the crown jewel:</b> crypto-shred is only as good as your ability to destroy every copy of a key — a key in a backup, a cache, or a config that outlives the delete leaves the data readable (Lesson 30's key hierarchy is now load-bearing for privacy, not just secrecy). <b>And erasure is not absolute:</b> a legal hold or a retention obligation (financial records kept seven years, Lesson 25; data under litigation) can force you to <i>keep</i> specific data against the request — so real systems do <b>partial</b> erasure, deleting everything not legally pinned and recording why the rest remains. <span class="key">The deepest point: privacy-by-deletion is really privacy-by-encryption. You don't chase petabytes of copies across fifteen systems and thirty-five backups — you make the data born-encrypted per user, and reduce "forget this person" to "destroy this 32-byte key, everywhere it exists." The hard part was never the DELETE; it was the sprawl and the immutability we built on purpose.</span></p>
+
+<h3>The scoreboard: which store, which mechanism</h3>
+<table>
+  <tr><th>Where Alice lives</th><th>Erase it by</th><th>Pay in</th></tr>
+  <tr><td>Primary DB row, read models (mutable)</td><td>True <code>DELETE</code> / re-derive projection (L33/L37)</td><td>must reach every projection; a missed one leaks her</td></tr>
+  <tr><td>Search index, caches</td><td>Delete the doc; evict / TTL-expire (L16/L48)</td><td>brief window until eviction propagates</td></tr>
+  <tr><td>Append-only event log (immutable, L38)</td><td>Crypto-shred: destroy Alice's DEK (L30)</td><td>data must have been born per-user encrypted</td></tr>
+  <tr><td>35 sealed nightly backups</td><td>Crypto-shred (unreadable now) + retention age-out</td><td>ciphertext lingers until backup expires</td></tr>
+  <tr><td>Warehouse, 3.65 PB, day-partitioned (L29)</td><td>Crypto-shred or scheduled partition rewrite (L46)</td><td>rewrite cost, or key-mgmt burden</td></tr>
+  <tr><td>Edge KV at 300 PoPs (L55)</td><td>Propagate delete / short TTL</td><td>seconds of eventual-consistency lag</td></tr>
+  <tr><td>Data already exported to third parties (L45)</td><td>Forward the erasure request; record it</td><td>you can only request, not enforce, their delete</td></tr>
+  <tr><td>Keeping her from coming back</td><td>Suppression tombstone: <code>hash(id)</code> + when</td><td>you must retain proof-of-deletion forever</td></tr>
+  <tr><td>Data under legal hold / retention (L25)</td><td>Partial erasure; keep the pinned data, log why</td><td>erasure isn't absolute — compliance vs compliance</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — "DELETE the row" is deletion.</b> One row is ~1&#8209;2% of the copies. Erasure must fan out to every store in the data map — read models, caches, search, warehouse, edge, backups, exports — or Alice persists in fourteen places you didn't look. Deletion completeness is a property of your <i>registry</i>, not your SQL.</li>
+  <li><b>Trap 2 — trying to rewrite immutable stores per user.</b> Editing one user out of an append-only log breaks the hash chain and every downstream replay; editing 35 sealed backups is exabytes of restore-and-reseal. Use crypto-shredding: encrypt per-user at write time, then destroy the key. Rewrite where mutable, key-destroy where not.</li>
+  <li><b>Trap 3 — forgetting the resurrection path.</b> A backup restore or a replayed event/webhook silently re-creates a deleted user. Without a suppression tombstone, deletion doesn't stick. Deletion is a state you defend, not a one-shot command — every re-materialization path must check the tombstone.</li>
+  <li><b>Trap 4 — crypto-shred, but a copy of the key survives.</b> A DEK left in a key-store backup, a config, or a warm cache leaves the ciphertext readable — so the data is <i>not</i> deleted. Crypto-shred just moves the target from data to key; keep the key surface tiny (short retention, explicit crypto-erase) and destroy it everywhere.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>The right to be forgotten is the bill for fifty-five lessons of making data durable and copied. <b>Estimate</b> counted the copies — Alice lives in ~15 systems and 35 backups, so the primary-DB row is ~1&#8209;2%, and truly rewriting the immutable tier is exabytes of restore-and-reseal per month (impossible), while destroying one 32-byte key erases every copy at once (<code>6.4 GB</code> of keys for all 200M users). <b>Model</b> gave the kit: a <b>data map</b> (you can't delete what you can't find), two mechanisms chosen by "is this store rewritable?" — <b>true deletion</b> where mutable, <b>crypto-shredding</b> where not — a <b>suppression tombstone</b> so restores and replays can't resurrect her, and an <b>idempotent orchestrator</b> to fan out with retries. <b>Tracing</b> walked the trivial mutable delete (the 1%), the immutable event log where you destroy the <i>key</i> because you can't touch the <i>log</i>, and the backup/warehouse/edge/third-party sprawl where crypto-shred plus retention age-out plus forwarded requests do the work. The <b>first bottleneck</b> is structural: <span class="key">you cannot delete what you cannot find (sprawl) or rewrite what you made immutable (the log, backups) — so privacy-by-deletion becomes privacy-by-encryption: born-encrypted per user, deletion collapses to destroying one key everywhere it exists</span> — bounded by key management as the new crown jewel and by legal holds that make erasure partial, not absolute. <span class="key">Delete the meaning, not the record; keep the proof, not the person. The standing tension: compliance &amp; privacy vs immutability &amp; derived-data sprawl.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>We've now had to reprocess an immutable log to erase one user. The next lesson turns that one-off into a general capability:</b></p>
+  <p style="margin:.2rem 0">• <b>Bulk data pipelines &amp; backfills:</b> reprocessing history at scale — a schema change (Lesson 24) or a new warehouse model (Lesson 29) means re-running a transform over <i>billions</i> of rows, not one user's. The next lesson traces one backfill: how to run it fast without crushing the live system (rate-limit against production, Lesson 28), how to <b>checkpoint</b> so a crash resumes instead of restarting, and how to make re-runs <b>idempotent</b> (Lesson 13) so a retried batch doesn't double-count. The trade shifts to <b>throughput vs impact on the live system.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">PII</span>
+    <span class="pill">right to erasure</span>
+    <span class="pill">true deletion</span>
+    <span class="pill">crypto-shredding</span>
+    <span class="pill">DEK (per-user key)</span>
+    <span class="pill">data map / registry</span>
+    <span class="pill">deletion orchestrator</span>
+    <span class="pill">tombstone / suppression list</span>
+    <span class="pill">resurrection</span>
+    <span class="pill">legal hold / retention</span>
+    <span class="pill">derived-data sprawl</span>
+  </p>
+  <p>That's Lesson 56, built on Lesson 38's immutable event log (the store you cannot rewrite), Lesson 30's key hierarchy and encryption-at-rest (now load-bearing for privacy, not just secrecy), Lesson 37/33's read models &amp; CDC (projections to re-derive without the user), Lesson 48's caches and Lesson 55's edge KV (copies that age out), Lesson 29's warehouse (day-partitioned sprawl), Lesson 45's webhooks (data you already handed to third parties), Lesson 13's idempotency and Lesson 32/46's sagas &amp; durable jobs (the retriable fan-out), and Lesson 25's ledger retention (the legal hold that makes erasure partial). <b>Ask me follow-ups</b> — e.g. "how do you structure a per-user key hierarchy so one key-delete shreds a user without re-encrypting everyone else?", "what exactly goes in a suppression tombstone so it proves deletion without becoming PII itself?", "how do you reconcile a 7-year financial-retention hold with a same-user erasure request?", "how would you audit that a deletion actually reached all 15 stores?", or "when is a scheduled partition rewrite better than crypto-shredding the warehouse?" When you're ready, say <b>next</b> and we'll go deeper on <i>bulk data pipelines &amp; backfills — throughput vs impact on the live system.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "An engineer closes an erasure ticket by running DELETE FROM users WHERE id='U-8842' and confirming '1 row affected.' A week later an audit finds Alice's data in the event log, the warehouse, three read models, and last night's backup. What did they misunderstand, and what's the right model?",
+    options: [
+      {t:"Deletion completeness is a property of the DATA MAP, not a single DELETE. Alice's data was copied — for speed and analysis — into ~15 systems plus 35 nightly backups, so the primary row is ~1-2% of the copies. Erasure must fan out (idempotently, with retries) to every registered store: true-delete the mutable ones (DB, read models, search, cache), crypto-shred the immutable ones (event log, backups), forward the request to third parties, and write a tombstone so she can't be restored. A store not in the registry is a copy that never gets deleted.",
+       ok:true,
+       fb:"Right. 'The row' is the visible tip. Derived-data sprawl means every cache, projection, warehouse table, edge replica, and export is another place deletion must reach — and an untracked copy is an undeletable one. The registry, not the SQL, decides completeness."},
+      {t:"Nothing was really missed — the other systems are just caches and copies that will eventually expire on their own, so the single primary DELETE is sufficient and the audit is overreacting.",
+       ok:false,
+       fb:"Some copies do age out (edge KV, short-TTL caches), but the event log and warehouse do NOT expire on their own, and a 35-day backup keeps her for weeks. 'It'll expire eventually' isn't erasure within the ~30-day legal window, and it leaves her readable in immutable stores indefinitely. You must actively reach every copy."},
+      {t:"The fix is to add ON DELETE CASCADE foreign keys so the one DELETE automatically removes Alice everywhere in the system.",
+       ok:false,
+       fb:"Cascades only reach rows in the SAME relational database that have FK relationships. They do nothing for the append-only event log, the warehouse's Parquet files, edge KVs at 300 PoPs, sealed backups, or data you exported to a third party — none of which are FK-linked to the users table. The sprawl crosses system boundaries a cascade can't follow."}
+    ]
+  },
+  {
+    stem: "Alice's personal data is spread through an append-only, hash-chained event log (Lesson 38) that the rest of the architecture replays and projects from. She demands erasure. How do you remove her without breaking the log?",
+    options: [
+      {t:"Crypto-shred: her events' PII fields were encrypted at write time with a per-user key (DEK), so you destroy that 32-byte key. The events remain in the log (chain intact, history still honest that 'an event happened at T'), but their personal payload is now undecryptable noise — and one key-delete erases all her events at once without touching the log. This only works because the data was BORN encrypted per-user, before anyone asked to be deleted.",
+       ok:true,
+       fb:"Exactly. You delete the MEANING of the records, not the records. Immutability (replayable, auditable history) and erasure coexist only because encryption lets key-destruction remove the person while the honest event survives. Encrypt-per-user proactively — you can't retrofit it after the delete request arrives cheaply."},
+      {t:"Physically delete Alice's ~5,000 events from the log and re-compute the hash chain and all downstream projections so everything stays consistent.",
+       ok:false,
+       fb:"This un-builds Lesson 38. Deleting events from an append-only log breaks its core guarantee: any replay, backup, or reader that expected the full history now disagrees, and you must rewrite the chain plus every projection and every backup that captured the old log. It's ruinously expensive and defeats the reason the log was immutable. Destroy the key, not the events."},
+      {t:"Leave the log alone entirely — event logs are internal infrastructure, not user-facing, so they're exempt from erasure requirements.",
+       ok:false,
+       fb:"'Internal' doesn't exempt data from erasure — if the log holds PII, it's in scope regardless of who reads it, and it feeds read models and the warehouse that expose that data. Leaving readable PII in the log means Alice isn't actually deleted. The log needs crypto-shredding, not an exemption."}
+    ]
+  },
+  {
+    stem: "A team crypto-shreds deleted users by destroying each user's DEK. An auditor still manages to decrypt a 'deleted' user's data from a restored key-store backup. What went wrong, and what's the principle?",
+    options: [
+      {t:"Crypto-shredding only counts if EVERY copy of the key is destroyed — it moves the deletion problem from 'reach every copy of the data' to 'reach every copy of the key.' A DEK surviving in a key-store backup (or a cache, or a config) leaves the ciphertext readable, so the data was hidden, not deleted. The fix is to keep the key surface tiny and controllable: short backup retention on the key store plus explicit crypto-erase, so destroying a key really does destroy all copies of it.",
+       ok:true,
+       fb:"Right. Crypto-shred's whole advantage is that keys (6.4 GB for 200M users) are a far smaller, more controllable surface than petabytes of data — but only if you actually control every copy of the key. A lingering key copy is a lingering user. Key management becomes the crown jewel of privacy, not just secrecy."},
+      {t:"The encryption algorithm was too weak; switching to a longer key length would have prevented the auditor from decrypting the data.",
+       ok:false,
+       fb:"The auditor didn't break the crypto — they FOUND a surviving copy of the key and used it legitimately. A longer key changes nothing when the key itself is still retrievable. The failure is key lifecycle/retention, not key strength; no key length helps if the key wasn't actually destroyed everywhere."},
+      {t:"Crypto-shredding is fundamentally unsound for deletion; the only real erasure is physically overwriting the ciphertext bytes in every store.",
+       ok:false,
+       fb:"Physically overwriting bytes in every store is exactly what's impossible for immutable logs and 35 sealed backups (exabytes of restore-and-reseal) — that's why crypto-shred exists and is widely accepted. It's sound WHEN the key is truly gone. The lesson isn't 'abandon crypto-shred,' it's 'destroy every copy of the key,' which is a much smaller surface than every copy of the data."}
+    ]
+  },
+  {
+    stem: "After Alice is fully deleted, an unrelated outage forces a restore from a two-week-old backup — and Alice's account reappears. Separately, a webhook replay re-imports her profile to a partner-facing table. What single mechanism prevents both, and why is it needed?",
+    options: [
+      {t:"A suppression tombstone: a tiny durable record — hash(U-8842) + deletion timestamp + status, no PII — that every re-materialization path (restores, event/webhook replays, imports) checks before creating a user. A tombstoned id is dropped instead of re-created. It's needed because deletion is a STATE you must defend, not a one-shot command: any path that can bring old data back can resurrect a deleted user unless it consults the tombstone. The same record is your provable audit trail of the deletion.",
+       ok:true,
+       fb:"Right. The paradox: to keep someone forgotten you must remember that you forgot them — so you retain the FACT of deletion (a hashed id), never the data. Restores and replays are legitimate operations that don't know Alice was deleted; the tombstone is the shared memory that stops them from undoing the erasure."},
+      {t:"Delete the backups and disable webhook replays entirely, so there's no path that could ever bring old data back.",
+       ok:false,
+       fb:"You can't delete the backups — they protect every other user and satisfy durability/retention requirements — and disabling replay breaks recovery and integrations. Resurrection paths are features you need, not bugs to remove. The right answer is to make those paths tombstone-aware so they skip deleted users, not to amputate them."},
+      {t:"Set a longer TTL on Alice's cache entries so the system remembers she's gone until the caches expire.",
+       ok:false,
+       fb:"A cache TTL is the opposite of what's needed — TTLs make entries EXPIRE, and a cache is volatile and per-node, not a durable cross-system record. Preventing resurrection needs a permanent, authoritative suppression list that every restore/replay/import consults, not a short-lived cache entry that vanishes on eviction."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

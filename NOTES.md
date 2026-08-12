@@ -1036,9 +1036,20 @@
     can't spread) + operational reach (300-PoP blast radius → thin edge + canary, L31/36 + cross-PoP observability
     L17). Four traps: containers at the edge; authoritative state at the edge; the thick-edge distributed monolith;
     ignoring the blast radius. Trade: latency & offload vs consistency & operational reach. (Lesson 0055)
-56. Data privacy, deletion & compliance (GDPR/right-to-be-forgotten) — actually deleting a user across an
-    event-sourced log (L38), backups, caches (L48), warehouses (L29), and derived copies (L37); crypto-shredding
-    (L30) vs true deletion, and audit trails. Trade: compliance & privacy vs immutability & derived-data sprawl.
+56. ✅ **Data privacy, deletion & compliance (GDPR/right-to-be-forgotten)** — erase user U-8842 ("Alice") from a
+    200M-user platform: she lives in ~15 systems + 35 nightly backups, so the primary-DB row is ~1-2% and truly
+    rewriting the immutable tier is ~35 EB/month of restore-and-reseal (impossible), while destroying one 32-byte
+    per-user key erases every copy at once (6.4 GB of keys for 200M users). Model: a **data map** (can't delete
+    what you can't find), **true deletion** where the store is rewritable vs **crypto-shredding** (destroy the
+    per-user DEK, L30) where it's immutable (event log L38, backups, WORM) — the event survives, its PII payload
+    becomes noise — plus a **suppression tombstone** (hash(id)+when, no PII) so a restore/replay can't resurrect
+    her, and an idempotent orchestrator (L13/L32/L46) to fan out with retries. Trace: trivial mutable DELETE (the
+    1%); the immutable log where you destroy the KEY not the log; the backup/warehouse (L29)/edge KV (L55)/third-
+    party (L45) sprawl (crypto-shred + retention age-out + forwarded requests). First wall = structural: can't find
+    (sprawl) / can't rewrite (immutability) → privacy-by-deletion becomes **privacy-by-encryption**; bounded by
+    key management (new crown jewel) and legal holds (L25) that make erasure partial. Four traps: "DELETE the row"
+    is deletion; rewriting immutable stores per user; forgetting resurrection; a surviving copy of the key. Trade:
+    compliance & privacy vs immutability & derived-data sprawl. (Lesson 0056)
 
 ### Advanced topics (next batch — queued so the course never runs dry)
 57. Bulk data pipelines & backfills — reprocessing history at scale: one-off migrations/backfills over billions
