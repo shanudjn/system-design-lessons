@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 57 — Bulk Data Pipelines &amp; Backfills: Reprocessing Two Billion Rows Without Taking Down the Live System</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 57 · Worked Example</div>
+  <h1>Bulk Data Pipelines &amp; Backfills: Reprocessing Two Billion Rows Without Taking Down the Live System</h1>
+  <p class="lead">Lesson 56 reprocessed an immutable log to erase <i>one</i> user. This lesson turns that one-off into a general capability: re-running a transform over <b>all of history</b> — billions of rows — because a schema changed (Lesson 24), a warehouse model changed (Lesson 29), a search index needs rebuilding (Lesson 16), or a bug wrote wrong data you must repair. The catch is that history doesn't sit in a quiet corner: it lives in the <b>same database serving live traffic right now</b>. So a backfill is a race between two goals that pull opposite ways — <b>finish fast</b> and <b>don't hurt production</b>. This lesson takes one concrete job — <b>backfill a new <code>currency</code> column across 2 billion historical orders</b>, the table from Lessons 12/24/25, on a live DB serving 50k reads/s — and traces it end to end. We'll <b>estimate</b> why the one obvious command (a single big <code>UPDATE</code>) detonates three ways. We'll <b>model</b> the backfill as a <b>chunked, checkpointed, idempotent, throttled</b> job — four parts, each fixing one of those detonations. We'll <b>trace</b> the happy batch, a crash at hour 50, and the moment production starts to feel it. Then the wall: <span class="key">the backfill and production fight over the same disk, CPU, and replication stream</span> — so its speed is capped by production's spare headroom, not by how many workers you throw at it. The trade underneath: <b>throughput vs impact on the live system.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0057-backfills-bulk-pipelines.html"</code></p>
+</header>
+
+<h2>The one job we'll design</h2>
+<p>Back in Lesson 24 we split the <code>orders</code> table's ambiguous <code>total</code> into <code>amount_cents</code> + <code>currency</code> using expand/contract, and new writes have been <b>dual-writing</b> both shapes ever since. The schema is fine. New rows are fine. But there are <b>2 billion old order rows</b> written before the change, and every one of them has <code>currency = NULL</code>. Until those are filled in, no reader can trust the column, and we can't finish the migration (Lesson 24's cutover is blocked on a zero-<code>NULL</code> check). We need to <b>backfill</b>: compute <code>currency</code> for every historical row (derive it from the merchant's country) and write it back — 2 billion times.</p>
+<p>The naive engineer opens a SQL console and types one line:</p>
+<div class="diagram"><pre>
+  UPDATE orders
+     SET currency = derive_currency(merchant_id)
+   WHERE currency IS NULL;          -- 2,000,000,000 rows
+</pre></div>
+<p>This is a career-defining mistake, and it fails <b>three separate ways at once</b>. Naming them is the whole lesson, because each one maps to a part of the fix:</p>
+<ul>
+  <li><b>It's one giant transaction.</b> The database must hold locks and undo/redo information for <i>all</i> 2 billion changed rows until it commits. If it fails at row 1.9 billion — a deadlock, a disk-full, a failover — the whole thing <b>rolls back to zero</b> (all-or-nothing), and the rollback itself can take as long as the run. Fifty hours of work, gone, twice.</li>
+  <li><b>It runs flat-out.</b> A 2-billion-row scan-and-write saturates the disk and CPU of the <i>same</i> database serving 50,000 reads/s. Production sails past its utilization knee (Lesson 27) into the retry storm (Lesson 07). Your backfill just caused an outage.</li>
+  <li><b>It can't survive a crash.</b> At any realistic rate this runs for <i>hours</i>, and anything that runs for hours <i>will</i> be interrupted. With one transaction there's no "resume" — only "start over."</li>
+</ul>
+
+<div class="diagram"><pre>
+  The backfill and production share ONE database. That's the whole problem.
+
+     live traffic (50k reads/s, 5k writes/s)  ->  [ PRIMARY DB ]  ->  replicas
+                                                     ^   |              (readers,
+                                                     |   | replication   L06)
+        BACKFILL JOB  ----batched writes------------+   v
+        (2B rows to fill)                          [ same disk, same CPU,
+             |                                       same replication stream ]
+             |  reads a chunk (cursor, L18)
+             |  transforms it (derive currency)
+             |  writes it back (one small txn)
+             |  checkpoints the cursor  <--- crash resumes HERE, not at zero
+             |  watches replica lag  <------- the throttle's feedback signal
+             +--> repeat 400,000 times, throttled to production's SPARE capacity
+
+  Throughput and "don't hurt production" pull in opposite directions on the
+  SAME resource. The backfill is a background citizen; production is the priority.
+</pre></div>
+
+<p class="note"><span class="key">A backfill is reprocessing history at scale, on infrastructure that is busy serving the present. The skill is not the transform — it's running it in bounded, resumable, idempotent chunks, throttled to whatever capacity production isn't using.</span> "One big <code>UPDATE</code>" is the tip; the lesson is the four things that make it safe.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Backfill</b> — filling in or recomputing data for <i>existing</i> historical rows, as opposed to a live pipeline that handles new rows going forward. A one-off (or occasional) reprocessing of the past.</li>
+  <li><b>Batch / chunk</b> — a small, fixed slice of the work (e.g. 5,000 rows) processed and committed as its own unit, so no single transaction is enormous.</li>
+  <li><b>Cursor (keyset) pagination</b> — walking the table by remembering the last key seen (<code>WHERE id &gt; :last_id ... LIMIT n</code>) instead of counting positions with <code>OFFSET</code> (Lesson 18). Each page is a cheap B-tree seek (Lesson 12).</li>
+  <li><b>Checkpoint</b> — a durable record of how far the job has gotten (the last committed cursor), written after each batch so a crash resumes from there instead of restarting.</li>
+  <li><b>Idempotent</b> — safe to apply more than once: re-running a batch produces the same result as running it once, with no double-counting (Lesson 13).</li>
+  <li><b>Throttle / rate limit</b> — deliberately capping the backfill's speed (Lesson 08/28) so it leaves headroom for live traffic.</li>
+  <li><b>Replica lag</b> — how far behind the read replicas are in applying the primary's writes (Lesson 06). When a backfill writes faster than replicas can catch up, lag grows — the signal to slow down.</li>
+  <li><b>Headroom</b> — the fraction of the database's capacity that live traffic isn't using. The backfill may spend this and no more (Lesson 27).</li>
+</ul>
+
+<h2>Move 1 — Estimate: why the one big <code>UPDATE</code> detonates, in numbers</h2>
+<p>Three quantities decide the shape of this job: how long it takes, how big the transaction gets, and how likely a crash is over that window. Get any of them wrong and you either take down production or lose fifty hours of work.</p>
+
+<div class="card calc">
+  <p><b>1. How long — and why "just run it" means days.</b> The <code>orders</code> table is <code>200 B/row</code> (Lesson 12: 100M rows = 20 GB), so 2 billion rows is <code>2,000,000,000 × 200 B = 400 GB</code> to read and rewrite. A backfill that respects production can safely sustain only a fraction of the DB's throughput — say <code>10,000 rows/s</code> (Lesson 24's figure). Then the run takes <code>2,000,000,000 ÷ 10,000 = 200,000 s ≈ 55.6 hours</code>. <span class="key">This is not a "run it over lunch" job; it's a job that spans days, and everything about the design follows from that one fact.</span></p>
+  <p><b>2. How big the transaction gets — the all-or-nothing trap.</b> One <code>UPDATE</code> over 2B rows is a single transaction holding undo/redo for <code>400 GB</code> of changes and locks on 2B rows. If it fails at 95% done, the engine <b>rolls the entire thing back</b> — you've done 52 hours of work <i>and</i> pay for the rollback, ending exactly where you started. Batching into <code>5,000</code>-row chunks makes each transaction tiny (<code>~1 MB</code>) and independently committed, so a failure costs one batch, not the run. That's <code>2,000,000,000 ÷ 5,000 = 400,000 batches</code>.</p>
+  <p><b>3. How likely a crash is — why resumability isn't optional.</b> Over a <code>55-hour</code> window you <i>will</i> hit a deploy, a failover, a spot-instance reclaim, a network blip, or an OOM. Treat interruption as certain. Without a checkpoint, a crash at hour 50 restarts from zero — a second 55-hour run. With a checkpoint after every batch, a crash costs at most <b>one batch</b> = <code>5,000 rows ÷ 10,000 rows/s = 0.5 s</code> of redone work. <span class="key">A checkpoint converts "lose 50 hours" into "lose half a second." That is the entire value of writing down where you are.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off — throughput vs impact on the live system.</b> Every knob in this lesson is the same dial. Turn the backfill's rate <b>up</b> and it finishes sooner but steals IOPS, CPU, and replication bandwidth from the 50k reads/s that pay the bills — past the knee (Lesson 27), replica lag explodes and real users lose read-your-writes (Lesson 06). Turn it <b>down</b> and production is untouched but the run stretches from days toward weeks, and the longer it runs the longer you live in the fragile half-migrated state (Lesson 24). There is no setting that is fast <i>and</i> free — you are dividing one database between the present and the past.</p>
+
+<h2>Move 2 — Model: chunked, checkpointed, idempotent, throttled</h2>
+<p>A safe backfill is a small kit of four parts. Each one directly disarms one of the three detonations above (idempotency disarms a fourth hazard the naive version didn't even reach).</p>
+
+<h3>1. Chunk the work — bounded transactions, cursor not offset</h3>
+<div class="card calc">
+  <p>Process the table in fixed slices (<code>5,000</code> rows), each its <b>own</b> committed transaction. Two rules make the chunking cheap and correct:</p>
+  <p><b>Page by cursor, never offset (Lesson 18).</b> The tempting way to slice is <code>LIMIT 5000 OFFSET n</code> — but <code>OFFSET</code> makes the database <i>read and throw away</i> all <code>n</code> rows to reach your slice. At batch 400,000 that's <code>OFFSET 2,000,000,000</code>: the final batch alone scans ~2 billion rows to return 5,000. The cost grows with depth, and the whole run becomes <code>O(N²)</code> — it gets slower and slower as you go. Instead remember the last key: <code>WHERE id &gt; :last_id ORDER BY id LIMIT 5000</code>. Each batch is an <code>O(limit)</code> B-tree seek to <code>last_id</code> plus 5,000 rows (Lesson 12), <b>constant cost at any depth</b> — batch 400,000 is as cheap as batch 1.</p>
+  <p><b>Chunk on the indexed primary key, in order.</b> Walking by <code>id</code> means the "which rows are left?" question is always a fast range scan, and the cursor is a single number you can checkpoint. It also gives you a clean, gap-free sweep even as new rows arrive at the end.</p>
+</div>
+
+<h3>2. Checkpoint — write down how far you got</h3>
+<p>After each batch <b>commits</b>, record the cursor (<code>last_id = the max id in that batch</code>) to a durable place — a <code>backfill_progress</code> row, ideally in the same database. On startup, the job reads the checkpoint and resumes from <code>id &gt; last_id</code>. <span class="key">The checkpoint is the single line between "a crash costs half a second" and "a crash costs the whole run."</span> The subtlety: committing the batch and advancing the checkpoint is itself a two-write problem (Lesson 33's dual-write). If the batch commits but the process dies <i>before</i> the checkpoint is saved, restart will re-run that batch. Two clean fixes: put the checkpoint update <b>in the same transaction</b> as the batch (atomic — they commit or fail together), or make the batch idempotent so re-running it is harmless. Which brings us to part 3.</p>
+
+<h3>3. Idempotent re-runs — a replayed batch must be a no-op</h3>
+<div class="card calc">
+  <p>Because crashes and retries mean some batches <i>will</i> run twice, the transform must be safe to apply more than once (Lesson 13). Whether that's free or hard depends on the operation:</p>
+  <p><b>Self-guarding (free).</b> Our backfill is <code>UPDATE ... SET currency = ... WHERE currency IS NULL</code>. A row that was already filled no longer matches <code>currency IS NULL</code>, so a replay skips it automatically. Setting a derived value is naturally idempotent — writing the same answer twice is the same as writing it once.</p>
+  <p><b>Dangerous (needs a key).</b> If the backfill <i>incremented</i> a counter, <i>inserted</i> a row, or <i>appended</i> to a ledger (Lesson 25), replaying a committed-but-uncheckpointed batch would <b>double-count</b>. The fix is Lesson 13's: a natural idempotency key (e.g. <code>UNIQUE(order_id, backfill_version)</code>) or a conditional write, so the second application is rejected as a no-op. <span class="key">The rule: design the transform so that "did this batch already run?" is a question the data itself answers — never rely on "I'm pretty sure it didn't."</span></p>
+</div>
+
+<h3>4. Throttle against live load — replica lag is the feedback signal</h3>
+<p>The backfill is a guest; production is the host. So cap the rate (Lesson 08/28) to a target like 10,000 rows/s — but a fixed cap is a guess. The <b>adaptive</b> control is to watch a signal that tells you production is hurting and back off in real time. The best signal is <b>replica lag</b> (Lesson 06): the backfill's writes replicate to the read replicas, and if it writes faster than replicas can apply, lag climbs — which directly breaks read-your-writes for real users. So the loop is Lesson 27's controller pointed at lag: <i>measure replica lag → if it exceeds a threshold (say 1 s), cut the rate or pause → when it recovers, ramp back up.</i> This is Lesson 28's backpressure applied to a batch job: the live system pushes back, and the backfill yields. Secondary signals — primary CPU, DB queue depth, error rate — feed the same loop.</p>
+
+<p class="note why"><b>The four parts, each disarming one detonation:</b> <b>chunking</b> kills the all-or-nothing giant transaction (a failure costs one batch); <b>checkpointing</b> kills the restart-from-zero (a crash costs half a second); <b>idempotency</b> kills the double-count when a batch inevitably re-runs; <b>throttling</b> kills the production outage (the backfill spends only spare capacity). Drop any one and the corresponding failure comes straight back.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Follow the backfill through three moments: an ordinary batch, a crash at hour 50, and the moment production starts to feel the load.</p>
+
+<h3>Path A — the happy batch (repeated 400,000 times)</h3>
+<div class="diagram"><pre>
+  last_id := read_checkpoint()          # resume point, e.g. 8,412,326,000
+
+  loop:
+    rows := SELECT id, merchant_id FROM orders
+            WHERE id > :last_id AND currency IS NULL
+            ORDER BY id LIMIT 5000      # cursor seek, O(limit), L18/L12
+
+    if rows is empty: DONE
+
+    BEGIN                               # one small transaction, ~1 MB undo
+      for r in rows:
+        UPDATE orders SET currency = derive_currency(r.merchant_id)
+        WHERE id = r.id AND currency IS NULL     # idempotent guard, L13
+      UPDATE backfill_progress SET last_id = max(rows.id)   # checkpoint...
+    COMMIT                             # ...committed ATOMICALLY with the batch (L33)
+
+    sleep_to_hit_rate_target()         # throttle to ~10k rows/s, L08/L28
+    last_id := max(rows.id)
+
+  Each iteration: a cheap seek, a tiny committed txn, a durable checkpoint,
+  a pause. Nothing here can grow unbounded, roll back for hours, or lose
+  more than one batch. 400,000 of these = the whole 2B-row history.
+</pre></div>
+
+<h3>Path B — the crash at hour 50</h3>
+<div class="diagram"><pre>
+  A deploy restarts the worker at batch 380,000 (id ~ 1.9B, 95% done).
+
+  NAIVE (one big UPDATE):  the whole transaction rolls back -> 0% done.
+                           50 hours of work gone. Start over.
+
+  CHUNKED + CHECKPOINTED:  on restart, read_checkpoint() -> last_id = 1.9B.
+                           Resume from id > 1.9B. The ~5,000 rows in the
+                           in-flight batch fall into one of two cases:
+                             (a) batch never committed -> re-selected, redone.
+                             (b) batch committed but crash before checkpoint
+                                 -> re-run finds those rows already non-NULL
+                                    -> "WHERE currency IS NULL" skips them.
+                           Either way: no gap, no double-write. Cost of the
+                           crash: redo at most one 5,000-row batch (~0.5 s).
+
+  The idempotent guard is what makes case (b) safe: a replayed batch is a
+  no-op, so "did the checkpoint save?" stops being a question you must answer.
+</pre></div>
+
+<h3>Path C — production starts to feel it</h3>
+<div class="diagram"><pre>
+  Hour 12: an unrelated traffic spike pushes the primary toward its knee (L27).
+  The backfill is now writing INTO a database that has no spare capacity.
+
+  WITHOUT adaptive throttle (fixed 10k rows/s):
+     backfill keeps writing -> replication can't keep up -> replica lag
+     climbs 50 ms -> 4 s -> readers on replicas serve 4-second-stale data ->
+     read-your-writes breaks (L06) -> the spike + backfill together tip the
+     DB past the knee -> retry storm (L07). The backfill caused an incident.
+
+  WITH adaptive throttle (watch replica lag):
+     lag crosses 1 s -> controller cuts backfill rate to ~0 -> lag recovers
+     as the spike drains -> backfill ramps back up. Production never noticed;
+     the backfill just took a bit longer. The guest yielded to the host.
+
+  This is L28's backpressure with the batch job as the thing being pushed back.
+</pre></div>
+
+<p>Path A is the steady state everyone eventually gets right. Path B is why you checkpoint and why idempotency is load-bearing, not decoration: <span class="key">a job that runs for days is a job that will crash, so "resume cheaply" and "safe to redo a batch" are the difference between a hiccup and a lost weekend.</span> Path C is the whole trade in one picture: <span class="key">the backfill's only right to run is production's spare capacity, and the moment that spare vanishes, the backfill — not production — must give way.</span></p>
+
+<h2>Move 4 — Find the first bottleneck: the backfill and production fight over one machine</h2>
+<p>You've made each batch cheap, resumable, and idempotent. The wall that remains is structural and doesn't move: <span class="key">the history you're reprocessing lives in the same database that's serving live traffic, so the backfill competes with production for the exact same disk, CPU, and replication stream.</span> Its speed is bounded by production's headroom, not by your cleverness — and that has sharp consequences.</p>
+
+<div class="card calc">
+  <p><b>1. More workers don't escape the wall — they spend the headroom faster.</b> The obvious speedup is to <b>parallelize by key range</b> (Lesson 03): 8 workers, each owning a disjoint <code>id</code> range with its own cursor and checkpoint, gives <code>8 × 10,000 = 80,000 rows/s</code> → the run drops to <code>2,000,000,000 ÷ 80,000 = 25,000 s ≈ 6.9 h</code>. But 8 workers also put <b>8× the load</b> on the shared DB. You haven't beaten the constraint — you've spent the spare capacity 8× faster. Parallelism is bounded by <i>production's headroom ÷ per-worker load</i>, not by how many workers you can launch. Add a ninth worker past the headroom and you're back to Path C's incident.</p>
+  <p><b>2. The real escape is to move the heavy read OFF the primary.</b> The backfill's cost is mostly the giant <i>read</i> scan of history. So don't scan the primary at all: run the transform against a <b>read replica</b> or an <b>offline snapshot / warehouse copy</b> (Lesson 29) — the analytics-shaped store built exactly for full-history scans — compute the answers there, and write only the results back to the primary in small throttled batches. Now the 400 GB scan never touches the machine serving 50k reads/s; only the far smaller write stream does. <span class="key">You can't stop the backfill from competing with production, but you can move its biggest half to a copy that production doesn't depend on.</span></p>
+</div>
+
+<p>Two more walls sit behind those. <b>The backfill's duration IS the mixed-state window.</b> While it runs, <code>currency</code> is <i>partially</i> populated — some rows filled, some still <code>NULL</code> — so every reader must tolerate the gap (coalesce to a fallback, or read the old <code>total</code>) until the sweep completes and you flip the read path (Lesson 24's cutover, Lesson 31's staged rollout). A faster backfill shortens this fragile window; a throttled one lengthens it — the same throughput-vs-impact dial, now measured in <i>how long you live half-migrated</i>. <b>And a backfill of a live table chases a moving target:</b> new rows arrive at the end while you sweep. Chunking on the ascending primary key handles this cleanly (new ids are always ahead of your cursor, so you sweep right into them), but a backfill keyed on a mutable column, or one that must also fix rows written <i>during</i> the run, needs a second pass or a dual-write bridge (Lesson 24) so nothing slips through the gap between "backfilled" and "now."</p>
+
+<p><span class="key">The deepest point: a backfill is not a data problem, it's a <i>scheduling</i> problem. The transform is usually trivial; the hard part is dividing one busy database between the present and the past so that the past gets reprocessed without the present noticing. You do it by making the work interruptible (chunks), resumable (checkpoints), safe to redo (idempotency), and polite (adaptive throttle) — and then by accepting that its speed is a loan against production's spare capacity that you must repay the instant production needs it back.</span> The standing tension: throughput vs impact on the live system.</p>
+
+<h3>The scoreboard: each hazard and the part that disarms it</h3>
+<table>
+  <tr><th>Hazard in the naive one big UPDATE</th><th>Disarmed by</th><th>Pay in</th></tr>
+  <tr><td>All-or-nothing rollback of a 400 GB transaction</td><td>Chunk into 5,000-row committed batches</td><td>400,000 batches to orchestrate</td></tr>
+  <tr><td><code>OFFSET</code> scans get quadratically slower with depth (L18)</td><td>Cursor/keyset pagination on the indexed PK (L12)</td><td>work must be walkable by an ordered key</td></tr>
+  <tr><td>A crash at hour 50 restarts from zero</td><td>Checkpoint the cursor after every batch</td><td>a durable progress store + atomic-or-idempotent commit (L33)</td></tr>
+  <tr><td>A replayed batch double-counts (L13)</td><td>Idempotent transform / idempotency key</td><td>design the write to be safe to redo</td></tr>
+  <tr><td>Flat-out run crushes the live DB past the knee (L27)</td><td>Throttle, adaptive on replica lag (L06/L28)</td><td>the run takes days, not hours</td></tr>
+  <tr><td>Too slow → weeks-long fragile mixed state (L24)</td><td>Parallelize by key range (L03) within headroom</td><td>N× load; capped by production's spare capacity</td></tr>
+  <tr><td>Heavy history scan competes with live reads</td><td>Scan a replica / offline copy (L29), write results back</td><td>a second store; eventual-consistency lag on the copy</td></tr>
+  <tr><td>New rows arrive mid-sweep (moving target)</td><td>Sweep the ascending PK; dual-write bridge for in-flight (L24)</td><td>a second pass or a bridge to close the gap</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — one giant statement.</b> A single <code>UPDATE</code>/<code>DELETE</code> over billions of rows is one transaction that holds locks and undo for the whole run and rolls back all-or-nothing on any failure. Always chunk into small, independently committed batches so a failure costs one batch, not the run.</li>
+  <li><b>Trap 2 — <code>OFFSET</code> pagination.</b> <code>LIMIT n OFFSET k</code> reads and discards <code>k</code> rows every batch, so the job gets quadratically slower as it goes deep and the last batches crawl. Page by cursor (<code>WHERE id &gt; :last_id</code>) so every batch is a constant-cost B-tree seek (L18/L12).</li>
+  <li><b>Trap 3 — no checkpoint, or a non-idempotent transform.</b> Without a durable checkpoint, a crash at hour 50 starts over. And because a committed-but-uncheckpointed batch <i>will</i> re-run, a transform that increments/inserts without an idempotency key double-counts. Checkpoint every batch, and make the write safe to redo (L13).</li>
+  <li><b>Trap 4 — no throttle, or ignoring the live signals.</b> A backfill running flat-out steals the capacity production needs, blows up replica lag (breaking read-your-writes, L06) and tips the DB past its knee into a retry storm (L07/L27). Throttle to spare capacity and back off adaptively when replica lag or CPU rises (L28) — the backfill is the guest.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>Backfilling is reprocessing the past on machinery busy with the present. <b>Estimate</b> sized the job — 2 billion 200-byte rows = <code>400 GB</code>, ~<code>55 hours</code> at a production-safe 10k rows/s, <code>400,000</code> batches — and showed the one big <code>UPDATE</code> detonating three ways: all-or-nothing rollback, a live-DB outage, and no way to survive the crash a 55-hour run guarantees. <b>Model</b> gave the four-part kit, each disarming one detonation: <b>chunk</b> (bounded committed batches, cursor not offset, L18/L12), <b>checkpoint</b> (resume in 0.5 s instead of restarting 55 h), <b>idempotency</b> (a replayed batch is a no-op, L13/L33), and <b>throttle</b> (adaptive on replica lag, the guest yields to the host, L06/L28). <b>Tracing</b> walked the happy batch, a crash at hour 50 that costs one batch, and the spike where the adaptive throttle backs off so production never notices. The <b>first bottleneck</b> is structural: <span class="key">the backfill fights production for one machine's disk, CPU, and replication — so its speed is capped by production's headroom, not by worker count (parallelism just spends the headroom faster), and the real escape is to move the heavy history scan onto a replica or offline copy (L29) and write only results back.</span> Bounded further by the mixed-state window the backfill's duration defines (L24/L31) and by the moving target of rows arriving mid-sweep. <span class="key">A backfill is a scheduling problem wearing a data problem's clothes: make the work interruptible, resumable, redo-safe, and polite — then treat its speed as a loan against spare capacity you repay the instant production needs it back. The standing tension: throughput vs impact on the live system.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>We've now reprocessed billions of rows on one busy database. The next lesson asks what happens when "one database" becomes "two clouds":</b></p>
+  <p style="margin:.2rem 0">• <b>Multi-cloud &amp; vendor portability:</b> running the same system across two providers for resilience or negotiating leverage. The next lesson traces the two walls that make this far harder than "deploy it twice" — <b>data gravity</b> (moving petabytes between clouds is slow and the <b>egress bill</b>, Lesson 14, is brutal) and the choice between <b>lowest-common-denominator</b> services you can run anywhere vs the <b>managed services</b> that lock you in but do the work for you — plus where a control plane can span clouds and where it simply can't. The trade shifts to <b>portability &amp; resilience vs complexity &amp; cost.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">backfill</span>
+    <span class="pill">batch / chunk</span>
+    <span class="pill">cursor (keyset) pagination</span>
+    <span class="pill">checkpoint</span>
+    <span class="pill">idempotent re-run</span>
+    <span class="pill">throttle / rate limit</span>
+    <span class="pill">replica lag</span>
+    <span class="pill">headroom</span>
+    <span class="pill">all-or-nothing transaction</span>
+    <span class="pill">mixed-state window</span>
+    <span class="pill">parallelize by key range</span>
+  </p>
+  <p>That's Lesson 57, built on Lesson 24's expand/contract migration (the backfill is step 3 of it, generalized to billions of rows), Lesson 18's cursor-not-offset pagination and Lesson 12's B-tree seek (constant-cost batches at any depth), Lesson 13's idempotency and Lesson 33's dual-write/atomic-commit (a redone batch is a no-op), Lesson 06's replica lag (the throttle's feedback signal), Lesson 28's backpressure and Lesson 27's utilization knee (the backfill as the thing pushed back), Lesson 08's rate limiting, Lesson 03's shard-by-key-range parallelism, and Lesson 29's offline/warehouse copy (move the heavy scan off the primary). <b>Ask me follow-ups</b> — e.g. "how do you pick the batch size — what makes 5,000 right and 500,000 wrong?", "how would you backfill a table with no monotonic primary key to page by?", "when should the backfill write to a shadow column and swap, vs update in place?", "how do you make a backfill that INSERTS into a ledger idempotent without a natural unique key?", or "what changes when the transform is expensive CPU (an ML re-scoring) rather than a cheap lookup?" When you're ready, say <b>next</b> and we'll go deeper on <i>multi-cloud &amp; vendor portability — portability &amp; resilience vs complexity &amp; cost.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "An engineer needs to fill a new column across 2 billion historical rows on a live database. They run a single UPDATE ... WHERE currency IS NULL over the whole table. Name the failure modes and the right model.",
+    options: [
+      {t:"One statement over 2B rows is a single transaction that holds locks and undo/redo for the entire 400 GB of changes — if it fails at 95% it rolls back all-or-nothing (50 hours lost), it saturates the disk/CPU of the DB serving live traffic (an outage), and it has no way to resume the crash a multi-hour run guarantees. The fix is to chunk into small independently-committed batches, paged by cursor (WHERE id > :last_id, not OFFSET), checkpointed after each batch, made idempotent so a redone batch is a no-op, and throttled to production's spare capacity.",
+       ok:true,
+       fb:"Right. The three detonations — all-or-nothing rollback, live-system contention, and no resumability — map one-to-one onto chunk / throttle / checkpoint, with idempotency guarding the batch that inevitably re-runs. The transform was never the hard part; running it safely on a busy DB is."},
+      {t:"The statement is correct as written; the only improvement worth making is to add an index on the currency column first so the WHERE clause runs faster.",
+       ok:false,
+       fb:"An index doesn't touch the real problems: it's still one giant all-or-nothing transaction, still runs flat-out against live traffic, and still can't resume after a crash. Worse, indexing a column you're about to write to every row of just adds write amplification (L12). The failure is the shape of the job, not a missing index."},
+      {t:"Run it inside a stored procedure with autocommit off and a very long lock timeout so the database waits patiently instead of failing.",
+       ok:false,
+       fb:"That makes it worse: a longer lock timeout means the enormous transaction holds locks on billions of rows for even longer, blocking live writes and growing the undo log. You don't want the giant transaction to wait — you want to not have a giant transaction at all. Chunk it."}
+    ]
+  },
+  {
+    stem: "A backfill pages through the table with LIMIT 5000 OFFSET n, bumping n by 5000 each batch. It starts fast but each batch gets slower, and the last batches crawl. What's happening, and what's the fix?",
+    options: [
+      {t:"OFFSET makes the database read and discard all n preceding rows to reach each slice, so batch 400,000 does OFFSET 2,000,000,000 — scanning ~2 billion rows to return 5,000. Cost grows with depth and the whole run becomes O(N²). Switch to cursor/keyset pagination: remember the last id and query WHERE id > :last_id ORDER BY id LIMIT 5000, which is an O(limit) B-tree seek — constant cost whether it's batch 1 or batch 400,000.",
+       ok:true,
+       fb:"Exactly — this is Lesson 18's offset-vs-cursor wall inside a backfill. OFFSET counts positions from the start every time; a cursor names a stable place and seeks straight to it (L12). The cursor is also the natural thing to checkpoint."},
+      {t:"The database is running out of memory as it caches more rows each batch; adding RAM or restarting the DB between batches will keep every batch fast.",
+       ok:false,
+       fb:"It's not a memory-caching effect — OFFSET genuinely re-reads and discards the first n rows on the server for each query, so the work per batch rises regardless of RAM. Restarting the DB does nothing about the O(offset) scan. The fix is algorithmic (cursor pagination), not more hardware."},
+      {t:"The table is fragmenting as you update it, so you should VACUUM/rebuild the whole table between every batch to keep scans fast.",
+       ok:false,
+       fb:"Rebuilding a 400 GB table between every one of 400,000 batches would be astronomically more expensive than the backfill itself, and it doesn't address why deep OFFSETs are slow. The slowdown is the offset scan re-reading the prefix each time; cursor pagination removes it without any rebuild."}
+    ]
+  },
+  {
+    stem: "A chunked, checkpointed backfill crashes at hour 50, 95% done. The transform is UPDATE ... SET x = f(row) WHERE x IS NULL. A teammate worries the in-flight batch might have committed without its checkpoint saving, corrupting data on restart. Are they right?",
+    options: [
+      {t:"No — the transform is idempotent, so the ambiguity is harmless. On restart the job resumes from the last saved checkpoint. If the in-flight batch never committed, it's simply redone. If it committed but the checkpoint didn't save, re-running it finds those rows already non-NULL, so 'WHERE x IS NULL' skips them — a no-op. Either way there's no gap and no double-write. That's exactly why the transform is designed to be safe to redo (L13), and/or the checkpoint is committed atomically with the batch (L33).",
+       ok:true,
+       fb:"Right. 'Did the batch commit before the crash?' is a question you engineer away rather than answer: make the write self-guarding (WHERE x IS NULL) or commit the cursor in the same transaction as the batch. A redone batch must always be a no-op — that's what makes checkpointing safe."},
+      {t:"Yes — to be safe you must scan the entire table after restart to find and repair any rows that were written twice before resuming.",
+       ok:false,
+       fb:"A full 2B-row scan to hunt for double-writes would cost as much as the backfill again, and it's unnecessary: this UPDATE can't write a row twice to a different value — the second application matches nothing (WHERE x IS NULL) and does nothing. Idempotency makes the post-crash scan pointless. The worry only applies to non-idempotent transforms, which you fix with an idempotency key, not a rescan."},
+      {t:"Yes — checkpointed backfills are fundamentally unsafe after a crash; you should always restart from zero to guarantee correctness.",
+       ok:false,
+       fb:"Restarting from zero throws away the entire point of checkpointing (a 55-hour redo) and isn't more correct — an idempotent transform is safe to resume mid-way. Correctness comes from making batches redo-safe, not from redoing all of them. The checkpoint plus idempotency is the standard, safe pattern."}
+    ]
+  },
+  {
+    stem: "To finish a slow backfill sooner, an engineer launches 16 parallel workers, each backfilling a disjoint id range at 10k rows/s. Latency on the live app immediately spikes and replica lag climbs to 30 seconds. What's the underlying lesson?",
+    options: [
+      {t:"Parallelizing by key range multiplies throughput but also multiplies the load on the SAME shared database — 16 workers = 16× the disk/CPU/replication demand on the one machine serving live traffic. Worker count doesn't escape the constraint; it spends production's spare headroom faster, and past that headroom you tip the DB over (L27 knee) and outrun replication (replica lag breaks read-your-writes, L06). The backfill's speed is bounded by production's spare capacity — the real escape is to move the heavy history scan onto a replica or offline copy (L29) and write only results back, throttled.",
+       ok:true,
+       fb:"Right. This is the central wall: the backfill competes with production for one machine, so parallelism is capped by headroom ÷ per-worker load, not by how many workers you can start. Watch replica lag as the backpressure signal (L28) and back off; offload the scan to a copy to actually go faster."},
+      {t:"16 was simply the wrong number; 32 workers would finish faster and, being faster, would clear the backlog before replica lag becomes a problem.",
+       ok:false,
+       fb:"Doubling to 32 doubles the load again — it makes the knee and the replica lag worse, not better. The lag isn't a transient the backfill outruns; it's the replica falling further behind because writes exceed apply capacity. More workers past headroom is the accelerator toward an incident, not away from it."},
+      {t:"Replica lag is unrelated to the backfill; the app latency spike must be a coincidence, so the workers can keep running.",
+       ok:false,
+       fb:"The lag is directly caused by the backfill: 16× the write volume replicates to the read replicas faster than they can apply it, so they fall behind, and readers on them serve stale data — breaking read-your-writes (L06). It's the clearest signal that the backfill is stealing capacity production needs; the right response is to throttle, not to ignore it."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

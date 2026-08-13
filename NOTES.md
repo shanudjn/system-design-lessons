@@ -1052,9 +1052,38 @@
     compliance & privacy vs immutability & derived-data sprawl. (Lesson 0056)
 
 ### Advanced topics (next batch — queued so the course never runs dry)
-57. Bulk data pipelines & backfills — reprocessing history at scale: one-off migrations/backfills over billions
-    of rows (L24/29), rate-limiting against live load (L28), checkpointing + resumability, and idempotent
-    re-runs (L13). Trade: throughput vs impact on the live system.
+57. ✅ **Bulk data pipelines & backfills** — reprocessing history at scale: backfill a new `currency` column
+    across 2B historical `orders` rows (L12/24/25) on a live DB (50k reads/s) with zero downtime. The naive
+    single `UPDATE ... WHERE currency IS NULL` detonates THREE ways at once: (1) one all-or-nothing transaction
+    holding locks+undo for 400 GB (200 B/row × 2B) → fail at 95% = 50 h rolled back to zero; (2) runs flat-out →
+    saturates the disk/CPU serving live traffic → past L27 knee → L07 retry storm; (3) a ~55 h run (2B ÷ 10k
+    rows/s) WILL be interrupted (deploy/failover/OOM) and has no resume. Fix = a four-part kit, each disarming
+    one detonation: **chunk** into 5,000-row independently-committed batches (400k batches, ~1 MB undo each)
+    paged by **cursor not offset** (L18: `WHERE id > :last_id LIMIT 5000` = O(limit) B-tree seek L12, constant
+    at any depth; OFFSET re-reads+discards the prefix → O(N²), last batch scans ~2B rows); **checkpoint** the
+    cursor after each commit (crash costs ≤1 batch = 0.5 s, not 55 h) — but commit+checkpoint is itself L33's
+    dual-write, so put the cursor update IN THE SAME TXN as the batch OR make the batch idempotent; **idempotent
+    re-runs** (L13) so the committed-but-uncheckpointed batch that WILL re-run is a no-op (`WHERE currency IS
+    NULL` self-guards free; increments/inserts/ledger-appends L25 need a UNIQUE idempotency key); **throttle**
+    (L08/28) adaptive on **replica lag** (L06 — backfill writes replicate; outrun the replica → lag climbs →
+    read-your-writes breaks → back off; L27 controller pointed at lag, L28 backpressure on a batch job). Trace:
+    (A) happy batch (seek→transform→small txn→checkpoint→sleep-to-rate), (B) crash at hour 50 (resume from
+    checkpoint, in-flight batch redone or skipped — idempotency makes "did it commit?" a non-question), (C)
+    spike → lag crosses 1 s → throttle cuts rate → recovers → ramps (guest yields to host). First wall =
+    STRUCTURAL: backfill + production fight over ONE machine's disk/CPU/replication → speed capped by
+    production's HEADROOM not worker count (parallelize by key-range L03 → 8 workers = 8× throughput but 8× load
+    → spends headroom faster, doesn't escape); real escape = move the heavy history SCAN onto a replica/offline
+    copy (L29 warehouse, built for full-history scans), write only results back throttled. Two more walls =
+    backfill DURATION = the mixed-state window (partially-populated column, readers coalesce/fallback until
+    cutover L24/L31) and the moving target (new rows mid-sweep → ascending-PK sweep handles it, else 2nd pass /
+    dual-write bridge L24). Deepest point: a backfill is a SCHEDULING problem wearing a data problem's clothes —
+    make the work interruptible/resumable/redo-safe/polite, treat its speed as a loan against spare capacity
+    repaid the instant production needs it. Four traps: one giant statement; OFFSET pagination; no checkpoint /
+    non-idempotent transform; no throttle / ignoring replica lag. Reuses L24 expand/contract-backfill-step +
+    cutover + mixed-state, L18 cursor-not-offset, L12 B-tree seek + row/table sizes, L13 idempotency + L33
+    atomic-commit/dual-write, L06 replica lag, L28 backpressure + L27 knee/control-loop, L08 rate limit, L03
+    shard-by-key-range, L29 offline/warehouse copy, L07 retry storm, L25 ledger append, L46 durable resumable
+    job. Trade: throughput vs impact on the live system. (Lesson 0057)
 58. Multi-cloud & vendor portability — running across two providers for resilience/leverage: the data-gravity
     and egress-cost walls, lowest-common-denominator services vs managed lock-in, and where a control plane can
     span clouds vs where it can't. Trade: portability & resilience vs complexity & cost.
