@@ -1084,9 +1084,40 @@
     atomic-commit/dual-write, L06 replica lag, L28 backpressure + L27 knee/control-loop, L08 rate limit, L03
     shard-by-key-range, L29 offline/warehouse copy, L07 retry storm, L25 ledger append, L46 durable resumable
     job. Trade: throughput vs impact on the live system. (Lesson 0057)
-58. Multi-cloud & vendor portability — running across two providers for resilience/leverage: the data-gravity
-    and egress-cost walls, lowest-common-denominator services vs managed lock-in, and where a control plane can
-    span clouds vs where it can't. Trade: portability & resilience vs complexity & cost.
+58. ✅ **Multi-cloud & vendor portability** — the orders platform (L12/24/25/57, ~500 TB, 40k req/s) all on
+    Cloud A; leadership wants two clouds for resilience + price leverage. The naive "it's just containers, deploy
+    to B + point DNS at both" is CORRECT about compute and SILENT about data — and data is the whole problem
+    (compute is light/portable, data is heavy/stays put). Estimate the two walls: **data gravity** (seed 500 TB
+    to B = 500,000 GB × $0.09/GB = **$45k** egress once, + at 10 Gbps=1.25 GB/s → 400,000 s ≈ **4.6 days**, chasing
+    a moving target L57) + the **boundary tax** — every cross-provider byte is metered FOREVER (replicate the 5 MB/s
+    write stream ≈ 13 TB/mo = **$1,170/mo**, but serve 20k reads/s×2 KB across the line = 104 TB/mo = **$9,300/mo
+    ≈ $112k/yr** → the rule: keep compute next to its data; ingress free, egress $0.09/GB is the roach-motel L14).
+    Model 3 layers by portability: **stateless compute** (same image runs anywhere → do it, the easy half),
+    **stateful data** (heavy by gravity + sticky by proprietary managed-API SHAPE → anchors you, the whole cost),
+    **control plane** (global DNS/traffic mgr L50 spans both clouds free; a strongly-consistent truth / leader
+    CAN'T span them without re-paying L23's ~80-150 ms cross-boundary quorum + egress/message). Core dial =
+    **managed leverage** (hosted DB/queue/serverless: they operate it, proprietary API = locked in) vs **LCD**
+    (VMs/K8s/self-hosted Postgres/S3-compat: portable, but YOU run it again L10/34/47) — portability is insurance
+    with a continuous premium, pay it where a claim is likely not reflexively. Trace: (A) stateless request just
+    works (DNS steers, either cloud serves) until "reads/writes the data — where?"; (B) stateful fork — Option 1
+    single-home data in A (B reaches across = per-read egress $112k/yr + latency, cheap to build/ruinous to run)
+    vs Option 2 replicate (each cloud local copy → active/passive standby-promote OR active/active = L23 conflicts
+    ACROSS providers, scalar invariant L25 still can't split the ocean); (C) Cloud A provider-wide outage — Option 1
+    = B is a compute SHELL with no data = total outage anyway = **resilience theater**; Option 2 active/passive =
+    DNS fails over → promote B's replica → survives (cost: replication bill + promotion window + L06/23 lag =
+    data-loss window). First wall = **data gravity anchors the system**: compute was always portable, the cloud
+    locked you in with the heavy/metered/proprietary DATA → (1) the "we'll move to negotiate" leverage is a BLUFF
+    unless portability is paid continuously (and if it is, you've pre-paid most of the switching cost it was to
+    save); (2) real escape = don't fight gravity, shrink what crosses the boundary to the thin replication DELTA
+    (small) never the read traffic (huge) — L57 move-the-scan / L14 copy-near-the-user. Bounded further by strong
+    consistency that can't span providers cheaply (→ active/passive over active/active, or single-home the
+    invariant L23) + a DOUBLED multiplicative ops surface (2× IAM/networking/monitoring/on-call/bills L59). Honest
+    answer for most = a warm DR copy, not symmetric active/active. Four traps: multi-cloud=deploy-it-twice (no data
+    story); single-homed data behind a "resilient" 2nd cloud (theater); LCD-everything (throws away the managed
+    leverage that IS the reason to be on a cloud); believing the leverage bluff. Reuses L14 egress/copy-near-user,
+    L23 multi-region active-active/single-home-invariant, L50 global traffic mgr front door, L26 push-state-off-box
+    (compute portable), L57 move-heavy-scan-off-primary, L10/34/47 cost of self-run stateful infra, L06/11/25
+    consistency limits. Trade: portability & resilience vs complexity & cost. (Lesson 0058)
 59. Cost-aware architecture (FinOps) — designing for the bill: the dominant cost drivers (egress L14, storage
     tiers L39, compute utilization L27), attributing spend per tenant/feature (L40/54), and when the cheapest
     design is the wrong one. Trade: unit cost vs performance & headroom.

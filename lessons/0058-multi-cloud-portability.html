@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 58 — Multi-Cloud &amp; Vendor Portability: Why "Deploy It Twice" Is the Easy Half</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 58 · Worked Example</div>
+  <h1>Multi-Cloud &amp; Vendor Portability: Why "Deploy It Twice" Is the Easy Half</h1>
+  <p class="lead">Lesson 57 reprocessed billions of rows on <i>one</i> busy database. This lesson asks what happens when leadership says the words "we should be <b>multi-cloud</b>" — run the same system across two providers so a provider-wide outage can't take us down, and so we have negotiating leverage on price. The naive engineer hears "it's just containers, deploy the same images to the second cloud and put a load balancer in front" — and that half really is easy. The trap is that the easy half is the <i>stateless</i> half. <span class="key">Compute is light and portable; data is heavy and stays put.</span> This lesson takes one concrete system — <b>the orders platform (Lessons 12/24/25/57), all on Cloud&nbsp;A today, ~500&nbsp;TB of data, 40k req/s</b> — and traces what it actually takes to run it on Cloud&nbsp;A <i>and</i> Cloud&nbsp;B. We'll <b>estimate</b> the two walls that make this far harder than "deploy it twice": <b>data gravity</b> (moving 500&nbsp;TB is slow and the <b>egress bill</b> is brutal, Lesson 14) and the fact that every byte crossing the provider boundary is <b>metered forever</b>. We'll <b>model</b> the real choice — <b>lowest-common-denominator</b> services you can run anywhere vs <b>managed</b> services that do the work but lock you in — and where a control plane can span clouds vs where it simply can't. We'll <b>trace</b> the portable stateless path, the stubborn stateful path, and the outage that reveals whether your "resilience" was real or theater. The trade underneath: <b>portability &amp; resilience vs complexity &amp; cost.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0058-multi-cloud-portability.html"</code></p>
+</header>
+
+<h2>The one decision we'll design</h2>
+<p>Our orders platform runs entirely on <b>Cloud&nbsp;A</b>: stateless app servers (Lesson 27's fleet), a managed relational database holding <b>~500&nbsp;TB</b> of orders and ledger data (Lessons 12/25), a managed object store for receipts and exports (Lesson 20), a managed queue (Lesson 09), and a managed data warehouse (Lesson 29). It serves <b>40,000 req/s</b>. Leadership wants two things from going multi-cloud:</p>
+<ul>
+  <li><b>Resilience.</b> "If Cloud&nbsp;A has a provider-wide or account-level failure, we don't want to be down with it." (A single provider can and does fail across all its regions at once — a global control-plane bug, an account lockout, a billing dispute.)</li>
+  <li><b>Leverage.</b> "If we can credibly move to Cloud&nbsp;B, we can negotiate Cloud&nbsp;A's bill down."</li>
+</ul>
+<p>The junior engineer's plan is one sentence: <i>"Our app is containers behind a load balancer. I'll build the same images, deploy them to Cloud&nbsp;B, and point global DNS at both."</i> That sentence is <b>correct about the compute and silent about the data</b> — and the data is the entire problem. Here's the shape of the system and where the sentence runs out:</p>
+
+<div class="diagram"><pre>
+  "Deploy it twice" — the easy half is drawn solid, the hard half dashed.
+
+        users
+          |
+   [ global DNS / traffic mgmt ]   <- spans BOTH clouds (it's above them, L50)
+        /                \
+       v                  v
+  +----CLOUD A----+   +----CLOUD B----+
+  | app servers   |   | app servers   |   <- STATELESS: same container runs
+  | (stateless)   |   | (stateless)   |      anywhere. Portable. Cheap to move.
+  |     |         |   |     |         |      THIS is the easy half.
+  |     v         |   |     :         |
+  | [ 500 TB DB ] |   | [   ??????  ] |   <- STATEFUL: heavy, metered to cross
+  | [ object store]|  | [   ??????  ] |      the boundary, proprietary APIs.
+  | [ queue,warehouse] | [ ??????  ] |      THIS is the whole problem.
+  +---------------+   +---------------+
+          \                  /
+           `--- every byte that crosses this line is EGRESS: $0.09/GB,
+                one way, forever. Data checks in free, checks out expensive.
+</pre></div>
+
+<p class="note"><span class="key">Multi-cloud is not "run the servers in two places." Running stateless servers in two places is a solved, cheap problem. Multi-cloud is "keep the <i>data</i> correct, available, and affordable across a boundary that charges you per byte and adds latency."</span> The compute is the tip; the data is the lesson.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Multi-cloud</b> — intentionally running a system across two or more cloud providers (e.g. AWS + GCP), as opposed to multi-<i>region</i> (Lesson 23), which is one provider in many places.</li>
+  <li><b>Vendor lock-in</b> — the cost, in time and rewrite effort, of leaving a provider. High when you depend on that provider's proprietary services; low when you depend only on open standards.</li>
+  <li><b>Portability</b> — how easily a workload can be moved to run somewhere else. It is a property you build and pay for continuously, not one you have by default.</li>
+  <li><b>Data gravity</b> — the tendency of large data to pull compute toward it and resist being moved: the bigger the dataset, the slower and more expensive it is to relocate, so it stays where it is and everything else orbits it.</li>
+  <li><b>Egress</b> — data leaving a provider's network. Almost always <i>metered</i> (~$0.09/GB), while <b>ingress</b> (data coming in) is free — a deliberate asymmetry that makes leaving expensive (Lesson 14).</li>
+  <li><b>Managed service</b> — a proprietary service the provider operates for you (their hosted database, queue, serverless runtime). You trade a proprietary API for not having to run it yourself.</li>
+  <li><b>Lowest-common-denominator (LCD)</b> — building only on capabilities that exist on every provider (raw VMs, containers/Kubernetes, an S3-compatible object API, open-source Postgres you run yourself). Portable, but you operate it.</li>
+  <li><b>Control plane</b> — the part of a system that <i>decides and coordinates</i> (who's the leader, what the config is, where traffic goes), as opposed to the <b>data plane</b> that carries the actual work (Lessons 10/34/50).</li>
+</ul>
+
+<h2>Move 1 — Estimate: the two walls, in numbers</h2>
+<p>Two quantities decide whether multi-cloud is a weekend of YAML or a multi-year program: how hard it is to <i>move</i> the data once, and how much it costs to keep the data <i>synced or served</i> across the boundary forever. Both come from the same brutal fact — <span class="key">egress is metered and data is big.</span></p>
+
+<div class="card calc">
+  <p><b>1. Data gravity — moving 500&nbsp;TB once is slow AND expensive.</b> To seed Cloud&nbsp;B with a copy of the database, you must pull <code>500&nbsp;TB = 500,000&nbsp;GB</code> out of Cloud&nbsp;A. Two costs land at once:</p>
+  <p>• <b>The bill.</b> Egress at <code>$0.09/GB</code> (Lesson 14) → <code>500,000&nbsp;GB × $0.09 = $45,000</code> for a single copy. Ingress into Cloud&nbsp;B is free, but the door out of A has a turnstile on it.</p>
+  <p>• <b>The clock.</b> Even over a fat <code>10&nbsp;Gbps</code> link (<code>10&nbsp;Gbps ÷ 8 = 1.25&nbsp;GB/s</code>), the transfer takes <code>500,000&nbsp;GB ÷ 1.25&nbsp;GB/s = 400,000&nbsp;s ≈ 4.6&nbsp;days</code> of continuous, uninterrupted streaming — and real throughput is lower. <span class="key">Half a terabyte per second of writes never stops arriving while you copy, so the copy chases a moving target (Lesson 57).</span> This is data gravity made concrete: the data is so heavy that moving it is a <i>project</i>, not a command.</p>
+</div>
+
+<div class="card calc">
+  <p><b>2. The boundary tax — keeping data synced or served across clouds costs forever.</b> A one-time copy isn't multi-cloud; you need the two sides to stay useful. Both ways of doing that meter every byte:</p>
+  <p>• <b>Continuous replication.</b> The database takes <code>5,000 writes/s × ~1&nbsp;KB = 5&nbsp;MB/s</code>. Replicating those to Cloud&nbsp;B is <code>5&nbsp;MB/s × 2,592,000&nbsp;s/month ≈ 13&nbsp;TB/month</code> → <code>13,000&nbsp;GB × $0.09 = ~$1,170/month</code>. Modest for the DB alone — but multiply by object store, warehouse, and backups and it climbs.</p>
+  <p>• <b>Serving across the boundary.</b> Far worse: if you put <i>compute</i> in Cloud&nbsp;B but leave the <i>data</i> in Cloud&nbsp;A, every read crosses the line. <code>20,000 reads/s × 2&nbsp;KB = 40&nbsp;MB/s → 104&nbsp;TB/month → 104,000&nbsp;GB × $0.09 = ~$9,300/month ≈ $112,000/year</code> — a permanent tax for the privilege of running your servers away from your data. <span class="key">The numbers force one rule: keep compute next to its data. A hot path that crosses the provider boundary bleeds money every second it runs.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off — portability &amp; resilience vs complexity &amp; cost.</b> Everything above is one dial. Push toward <b>real</b> multi-cloud (two live copies of the data, kept in sync) and you buy resilience and leverage — paid in a continuous egress bill, a second operations burden, and the hardest distributed-systems problem there is (keeping state consistent across a boundary you don't control). Push toward <b>simple</b> (data single-homed in Cloud&nbsp;A, Cloud&nbsp;B idle or empty) and you save the money and complexity — but the resilience you were buying quietly evaporates, because a compute shell with no data can't serve anyone. There is no setting that is portable, resilient, <i>and</i> cheap.</p>
+
+<h2>Move 2 — Model: what's portable, what's sticky, where the line falls</h2>
+<p>The system splits cleanly into three layers by how hard each is to run on a second cloud. Naming the split is the model, because it tells you exactly where the work is.</p>
+
+<h3>Layer 1 — Stateless compute: genuinely portable</h3>
+<p>App servers hold no durable truth (Lesson 26 taught us to push state <i>off</i> the disposable box). A container image runs the same on any provider's VMs or Kubernetes. Moving this layer is a build-and-deploy, not a migration. <span class="key">This is the half the naive plan gets right — and the half that's least of the work.</span> If your whole system were stateless, multi-cloud would be trivial. It never is.</p>
+
+<h3>Layer 2 — Stateful data: the sticky core</h3>
+<div class="card calc">
+  <p>The database, object store, and warehouse hold the truth, and they resist moving for two independent reasons that stack:</p>
+  <p><b>Weight (data gravity).</b> As Move&nbsp;1 showed, 500&nbsp;TB is slow and expensive to move and to keep synced. The bigger it grows, the more it anchors you.</p>
+  <p><b>Shape (API lock-in).</b> A managed database isn't just rows — it's a <i>proprietary API and set of guarantees</i>. Cloud&nbsp;A's managed store might offer specific transaction semantics, a specific query dialect, specific auto-scaling behavior. Cloud&nbsp;B's nearest equivalent behaves differently. Moving isn't <code>cp</code>; it's a <b>rewrite and re-test</b> of everything that touches the data. <span class="key">Weight makes the bytes hard to move; shape makes the code hard to move. You pay both.</span></p>
+</div>
+
+<h3>Layer 3 — The control plane: sometimes spans, sometimes can't</h3>
+<div class="card calc">
+  <p>Coordination is a mixed bag — some of it is naturally <i>above</i> any single cloud, some of it fundamentally can't straddle two:</p>
+  <p><b>Spans cleanly (it lives above the clouds).</b> Global DNS / traffic management (Lesson 50) is designed to point at addresses in any provider — it's the natural front door for multi-cloud. CI/CD pipelines and infrastructure-as-code (Terraform) describe both clouds from one place. These are portable by nature.</p>
+  <p><b>Can't span cheaply (it needs tight, low-latency agreement).</b> A strongly-consistent database or a leader election (Lessons 10/23) needs a <b>quorum that agrees quickly</b>. Stretch that quorum across two providers and every decision pays the cross-cloud round trip (~<code>80–150&nbsp;ms</code>, higher than cross-region because there's no shared backbone) <i>and</i> egress on every coordination message. <span class="key">You can put the traffic director above both clouds, but you cannot put a single strongly-consistent source of truth in both clouds without re-importing every latency and cost wall from Lesson 23 — now made worse by a boundary that meters bytes.</span></p>
+</div>
+
+<h3>The core choice: managed leverage vs lowest-common-denominator portability</h3>
+<div class="card calc">
+  <p>This is the decision that quietly determines your lock-in years before anyone says "multi-cloud." Every service you build on sits on a spectrum:</p>
+  <p><b>Managed (do it for me → locked in).</b> Use Cloud&nbsp;A's hosted database, serverless functions, and queue. The provider operates, scales, patches, and backs them up — enormous operational leverage, the actual reason to be on a cloud. The price is a proprietary API: leaving means a rewrite.</p>
+  <p><b>Lowest-common-denominator (I run it → portable).</b> Use only what exists everywhere — raw VMs, Kubernetes, self-hosted Postgres, an S3-compatible object API. The same stack runs on any provider, so you're portable. The price is that you're back to <i>operating</i> the database yourself (Lessons 10/34/47), giving up the managed magic you came to the cloud for.</p>
+  <p><span class="key">Portability is insurance with a continuous premium. You pay it in engineering effort and forgone managed features whether or not you ever "cash it in" by actually switching. The question is never "portable or not" — it's "how much premium is this specific insurance worth, given how likely we are to claim it?"</span></p>
+</div>
+
+<p class="note why"><b>The three layers, each with its own verdict:</b> <b>stateless compute</b> is portable and cheap to duplicate (do it); <b>stateful data</b> is heavy (data gravity) and proprietary (API shape), so it anchors you to one provider and is the whole cost; <b>the control plane</b> splits — the traffic director spans both clouds for free, but a single strongly-consistent truth can't span them without re-paying Lesson 23's latency and this lesson's egress. The lock-in you'll feel later is set by today's managed-vs-LCD choices, made one service at a time.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Follow three journeys: the portable stateless path (easy), the stubborn stateful path (hard), and the outage that tells you whether your resilience was real.</p>
+
+<h3>Path A — the stateless request (the half that just works)</h3>
+<div class="diagram"><pre>
+  user -> global DNS/traffic mgr (L50) -> picks nearest healthy cloud
+                                          |
+              +---------------------------+---------------------------+
+              v                                                       v
+        CLOUD A app server                                      CLOUD B app server
+        (same container image)                                 (same container image)
+              |                                                       |
+              v  reads/writes the DATA that lives in... where?  <-----+  <- the catch
+
+  The compute layer is symmetric and portable: identical images, DNS steers
+  by proximity/health, either cloud can serve the stateless work. If the app
+  held no state, we'd be DONE here. The arrow "reads/writes the data" is where
+  the easy story ends and Path B begins.
+</pre></div>
+
+<h3>Path B — the stateful path: two honest options, each with a bill</h3>
+<div class="diagram"><pre>
+  OPTION 1 — SINGLE-HOME the data in Cloud A; Cloud B compute reaches across.
+     Cloud B app --- read/write over the boundary ---> Cloud A DB
+     Cost: every hot-path byte is EGRESS (~$9,300/mo for 20k reads/s, Move 1)
+           + ~80-150 ms cross-cloud latency on every query (L23 x boundary).
+     Verdict: cheap to BUILD, ruinous to RUN, and slow. Compute is not next
+              to its data. Fine for a tiny B footprint, fatal at scale.
+
+  OPTION 2 — REPLICATE the data so each cloud has a local copy.
+     Cloud A DB  <===== async replication (~$1,170/mo + forever) =====>  Cloud B DB
+     Now each cloud's compute reads LOCALLY (fast, no per-read egress). But
+     two live writable copies = L23's conflict problem, now ACROSS PROVIDERS:
+       - active/passive: B is read-only standby, promoted on failover (simpler,
+         B's capacity mostly idle, a promotion window).
+       - active/active: both take writes -> conflicts -> LWW/CRDT (L23), and a
+         scalar invariant (a balance, L25) still can't be split across the ocean.
+     Verdict: real resilience, real cost, the hardest distributed-systems work.
+
+  There is no third option where the data is both everywhere AND free AND
+  strongly consistent. Pick which two you're buying.
+</pre></div>
+
+<h3>Path C — Cloud A has a provider-wide outage (the moment of truth)</h3>
+<div class="diagram"><pre>
+  The whole reason we did this. Does Cloud B actually take over?
+
+  IF we chose Option 1 (data single-homed in A):
+     Cloud A is down -> the DB is down -> Cloud B app servers are a COMPUTE
+     SHELL with nothing to read or write -> total outage anyway.
+     We paid for two clouds and got the availability of one. RESILIENCE THEATER.
+
+  IF we chose Option 2, active/passive (B holds a live replica):
+     DNS/traffic mgr (L50) health-checks A -> fails -> steers users to B ->
+     B's replica is promoted to primary -> service continues. Costs paid:
+     the replication bill, the promotion window (seconds-to-minutes), and any
+     writes in A not yet replicated at the instant it died (L06/L23 lag = data
+     loss window). THIS is resilience you can actually collect.
+
+  The test of a multi-cloud design is not "is there a second cloud?" It is
+  "when the first cloud dies, can the second one serve the DATA?" If the data
+  isn't really there, the second cloud is decoration.
+</pre></div>
+
+<p>Path A is the half everyone demos. Path B is the fork the demo skips: <span class="key">you either pay egress + latency on every cross-boundary request (Option 1) or you pay continuous replication + the full weight of cross-provider consistency (Option 2) — there is no free version.</span> Path C is the audit: <span class="key">resilience is only real if the failing-over cloud can reach the data, which means Option 1's tidy single-homed design buys you exactly zero of the availability you were paying two clouds for.</span></p>
+
+<h2>Move 4 — Find the first bottleneck: data gravity anchors the whole thing</h2>
+<p>You can make the compute perfectly portable and still be firmly locked to one provider, because the wall isn't the servers — it's the data underneath them. <span class="key">Compute is light: a container is a few hundred megabytes and runs anywhere. Data is heavy: 500&nbsp;TB is slow to move, metered to cross, and shaped by a proprietary API. So the data decides where the system lives, and everything else orbits it.</span> That single fact has sharp consequences.</p>
+
+<div class="card calc">
+  <p><b>1. The leverage argument is mostly a bluff — unless you keep paying to make it real.</b> "We'll move to Cloud&nbsp;B to negotiate A's price down" only works if you actually <i>could</i> move. But data gravity means moving 500&nbsp;TB is a <code>4.6-day</code>, <code>$45,000</code>, multi-quarter rewrite of everything built on A's managed services. A vendor knows this. <span class="key">The threat to leave is only credible if you've spent continuously on portability (LCD services, abstraction layers, a warm second copy) — and if you've spent that much, you've already paid most of the cost the threat was supposed to save.</span> Leverage isn't free; it's pre-paid.</p>
+  <p><b>2. The real escape is to shrink what must cross the boundary.</b> You can't make 500&nbsp;TB weightless, but you can arrange for very little of it to travel. Keep each cloud's compute next to its own local copy of the data (Option 2), so the only thing crossing the boundary is the <i>replication stream</i> (small, ~$1,170/mo) — never the <i>read traffic</i> (huge, ~$112k/yr). This is the same move as Lesson 57's "move the heavy scan off the primary" and Lesson 14's "put a copy near the user": <span class="key">don't fight data gravity, respect it — put a local copy where the compute is, and let only the thin delta cross the expensive line.</span></p>
+</div>
+
+<p>Two more walls sit behind those. <b>Consistency can't span providers for free.</b> A strongly-consistent value — an account balance, a "seat sold" flag (Lessons 11/23/25) — cannot live authoritatively in both clouds without a quorum stretched across the boundary, paying ~<code>80–150&nbsp;ms</code> and egress on every write. So the honest multi-cloud pattern is usually <b>active/passive</b> (one cloud owns the writes, the other is a warm replica ready to be promoted) rather than true active/active, or it single-homes each strongly-consistent key to one cloud (Lesson 23's "single-home the invariant") and accepts that the other cloud reaches across for those specific operations. <b>And a second cloud doubles your operational surface:</b> two sets of IAM, two networking models, two monitoring stacks, two on-call runbooks, two bills to reconcile (Lesson 59's problem). The complexity isn't additive, it's multiplicative — every incident now asks "which cloud, and did the boundary between them play a role?"</p>
+
+<p><span class="key">The deepest point: multi-cloud is not a compute problem, it's a data-placement problem. Stateless servers were always portable; the cloud never locked you in with CPUs. It locked you in with gravity — the 500&nbsp;TB that's slow to move, metered to cross, and shaped by a proprietary API — and with the managed services you adopted one convenient decision at a time. So "should we be multi-cloud?" is really "how much are we willing to pay, forever, to keep our data in two places and our code free of any one provider's API?" For most teams the honest answer is a warm second copy for disaster recovery, not symmetric active/active — resilience you can actually collect, at a premium you can actually afford.</span> The standing tension: portability &amp; resilience vs complexity &amp; cost.</p>
+
+<h3>The scoreboard: each promise and what it really costs</h3>
+<table>
+  <tr><th>The multi-cloud promise</th><th>What actually delivers it</th><th>Pay in</th></tr>
+  <tr><td>"Just deploy the app to a second cloud"</td><td>Portable stateless containers + global DNS (L50)</td><td>nearly free — but it's only the compute half</td></tr>
+  <tr><td>Survive a provider-wide outage</td><td>A live local data replica in the second cloud (Option 2)</td><td>continuous replication egress + full cross-provider consistency (L23)</td></tr>
+  <tr><td>Single-home the data, keep it simple</td><td>Cloud B compute reads across the boundary (Option 1)</td><td>~$112k/yr egress + cross-cloud latency; ZERO real resilience if A dies</td></tr>
+  <tr><td>Negotiating leverage on price</td><td>Genuine, continuously-maintained portability</td><td>LCD services + abstraction layers = most of the switching cost, pre-paid</td></tr>
+  <tr><td>Managed-service convenience everywhere</td><td>Each cloud's proprietary DB/queue/serverless</td><td>lock-in: leaving is a rewrite, not a copy</td></tr>
+  <tr><td>Portable, run-anywhere stack</td><td>Lowest-common-denominator services you self-operate</td><td>you run the database yourself again (L10/34/47) — the managed magic is gone</td></tr>
+  <tr><td>Strong consistency in both clouds</td><td>A quorum stretched across the boundary</td><td>~80–150 ms/decision + egress per message; usually not worth it → active/passive</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — "multi-cloud = deploy it twice."</b> Duplicating stateless servers is the easy, cheap half; it says nothing about the data. The entire difficulty is keeping the stateful core correct, available, and affordable across a metered boundary. If your plan doesn't have a data story, it isn't a multi-cloud plan.</li>
+  <li><b>Trap 2 — single-homed data behind a "resilient" second cloud.</b> If Cloud&nbsp;A holds the only copy of the truth and A goes down, Cloud&nbsp;B is a compute shell with nothing to serve — you paid for two clouds and got the availability of one. Resilience requires the failing-over cloud to actually reach the data.</li>
+  <li><b>Trap 3 — LCD-everything "to stay portable."</b> Refusing every managed service to avoid lock-in throws away the operational leverage that is the reason to be on a cloud, and makes you run databases and queues yourself. Portability is insurance with a real premium; pay it only where a claim is likely, not reflexively everywhere.</li>
+  <li><b>Trap 4 — believing the leverage bluff.</b> "We'll just move" is empty if data gravity means you actually can't in any reasonable time or budget. The threat is only credible if you've already spent continuously on portability — at which point you've pre-paid most of what the threat was meant to save.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>Multi-cloud is a data-placement problem wearing a compute problem's clothes. <b>Estimate</b> sized the two walls: moving <code>500&nbsp;TB</code> once is <code>~4.6 days</code> and <code>$45,000</code> of egress (data gravity), and keeping the two sides useful is a permanent tax — <code>~$1,170/mo</code> to replicate the write stream, but <code>~$112k/yr</code> to serve reads across the boundary, which forces the rule <i>keep compute next to its data</i>. <b>Model</b> split the system into three layers: stateless compute (portable, do it), stateful data (heavy by gravity + sticky by proprietary API — the whole cost), and the control plane (the traffic director spans both clouds for free, but a single strongly-consistent truth can't span them without re-paying Lesson 23's latency), with the quiet lock-in decision being <b>managed leverage vs lowest-common-denominator portability</b>, made one service at a time. <b>Tracing</b> walked the stateless request that just works, the stateful fork where you pay either per-read egress (single-home) or continuous replication + cross-provider consistency (replicate), and the outage that reveals single-homed data as resilience theater. The <b>first bottleneck</b> is data gravity itself: <span class="key">compute is light and was always portable; the cloud locked you in with the heavy, metered, proprietary-shaped data — so the data decides where the system lives, the leverage argument is a pre-paid bluff, and the real escape is to shrink what crosses the boundary to a thin replication delta, never the read traffic.</span> Bounded further by the fact that strong consistency can't span providers cheaply (hence active/passive over active/active) and by a doubled, multiplicative operational surface. <span class="key">For most teams the honest answer is a warm second copy for disaster recovery — resilience you can actually collect — not symmetric active/active. The standing tension: portability &amp; resilience vs complexity &amp; cost.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>We've now seen that every byte crossing a cloud boundary has a price tag — and that the whole design bends around cost. The next lesson makes the bill itself the design constraint:</b></p>
+  <p style="margin:.2rem 0">• <b>Cost-aware architecture (FinOps):</b> designing for the invoice, not just the latency graph. The next lesson traces the dominant cost drivers — <b>egress</b> (Lesson 14/58), <b>storage tiers</b> (Lesson 39), and <b>compute utilization</b> (Lesson 27) — how to attribute spend per tenant and per feature (Lessons 40/54) so you know <i>what</i> is expensive, and when the cheapest design is the wrong one (the headroom you deleted to save money is the headroom the next spike needed). The trade shifts to <b>unit cost vs performance &amp; headroom.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">multi-cloud</span>
+    <span class="pill">vendor lock-in</span>
+    <span class="pill">portability</span>
+    <span class="pill">data gravity</span>
+    <span class="pill">egress / ingress</span>
+    <span class="pill">managed service</span>
+    <span class="pill">lowest-common-denominator</span>
+    <span class="pill">control plane / data plane</span>
+    <span class="pill">active/passive vs active/active</span>
+    <span class="pill">resilience theater</span>
+  </p>
+  <p>That's Lesson 58, built on Lesson 14's egress economics and speed-of-light copies, Lesson 23's multi-region active-active and single-home-the-invariant (now stretched across providers), Lesson 50's global traffic management as the front door that spans both clouds, Lesson 26's push-state-off-the-disposable-box (why compute is portable), Lesson 57's move-the-heavy-scan-off-the-primary (respect data gravity), Lessons 10/34/47's cost of running your own stateful infrastructure (what LCD buys back), and Lessons 06/11/25's consistency limits (why strong consistency can't span the boundary for free). <b>Ask me follow-ups</b> — e.g. "how do you actually keep two managed databases on different clouds in sync?", "when IS true active/active across clouds worth it?", "what's the difference between multi-cloud and hybrid cloud (on-prem + cloud)?", "how do abstraction layers like Kubernetes or Terraform help portability, and where do they leak?", or "how do you decide, per service, how much lock-in is acceptable?" When you're ready, say <b>next</b> and we'll go deeper on <i>cost-aware architecture (FinOps) — unit cost vs performance &amp; headroom.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "A team says \"we're going multi-cloud\" and plans to build the same container images, deploy them to a second provider, and point global DNS at both clouds. What's the flaw in calling that a multi-cloud plan?",
+    options: [
+      {t:"The plan only addresses the stateless compute layer, which was always the easy, portable half — a container runs the same anywhere. It's silent about the stateful data (the 500 TB database, object store, warehouse), which is heavy (slow and metered to move — data gravity + egress) and proprietary-shaped (a managed service's API, not a file you can copy). Multi-cloud's entire difficulty is keeping that data correct, available, and affordable across a boundary that charges per byte and adds latency. A plan with no data story isn't a multi-cloud plan.",
+       ok:true,
+       fb:"Right. Duplicating stateless servers is nearly free and proves nothing about resilience. The lock-in and the cost both live in the data: where it is, how it crosses the boundary, and whether the second cloud can actually reach it when the first one dies."},
+      {t:"The flaw is using DNS for traffic steering — you should use anycast instead, since DNS can't point at two different clouds.",
+       ok:false,
+       fb:"DNS-based global traffic management (L50) is exactly the right, natural front door for multi-cloud — it lives above any single provider and can point at addresses in both. The steering layer isn't the problem; the data layer underneath the app servers is. Swapping DNS for anycast changes nothing about where the 500 TB lives."},
+      {t:"There's no flaw — deploying the same images to two clouds behind a load balancer is a complete multi-cloud architecture.",
+       ok:false,
+       fb:"That's the trap. Stateless duplication is the easy tenth of the work. It says nothing about the data: if the database still lives only in Cloud A, the second cloud is a compute shell that can't serve anyone when Cloud A fails — you'd have paid for two clouds and bought the availability of one."}
+    ]
+  },
+  {
+    stem: "To save complexity, a team runs app servers in both clouds but keeps the single source-of-truth database only in Cloud A; Cloud B's servers read and write across the boundary. Two problems show up. Which pair is real?",
+    options: [
+      {t:"(1) Cost/latency in normal operation: every hot-path read from Cloud B crosses the provider boundary as metered egress (~$0.09/GB → roughly $112k/year at 20k reads/s of 2 KB) and pays ~80–150 ms cross-cloud latency per query — because the compute isn't next to its data. (2) No real resilience: if Cloud A has a provider-wide outage, the only copy of the data goes down with it, so Cloud B's servers become a compute shell with nothing to serve — a total outage anyway. Single-homed data is resilience theater.",
+       ok:true,
+       fb:"Exactly. Option 1 (single-home the data) is cheap to build and ruinous to run, and it delivers zero of the availability that was the whole point. The numbers force the rule: keep compute next to its data, and if you want real failover, the data must actually be present in the second cloud."},
+      {t:"(1) The container images will drift between clouds. (2) The load balancer will pick the wrong region.",
+       ok:false,
+       fb:"Neither is the core issue and both are easily managed (one image registry; health-based steering, L50). The real problems are structural and unavoidable in this design: you pay egress + latency on every cross-boundary read, and you get no resilience because the data is single-homed. Those don't go away with better CI or a smarter LB."},
+      {t:"(1) Cloud B will have a different CPU architecture. (2) Egress is free, so there's no cost problem — only a latency one.",
+       ok:false,
+       fb:"Egress is the opposite of free — it's the metered direction (~$0.09/GB), while ingress is free; that asymmetry is the whole point (L14). Serving 20k reads/s across the boundary is ~$112k/year, a permanent tax. And CPU architecture is a non-issue for portable containers. The real pair is per-read egress cost and the absence of true resilience."}
+    ]
+  },
+  {
+    stem: "An architect insists on refusing every managed service (no hosted database, no serverless, no managed queue) and running only self-hosted open-source equivalents on plain VMs in every cloud, \"so we're never locked in.\" What's the trade they're making?",
+    options: [
+      {t:"They're buying portability (a lowest-common-denominator stack runs the same anywhere) by giving up managed leverage — the operational relief that is the main reason to be on a cloud at all. Now they operate the database, queue, and their scaling/patching/backups themselves (L10/34/47). Portability is insurance with a continuous premium paid in engineering effort and forgone features, whether or not they ever switch. It's worth paying where a switch is genuinely likely — but paying it reflexively everywhere can cost more than the lock-in it avoids.",
+       ok:true,
+       fb:"Right. Managed-vs-LCD is the real lock-in dial, set one service at a time. LCD isn't free portability; it's portability bought with the operational burden the cloud existed to remove. Match the premium to the probability of a claim, per service — don't buy the whole policy on reflex."},
+      {t:"There's no trade — self-hosting open-source software is strictly better because it's always cheaper and easier to operate than a managed service.",
+       ok:false,
+       fb:"Self-hosting is precisely the operational burden managed services remove: you now run consensus, failover, patching, scaling, and backups yourself (L10/34/47). That's often more expensive in engineering time, not less. Portability here is bought by taking that burden back — a real cost, not a free win."},
+      {t:"The trade is purely about performance: self-hosted software is slower, but it's just as portable and just as easy to operate as managed services.",
+       ok:false,
+       fb:"The trade isn't mainly performance — it's operational leverage. Managed services do the running-it-for-you work; refusing them means you do that work. That's the premium you pay for portability, and it applies whether the self-hosted version is faster or slower."}
+    ]
+  },
+  {
+    stem: "Leadership's second reason for multi-cloud is leverage: \"if we can credibly move to Cloud B, we can negotiate Cloud A's price down.\" A 500 TB, managed-service-heavy system is on Cloud A. How credible is the threat?",
+    options: [
+      {t:"Weak unless portability has been paid for continuously. Data gravity makes actually leaving a ~4.6-day, $45,000-egress, multi-quarter rewrite of everything built on A's proprietary managed APIs — and the vendor knows it. The threat is only credible if you've already invested in staying portable (LCD services, abstraction layers, a warm second copy). But that investment costs most of what the threat was supposed to save: leverage isn't free, it's pre-paid. \"We'll just move\" is a bluff when data gravity means you can't.",
+       ok:true,
+       fb:"Exactly. Portability is a standing expense, not a switch you flip in a negotiation. If you haven't been paying the premium, the migration is too slow and costly to be a real lever; if you have, you've already spent the savings. Credible leverage and cheap simplicity are the same dial pulling opposite ways."},
+      {t:"Very credible — since the app is containers, moving to Cloud B is a quick redeploy, so the vendor has every reason to fear the switch.",
+       ok:false,
+       fb:"That confuses the portable stateless half with the sticky stateful half. The containers move in an afternoon; the 500 TB of data and the code bound to Cloud A's managed-service APIs do not. The vendor knows the data anchors you, so \"it's just containers\" doesn't make the threat real."},
+      {t:"Irrelevant — cloud pricing is fixed and published, so there's no negotiation and no reason to consider leverage at all.",
+       ok:false,
+       fb:"Large cloud commitments are very much negotiated, which is why leverage is a real (if often overstated) motivation. The point isn't that negotiation doesn't happen — it's that data gravity makes the \"we'll leave\" threat weak unless you've pre-paid for genuine portability."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
