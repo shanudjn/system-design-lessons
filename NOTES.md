@@ -1118,9 +1118,42 @@
     L23 multi-region active-active/single-home-invariant, L50 global traffic mgr front door, L26 push-state-off-box
     (compute portable), L57 move-heavy-scan-off-primary, L10/34/47 cost of self-run stateful infra, L06/11/25
     consistency limits. Trade: portability & resilience vs complexity & cost. (Lesson 0058)
-59. Cost-aware architecture (FinOps) — designing for the bill: the dominant cost drivers (egress L14, storage
-    tiers L39, compute utilization L27), attributing spend per tenant/feature (L40/54), and when the cheapest
-    design is the wrong one. Trade: unit cost vs performance & headroom.
+59. ✅ **Cost-aware architecture (FinOps)** — a $250k/mo cloud bill on the orders platform (L12/24/25/27/57/58,
+    40k req/s, ~500 TB) and finance's one ask: "cut it 30% without breaking anything." Estimate = read the bill:
+    it decomposes into COST DRIVERS on a Zipf curve (L02) — compute $88k/35%, storage $70k/28%, egress $60k/24%
+    = ~87% in three drivers, "everything else" (queue/cache/KMS/LB/logs/DNS) $32k/13% = noise (20% off the tail =
+    $6.4k, 20% off the drivers = $43.6k → the 30% goal only reachable through the drivers). Biggest hidden lever
+    = UTILIZATION: 300 servers peak-sized (L27 knee) but avg load ~40% of peak → avg util ~40%×70% ≈ 28% → ~72%
+    idle = ~$63k/mo of paid-for-nothing (reclaim MOST via autoscale-to-curve L27, NOT permanent shrink); egress
+    hides CROSS-AZ chatter (3 AZs L36, $0.01/GB each way, ~$2.6-5.2k/mo on no dashboard). Model = cost as a
+    DESIGNABLE quantity: (1) UNIT ECONOMICS = bill ÷ units ($250k/41.5B req = $6/M req, 0.06¢/order; cost-per-unit
+    > revenue-per-unit → growth loses money, scale can't fix a broken unit economic); (2) ATTRIBUTION
+    (showback/chargeback, L54 turned inward + L40 per-tenant) = you can't cut what you can't see, reveals top 3%
+    tenants drive 40% cost + the free-tier tenant w/ NEGATIVE unit economics (10× req/order) invisible in the
+    total; (3) three DRIVER-KNOBS each an earlier lesson — compute→utilization (L27 autoscale/right-size/reserved-
+    for-baseline/spot-for-batch), storage→tiering (L39 hot→cold→archive), egress→locality (L14/58 cache-near-user/
+    compute-next-to-data/kill-cross-AZ). Trace: (A) a read priced not timed — cache HIT ~$2e-8 vs MISS ~$6e-6 =
+    ~300× (app CPU + DB read + cross-AZ + full egress) → cache saves DOLLARS not just latency, cost & perf aligned;
+    (B) the L29 analytics query priced two ways — on the serving DB (evicts hot cache → Path A's 300× across normal
+    traffic + bigger boxes) vs on a columnar warehouse over cold-tier bytes on SPOT (L39/57) = budget-buster vs
+    rounding error, cost is a property of WHERE you run it; (C) the backfire — cut 300→200 boxes saves $29k/mo,
+    runs fine at avg load, then a Black-Friday 2× spike (80k req/s, 200 boxes serve ~27k at the knee = 3× past it)
+    → L27 cliff → L28 unbounded queue → L07 retry storm → ~3h checkout outage on a $50M/mo book (~$69k/hr) = $200k+
+    → the deleted "waste" was the HEADROOM the spike needed. First wall = TWOFOLD: (1) cost is INVISIBLE until
+    attributed (one $250k line can't tell the $44k cut from the $6k cut → tag/decompose/attribute/unit-economics
+    FIRST, measure before turning anything off), then (2) the CHEAPEST DESIGN IS THE WRONG ONE — minimizing cost in
+    isolation yields the worst system (no headroom = Path C, no replicas = L07 AZ-failure downtime, all-spot =
+    reclaimed mid-checkout, all-cold = L39 retrieval cliff, no cache = Path A's 300×); cost is a CONSTRAINT to
+    co-optimize within the SLOs, never a scalar to minimize — the idle that looks like waste on a spreadsheet is
+    the spike buffer (L27) + failure margin (L07). Deepest point: the cloud turned cost into a RUNTIME variable
+    (every placement/tier/headroom decision priced by the second) → cost is now a design-time property as real as
+    latency, engineered on purpose — but the smallest bill and the best system are rarely the same design. Four
+    traps: optimize the visible not the expensive (shave the 13% tail); cut headroom to hit a number (Path C);
+    over-commit reservations (3-yr lock on a shifting baseline); ignore egress/cross-AZ (the byte that looks like an
+    internal call). Reuses L27 fleet/knee/autoscale/headroom, L39 storage tiers, L14/58 egress/locality, L28/07
+    spike+failure margin, L40/54 per-tenant accounting + metering (attribution/unit economics), L02 Zipf skew +
+    cache hit-vs-miss, L29/57 heavy work on cheap/spot capacity. Trade: unit cost vs performance & headroom.
+    (Lesson 0059)
 60. Rendering & delivery at scale (SSR/edge rendering) — getting HTML to the user fast: server-side vs client
     vs edge rendering (L55), streaming responses, the cache-vs-personalization tension (L14), and hydration
     cost. Trade: time-to-first-byte & offload vs freshness & compute.
