@@ -1154,9 +1154,27 @@
     spike+failure margin, L40/54 per-tenant accounting + metering (attribution/unit economics), L02 Zipf skew +
     cache hit-vs-miss, L29/57 heavy work on cheap/spot capacity. Trade: unit cost vs performance & headroom.
     (Lesson 0059)
-60. Rendering & delivery at scale (SSR/edge rendering) — getting HTML to the user fast: server-side vs client
-    vs edge rendering (L55), streaming responses, the cache-vs-personalization tension (L14), and hydration
-    cost. Trade: time-to-first-byte & offload vs freshness & compute.
+60. ✅ **Rendering & delivery at scale (SSR/edge rendering)** — one product page onto a phone (40k req/s, ~100 ms
+    to origin / ~15 ms to edge, 1.5 MB/s mobile): rendering is a PLACEMENT problem, not a front-end detail — the
+    same HTML can be built at build time (static/SSG, cache it L14, ~0 cores, generic), on the origin (SSR, fresh +
+    personal but 30 ms × 40k = ~150 render cores L59/27), at the edge (L55, ~15 ms near user, local data only), or on
+    the phone (CSR, server ~0 but blank-then-waterfall ~770 ms to content + no SEO). Estimate: cost hides in serial
+    round trips (dependent hops chain the ~100 ms L14 tax) and phone CPU (300 KB bundle = ~200 ms download BUT
+    ~300 ms execute, and JS exec doesn't get faster with network). Two dials: WHERE built + how much must HYDRATE
+    (server/static send finished HTML → fast FCP, but inert until the bundle downloads+executes to attach handlers →
+    the FCP-to-TTI gap "looks ready, taps do nothing"; cost = bundle size → ship less = islands/partial hydration).
+    STREAMING SSR flushes the shared shell now, streams the slow per-user slice (200 ms rec ML call L53) when ready /
+    degrades to a placeholder (L28 don't-block-fast-on-slow, L49 graceful degrade). First wall = can't be BOTH fully
+    cacheable AND fully personalized (personalization = unique response = CDN hit → 0 = L14's stray-param cache-killer
+    reborn, ~150 cores back) → draw the PERSONALIZATION LINE: cache the shared shell (product/reviews/price, ~15 ms,
+    ~0 cores), render only the per-user slice ("Hi Alice"/cart/recs) as a client island / streamed chunk / edge
+    personalization; the dial = fraction of page that's per-user. Second wall = HTML cheap, interactivity (hydration)
+    expensive → islands/server-components. Deepest: where you build HTML = same placement question as where a cache /
+    computation / the truth lives, answered for the last hop to the screen. Four traps: personalize a cacheable page;
+    hydrate the whole tree; pure CSR for content/SEO pages; slow slice blocks the fast shell. Reuses L14 CDN/TTL/shell-
+    vs-slice/stray-param, L55 edge render/decision-vs-truth, L59 render priced per request, L27 knee/~150 cores, L28
+    backpressure + L49 BFF graceful-degrade (streaming), L53 rec ML call, L02/48 cache one-copy-vs-N. Trade:
+    time-to-first-byte & offload vs freshness & compute. (Lesson 0060)
 61. Bot detection & traffic authenticity — telling real users from automated traffic at the edge (L52/55):
     signals, challenges, rate-based vs behavioral detection, and the false-positive cost of blocking real users.
     Trade: abuse reduction vs friction & false positives.

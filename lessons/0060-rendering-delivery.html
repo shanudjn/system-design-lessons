@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 60 — Rendering &amp; Delivery at Scale: Server, Client, or Edge — and the Personalization Line</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 60 · Worked Example</div>
+  <h1>Rendering &amp; Delivery at Scale: Server, Client, or Edge — and the Personalization Line</h1>
+  <p class="lead">Lesson 59 made the whole cloud bill a design constraint and ended pointing at one hot, user-facing slice of it: getting the page itself onto the screen. This lesson zooms all the way in to the last hop — <span class="key">turning your data into <b>HTML</b> and getting that HTML painted on a phone, fast and cheap, for millions of users.</span> It sounds like a front-end detail; it is a distributed-systems problem in disguise, because the same page can be built in four different places (at build time, on the origin, at the edge, or on the phone itself), and every choice trades <b>time-to-first-byte</b> and <b>server cost</b> against <b>freshness</b> and <b>personalization</b>. We'll take one concrete page — <b>a product page on the orders platform (Lessons 27/49/59): 40k req/s, served to a phone on a mid-tier mobile connection</b> — and get it onto the screen. We'll <b>estimate</b> the timeline of a page load down to the millisecond and find that the round trips, the JavaScript bundle, and the phone's CPU each cost more than people expect. We'll <b>model</b> the four rendering strategies (server / client / static / edge), plus <b>streaming</b> and <b>hydration</b>, as points on two dials: <i>where</i> the HTML is built and <i>who</i> pays to make it interactive. We'll <b>trace</b> the same page rendered four ways and watch the numbers move. The first bottleneck is the one that governs the whole design: <b>you cannot make one page both fully cacheable and fully personalized</b> — the line between the shared shell and the per-user slice <i>is</i> the architecture. The trade underneath: <b>time-to-first-byte &amp; offload vs freshness &amp; compute.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0060-rendering-delivery.html"</code></p>
+</header>
+
+<h2>The one problem we'll design</h2>
+<p>A user taps a link to a product page. Somewhere, your data — the product's name, price, photo, reviews, plus <i>this user's</i> cart and recommendations — has to become HTML the browser can paint, and that HTML has to travel to their phone. The page serves <b>40,000 req/s</b> at peak (Lesson 27's fleet), and the users are on phones far from your Virginia origin (Lesson 14/55: ~100&nbsp;ms round trip to the origin, ~15&nbsp;ms to a nearby edge PoP) on connections around <b>12&nbsp;Mbps (~1.5&nbsp;MB/s)</b>. The naive instinct is "rendering is a front-end concern — pick a framework and move on." But <i>where</i> that rendering happens decides your time-to-first-byte, your server bill (Lesson 59), whether the page can be cached (Lesson 14), and whether it can say "Hi Alice, your cart has 3 items." Those are system-design decisions, and they conflict.</p>
+
+<div class="diagram"><pre>
+  ONE product page, four places to build the HTML
+  (who does the work, and when)
+
+  WHERE the HTML is built:
+    build time  --> static file  --> [CDN edge] --15ms--> phone   CHEAP, fast, GENERIC
+    request time--> ORIGIN render ---------------100ms--> phone   PERSONAL, server pays
+    request time--> EDGE render (L55) -----------15ms---> phone   near user, limited data
+    never built --> empty shell + JS bundle --> phone renders it   server cheap, phone slow
+
+  And the page is NOT one thing -- it is a SHELL + SLICES:
+
+     +-----------------------------------------+
+     |  header / nav / product photo + specs   |  <- SHARED: same for
+     |  reviews / description / price          |     everyone  -> CACHE it (L14)
+     |- - - - - - - - - - - - - - - - - - - - -|
+     |  "Hi Alice"   cart (3)   your recs      |  <- PER-USER: unique  ->
+     +-----------------------------------------+     can't cache -> render/fetch per user
+
+  The design decision IS the line between the shell and the slice.
+</pre></div>
+
+<p class="note"><span class="key">Rendering is not one thing that happens in one place. The same page can be assembled at build time (once, for everyone), on the origin (per request), at the edge (near the user), or on the phone (offloaded to the client) — and it is really a <b>shared shell</b> plus a thin <b>per-user slice</b>. The whole lesson is deciding where each part is built and how the two are stitched together.</span></p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Rendering</b> — turning your data plus a template into the HTML string a browser can paint. The question is only <i>where</i> that happens.</li>
+  <li><b>SSR (server-side rendering)</b> — the server runs the render per request and sends finished HTML with content already in it.</li>
+  <li><b>CSR (client-side rendering)</b> — the server sends a nearly empty HTML shell plus a JavaScript bundle; the <i>browser</i> downloads the bundle, runs it, fetches data, and builds the HTML itself.</li>
+  <li><b>SSG / static rendering</b> — the render runs once at <b>build time</b>, producing a static HTML file cached and served to everyone (a CDN cache hit, Lesson 14).</li>
+  <li><b>Edge rendering</b> — SSR run at the PoP nearest the user instead of the distant origin (Lesson 55), so the round trip is ~15&nbsp;ms not ~100&nbsp;ms.</li>
+  <li><b>Streaming / progressive rendering</b> — the server flushes the HTML in chunks: send the fast shared shell immediately, stream the slow per-user parts as they finish, so the slow part doesn't hold up the fast part.</li>
+  <li><b>Hydration</b> — a server-rendered page is static HTML until the JavaScript bundle downloads and <i>runs</i> to attach event handlers ("hydrate" the markup). Until it finishes, the page <i>looks</i> ready but taps do nothing.</li>
+  <li><b>TTFB (time to first byte)</b> — how long until the first byte of the response arrives. A blank shell can have a great TTFB and show nothing.</li>
+  <li><b>FCP (first contentful paint)</b> — when the user first sees real content on screen.</li>
+  <li><b>TTI (time to interactive)</b> — when the page actually responds to taps. Often much later than FCP — the gap is hydration.</li>
+  <li><b>Shell vs slice (personalization boundary)</b> — the shared part of the page (same for all → cacheable) versus the per-user part (unique → not cacheable). Where you draw this line is the core design choice.</li>
+  <li><b>Island / partial hydration</b> — hydrate only the interactive pieces of the page (a "Buy" button, a cart widget) instead of the whole tree, so you ship and run far less JavaScript.</li>
+</ul>
+
+<h2>Move 1 — Estimate: time the page load</h2>
+<p>Before choosing a strategy, put real numbers on the pieces. A page load is a sequence of round trips, downloads, and CPU work, and each one is bigger than intuition suggests. Here are the constants we'll reuse:</p>
+
+<table>
+  <tr><th>Piece</th><th>Value</th><th>Where it comes from</th></tr>
+  <tr><td>Round trip to origin</td><td><code>~100 ms</code></td><td>distant user → Virginia (Lesson 14/55 speed-of-light)</td></tr>
+  <tr><td>Round trip to nearest edge PoP</td><td><code>~15 ms</code></td><td>a copy nearby (Lesson 14/55)</td></tr>
+  <tr><td>Mobile bandwidth</td><td><code>~1.5 MB/s</code></td><td>~12 Mbps mid-tier connection</td></tr>
+  <tr><td>JavaScript bundle</td><td><code>300 KB</code> gzipped</td><td>a typical single-page-app framework + code</td></tr>
+  <tr><td>Full HTML page</td><td><code>~40 KB</code></td><td>rendered markup with content</td></tr>
+  <tr><td>Server render (per request)</td><td><code>~30 ms CPU</code></td><td>run the template tree to a string</td></tr>
+  <tr><td>Data fetch (server-side)</td><td><code>~20 ms</code></td><td>from cache / feature store (Lessons 48/53)</td></tr>
+  <tr><td>Phone parse + execute JS</td><td><code>~1 ms per KB</code></td><td>a median phone's main thread; 300 KB ≈ 300 ms</td></tr>
+</table>
+
+<div class="card calc">
+  <p><b>Two costs dominate and both are easy to miss.</b> First, <b>round trips</b>, not bytes: at ~100&nbsp;ms each, three <i>dependent</i> requests in a row (get HTML → get bundle → get data) is ~300&nbsp;ms of nothing-but-waiting before a pixel appears — the Lesson 14 speed-of-light tax, paid once per hop in the chain. Second, <b>the phone's CPU</b>: downloading a 300&nbsp;KB bundle is only <code>300 ÷ 1500 = 0.2&nbsp;s</code>, but <i>parsing and executing</i> it on a median phone is another <code>~300&nbsp;ms</code> of main-thread work — and JavaScript execution, unlike download, doesn't get faster with a better network. <span class="key">The expensive parts of a page load are the serial round trips and the JavaScript the phone has to run — not the size of the HTML.</span></p>
+</div>
+
+<div class="card calc">
+  <p><b>Now the server side, priced the Lesson 59 way.</b> A server render is ~30&nbsp;ms of CPU. If every request renders on the origin, that's <code>0.030 s × 40,000 req/s = 1,200 core-seconds every second = 1,200 CPU cores</code> — about <code>150 servers</code> (at 8 cores each) doing nothing but turning data into HTML. A <i>cached</i> static page renders <b>once at build time</b> and then costs a CDN cache hit: <code>~0 origin cores</code>. <span class="key">The difference between rendering per-request and rendering once is ~150 servers — the same "cache hit vs miss" gap Lesson 59 priced, now measured in render CPU. Where you render is a line item on the bill.</span></p>
+</div>
+
+<p class="note why"><b>Name the trade-off — time-to-first-byte &amp; offload vs freshness &amp; compute.</b> Everything below is one dial. Push work <b>off the request path</b> (render once at build, cache at the edge, or offload to the phone) and TTFB drops and the server bill shrinks — paid for in staleness or in a slow, JavaScript-heavy client. Push work <b>onto the request path</b> (render fresh per user on the server) and the page is current and personal — paid for in latency and ~150 cores of render compute. No single point on the dial is right for the whole page, which is exactly why we'll end up splitting it.</p>
+
+<h2>Move 2 — Model: two dials, four strategies</h2>
+<p>Every rendering strategy is a choice on two independent dials: <b>where the HTML is built</b> (build time → origin → edge → client) and <b>who makes it interactive</b> (how much JavaScript the phone must run to hydrate). Let's place the four named strategies on those dials.</p>
+
+<h3>The four strategies</h3>
+<div class="card calc">
+  <p><b>CSR — client-side rendering.</b> Server sends a ~3&nbsp;KB empty shell plus a <code>&lt;script&gt;</code> tag. The phone downloads the 300&nbsp;KB bundle, runs it, calls your API for data, and builds the HTML itself. <span class="key">Server compute ≈ 0 (it just served a static shell and an API call); the phone does all the work.</span> Great offload, but the user stares at a blank screen through a waterfall of dependent round trips, and search engines / link previews see an empty page.</p>
+  <p><b>SSR — server-side rendering.</b> Server fetches data and runs the render per request, sending full HTML. <span class="key">Content is in the first response, so FCP is fast — but the server pays ~30&nbsp;ms of CPU per request (~150 cores at peak), and the page still isn't interactive until the bundle hydrates it.</span></p>
+  <p><b>SSG / static.</b> Render once at build time; serve the resulting file as a CDN cache hit (Lesson 14). <span class="key">Fastest TTFB (~15&nbsp;ms from a nearby PoP) and near-zero origin compute — but it's the <i>same</i> HTML for everyone (no personalization) and stale until the next rebuild/purge.</span></p>
+  <p><b>Edge rendering (Lesson 55).</b> Run the SSR render at the PoP near the user. Cuts the round trip from ~100&nbsp;ms to ~15&nbsp;ms and keeps per-request freshness — but the edge can only reach data that's local or eventually-consistent (Lesson 55's rule: the edge runs the decision, the origin owns the truth), so a render needing the authoritative database still forwards home.</p>
+</div>
+
+<h3>Streaming — don't let the slow part block the fast part</h3>
+<div class="card calc">
+  <p>Naive SSR waits for <i>all</i> the data before sending <i>any</i> HTML, so the whole page runs at the speed of its slowest piece — and the slowest piece is usually the personalized recommendation section that needs a ~200&nbsp;ms ML call (Lesson 53). <b>Streaming SSR</b> fixes this: flush the shared shell and above-the-fold content the instant they're ready (~20&nbsp;ms of data fetch), keep the connection open, and stream the slow recommendation block in when it finishes. <span class="key">TTFB and first content stay fast, and the slow per-user slice fills in progressively instead of holding the whole page hostage — the same "don't let a slow dependency block a fast one" idea as Lesson 28's backpressure and Lesson 49's BFF graceful-degrade, applied to HTML.</span></p>
+</div>
+
+<h3>Hydration — the second dial, and the hidden tax</h3>
+<div class="card calc">
+  <p>SSR and SSG both send finished HTML, so the page <i>appears</i> quickly. But that HTML is inert: a "Buy" button drawn in HTML doesn't <i>do</i> anything until JavaScript attaches a click handler. <b>Hydration</b> is the client downloading the bundle and re-running the component tree to wire up the static markup. Its cost is the whole bundle: <code>~200&nbsp;ms download + ~300&nbsp;ms execute ≈ 500&nbsp;ms</code> on our phone. <span class="key">During that gap the page looks ready and taps do nothing — the "uncanny valley" between FCP and TTI. Hydration cost scales with how much JavaScript you ship, which is why the fix is to ship <i>less</i>: hydrate only the interactive <b>islands</b> (partial hydration), not the whole page.</span> The trade sharpens here: interactivity vs bytes shipped — sending HTML is cheap, sending interactivity is expensive.</p>
+</div>
+
+<p class="note why"><b>The model in one line:</b> pick <i>where</i> the HTML is built (build time is cheapest/stalest, origin is freshest/most expensive, edge is a nearby middle, client offloads to the phone) and <i>how much</i> of it must hydrate (all of it → long TTI gap; just the islands → cheap). Streaming lets a page be fast <i>and</i> personal by sending the shared part now and the per-user part as it arrives. Every named framework is a preset on these two dials.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Render the <i>same</i> product page four ways and watch the timeline. Then watch the personalization tension break the cheapest option.</p>
+
+<h3>Path A — CSR vs SSR vs static, timed</h3>
+<div class="diagram"><pre>
+  Same page, three strategies. Times are "until the user sees content"
+  (FCP) and "until taps work" (TTI). Phone at 1.5 MB/s, 100ms to origin.
+
+  CSR (client renders):
+    req shell ---100ms---> TTFB 105ms (BLANK screen)
+    fetch 300KB bundle (CDN) 15 + 200 = 215ms
+    parse+execute bundle          300ms
+    JS calls data API      100 + 50 = 150ms
+    render          FCP ~= 770ms   TTI ~= 800ms
+    server cost: ~0 render (offloaded)      <-- blank, then a waterfall
+
+  SSR (origin renders):
+    req --> fetch data 20 + render 30 = 50ms server
+    TTFB ~= 150ms  (first byte is REAL content)
+    download 40KB HTML  27ms          FCP ~= 180ms   <-- content FAST
+    fetch+hydrate bundle 215 + 300     TTI ~= 695ms
+    server cost: ~30ms CPU x 40k/s = ~150 cores
+
+  STATIC (built once, CDN cache hit):
+    req --> CDN edge HIT   TTFB ~= 15ms
+    download 40KB           FCP ~= 42ms   <-- content FASTEST + CHEAPEST
+    fetch+hydrate bundle 215 + 300     TTI ~= 557ms
+    server cost: ~0 (rendered at build)   BUT: same page for everyone
+
+  Content speed:   static (42ms) < SSR (180ms) <<< CSR (770ms)
+  Server cost:     static (~0)   < CSR (~0)     <<< SSR (~150 cores)
+  Personalization: SSR/CSR yes;  static NO.
+</pre></div>
+
+<h3>Path B — the cache-vs-personalization collision</h3>
+<div class="diagram"><pre>
+  Static is fastest AND cheapest -- so personalize it, right?
+  Add "Hi Alice" + cart(3) + your recs to the server-rendered HTML.
+
+  Now every response is UNIQUE to one user:
+     cache key = URL + user  ->  10M users = 10M distinct pages
+     CDN hit ratio -> ~0      ->  every request is an ORIGIN RENDER
+     origin render cost: 30ms x 40k/s = ~150 cores, back in full
+     TTFB: back to 150ms (origin), lost the 15ms edge hit
+
+  This is Lesson 14's stray-tracking-param bug in a new hat:
+  anything that makes a response unique per request kills the
+  cache. Personalization is the ultimate uniqueness.
+
+  The fix is NOT "pick fast-but-generic OR slow-but-personal".
+  It is to SPLIT the page along the personalization line:
+
+     SHELL (product info, reviews, price)  -> SAME for all
+        -> render once, cache at edge (99% hit, ~15ms, ~0 cores)
+     SLICE ("Hi Alice", cart, recs)        -> per user
+        -> hydrate as a client-side ISLAND with a tiny API call,
+           OR stream it in last, OR personalize at the edge (L55)
+
+  Big shared expensive-to-build part: cached once.
+  Small per-user part: pays the per-request price.
+</pre></div>
+
+<h3>Path C — streaming the slow slice</h3>
+<div class="diagram"><pre>
+  The recommendation block needs a 200ms ML call (L53).
+  The rest of the page is ready in 20ms.
+
+  NAIVE SSR (wait for everything):
+     data fetch 20ms ... but recs take 200ms ...
+     server holds the whole response 200ms -> TTFB 300ms
+     the fast 95% of the page waited on the slow 5%.
+
+  STREAMING SSR:
+     flush shell + product + reviews at 20ms  -> TTFB ~120ms
+        (browser starts downloading the bundle in parallel)
+     recs stream in when the ML call returns   -> +200ms, appears
+     if recs time out -> render a placeholder (L49 graceful degrade),
+        page still complete.
+
+  The slow personalized slice no longer holds the fast shared
+  shell hostage. TTFB and first content stay fast; the expensive
+  part fills in progressively or degrades. (L28/L49 on the page.)
+</pre></div>
+
+<p>Path A shows the raw trade: <span class="key">static is fastest to content <i>and</i> cheapest but generic; SSR is fast-to-content and personal but costs ~150 render cores; CSR offloads the server but pays with a blank screen and a round-trip waterfall.</span> Path B is the collision that decides the design: <span class="key">personalizing a cacheable page makes every response unique, which drops the CDN hit ratio to ~0 and puts all ~150 render cores back — Lesson 14's stray-param cache-killer, now caused by personalization itself.</span> Path C shows the escape: <span class="key">split the page and stream, so the shared shell is a cache hit for everyone and only the thin per-user slice pays the per-request price.</span></p>
+
+<h2>Move 4 — Find the first bottleneck: the personalization line, and the hydration tax</h2>
+<p>Two walls decide every rendering design, and they map onto the two dials.</p>
+
+<div class="card calc">
+  <p><b>First wall — you cannot make one page both fully cacheable and fully personalized.</b> A CDN cache hit (Lesson 14) is the fastest and cheapest way to deliver a page: ~15&nbsp;ms from a nearby PoP, ~0 origin compute, one copy served to millions. But a cache works only when the response is the <i>same</i> for many requests — and personalization is, by definition, a response unique to one user. The two pull in exactly opposite directions, and no clever framework dissolves the conflict. <span class="key">The resolution is not to choose one; it is to draw the <b>personalization line</b> through the page. The big, shared, expensive-to-build part (product info, reviews, the layout) is rendered once and cached at the edge for everyone. The small per-user slice ("Hi Alice", the cart badge, recommendations) is rendered or fetched per request — as a client-side island, a streamed-in chunk, or an edge personalization (Lesson 55).</span> The dial is the fraction of the page that's per-user: push it toward all-shared and you get a fast, cheap, generic page; push it toward all-personal and you get a slow, expensive origin render every time. Drawing that line well — cache the 95% that's shared, personalize the 5% that isn't — is the entire craft.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Second wall — HTML is cheap to send, interactivity is expensive.</b> Server and static rendering get content on screen fast, but the page is inert until the JavaScript bundle downloads and hydrates it — ~500&nbsp;ms on our phone, during which the page <i>looks</i> ready and taps do nothing (the FCP-to-TTI gap). That cost scales with how much JavaScript you ship, and shipping a whole single-page-app framework to hydrate a mostly-static page is paying full price for a little interactivity. <span class="key">The fix is to ship less: hydrate only the interactive <b>islands</b> (the "Buy" button, the cart widget) instead of the entire tree (partial hydration), or send components that are HTML-only with no client JavaScript at all. Sending markup is nearly free; sending the code to make markup interactive is the real weight.</span> This is the second dial — interactivity vs bytes shipped — and it is why "just server-render everything" isn't automatically the answer: SSR fixes FCP but leaves the hydration tax untouched unless you also cut the bundle.</p>
+</div>
+
+<p>So the honest delivery design for our product page is not one strategy but a composition: <b>render the shared shell once and cache it at the edge</b> (Lesson 14/55 — fast TTFB, ~0 compute, generic-on-purpose), <b>stream or island-hydrate the thin per-user slice</b> (personal without killing the cache), and <b>ship only the JavaScript the interactive islands need</b> (short TTI gap). Each decision is made knowing what it costs: a cache hit trades freshness for speed and dollars; a per-request render trades ~150 cores for personalization; every kilobyte of bundle trades phone CPU for interactivity.</p>
+
+<p><span class="key">The deepest point: "rendering" looks like a front-end checkbox and is actually a placement decision identical to the ones this whole course has been making. Where do you build the HTML — at build time (cache it, Lesson 14), on the origin (fresh but expensive, Lesson 59), at the edge (near the user, Lesson 55), or on the client (offloaded)? It's the same question as where to put a cache, where to run a computation, and where the truth lives — answered for the last hop to the screen. And it carries the same unavoidable tension: the fastest, cheapest page is a static cache hit shared by everyone, and the moment you make it personal you give that up, so the art is splitting the page so that the shared part stays cacheable and only the personal part pays.</span> The standing tension: time-to-first-byte &amp; offload vs freshness &amp; compute.</p>
+
+<h3>The scoreboard: four strategies on the two dials</h3>
+<table>
+  <tr><th>Strategy</th><th>TTFB / content</th><th>Server cost</th><th>Personal?</th><th>Best for</th></tr>
+  <tr><td><b>Static (SSG)</b></td><td><code>~15 ms</code> / fastest</td><td>~0 (built once)</td><td>No — same for all</td><td>marketing, docs, catalog pages that rarely change</td></tr>
+  <tr><td><b>SSR (origin)</b></td><td><code>~150 ms</code> / fast</td><td>~150 cores @ peak</td><td>Yes, per request</td><td>fresh, personalized, SEO-critical pages</td></tr>
+  <tr><td><b>Edge render</b></td><td><code>~15 ms</code> / fast</td><td>edge compute (L55)</td><td>Partly (local data)</td><td>near-user personalization on eventually-consistent data</td></tr>
+  <tr><td><b>CSR (client)</b></td><td>fast TTFB / <b>slow</b> content</td><td>~0 (offloaded)</td><td>Yes, on device</td><td>app-like dashboards behind a login (no SEO need)</td></tr>
+  <tr><td><b>Streaming + islands</b></td><td>fast TTFB + progressive</td><td>shell cached, slice per-user</td><td>Yes, the slice</td><td>the real answer for a mixed shared+personal page</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — personalizing an otherwise-cacheable page.</b> Sprinkle "Hi Alice" and a cart badge into the shared HTML and every response becomes unique, the CDN hit ratio collapses to ~0, and every request is a full origin render (~150 cores) — Lesson 14's stray-tracking-param cache-killer, caused by personalization. Split the page: cache the shared shell, render only the per-user slice.</li>
+  <li><b>Trap 2 — hydrating the whole page.</b> Shipping a full framework bundle to make a mostly-static page interactive creates a long FCP-to-TTI gap where the page looks ready but taps do nothing. Hydration cost is the bundle size — hydrate only the interactive islands (partial hydration), or send HTML-only components.</li>
+  <li><b>Trap 3 — pure CSR for content-first pages.</b> Offloading all rendering to the phone gives a blank screen and a waterfall of dependent round trips (~770&nbsp;ms to content in our trace), plus an empty page for search engines and link previews. Render content on the server or edge; save CSR for app-like screens behind a login where SEO and first paint don't matter.</li>
+  <li><b>Trap 4 — letting the slow slice block the fast shell.</b> Naive SSR waits for the slowest piece (a 200&nbsp;ms recommendation call, Lesson 53) before sending any HTML, so the whole page runs at the speed of its slowest dependency. Stream the fast shared part immediately and let the slow personalized part fill in — degrading to a placeholder if it times out (Lesson 49).</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>Getting HTML to the screen is a placement problem, not a front-end detail. <b>Estimate</b> timed the page load and found the costs hide in the serial round trips (~100&nbsp;ms each, and dependent requests chain them) and the phone's CPU (a 300&nbsp;KB bundle is ~200&nbsp;ms to download but another ~300&nbsp;ms to execute), while on the server a per-request render is <code>~30&nbsp;ms × 40k/s ≈ 150 cores</code> versus ~0 for a cached static page. <b>Model</b> placed four strategies on two dials — where the HTML is built (build time / origin / edge / client) and how much must hydrate — with <b>streaming</b> letting the fast shared shell go out before the slow per-user slice, and <b>hydration</b> as the hidden tax that makes a page look ready before it works. <b>Tracing</b> rendered the same page four ways (static fastest+cheapest but generic; SSR fast+personal but ~150 cores; CSR offloaded but blank-then-waterfall), watched personalization collapse the cache to ~0 (Lesson 14's stray-param bug reborn), and streamed the slow recommendation slice so it stopped holding the page hostage. The <b>first bottleneck</b> is twofold: <span class="key">you cannot make one page both fully cacheable and fully personalized, so the personalization line — cache the shared shell, render only the per-user slice — <i>is</i> the design; and HTML is cheap to send while interactivity (hydration) is expensive, so ship only the JavaScript the islands need.</span> The deepest point: where you build the HTML is the same placement question as where a cache, a computation, or the truth lives — answered for the last hop to the screen. The standing tension: time-to-first-byte &amp; offload vs freshness &amp; compute.</p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>We've now delivered the page to the user as fast and cheap as the shared/personal split allows. But every one of those 40k req/s assumed a real human on the other end. The next lesson asks the question the edge has to answer before it renders anything:</b></p>
+  <p style="margin:.2rem 0">• <b>Bot detection &amp; traffic authenticity:</b> telling real users from automated traffic at the edge (Lessons 52/55). A large fraction of requests to any popular site are bots — some benign (search crawlers), some hostile (scrapers, credential-stuffers, scalpers) — and serving, rendering, and rate-limiting them all as if they were people wastes compute (Lesson 59) and enables abuse (Lesson 52). The next lesson traces the signals that distinguish a browser from a script, the challenges that raise the cost of faking one, rate-based vs behavioral detection, and the false-positive cost of blocking a real user. The trade shifts to <b>abuse reduction vs friction &amp; false positives.</b></p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">rendering</span>
+    <span class="pill">SSR (server-side rendering)</span>
+    <span class="pill">CSR (client-side rendering)</span>
+    <span class="pill">SSG / static rendering</span>
+    <span class="pill">edge rendering</span>
+    <span class="pill">streaming / progressive rendering</span>
+    <span class="pill">hydration</span>
+    <span class="pill">TTFB</span>
+    <span class="pill">FCP</span>
+    <span class="pill">TTI</span>
+    <span class="pill">shell vs slice (personalization boundary)</span>
+    <span class="pill">island / partial hydration</span>
+  </p>
+  <p>That's Lesson 60, built on Lesson 14's CDN caching / TTL / speed-of-light round trip and its "cache the shell, personalize the slice" (the personalization line and the stray-param cache-killer), Lesson 55's edge computing / isolates / "the edge runs the decision, the origin owns the truth" (where edge rendering can and can't reach data), Lesson 59's cost-per-request lens (render CPU priced as a line item, cache hit vs miss), Lesson 27's fleet and knee (the ~150 render cores at peak), Lesson 28's backpressure and Lesson 49's BFF graceful-degrade (streaming so a slow slice doesn't block the fast shell), Lesson 53's ML recommendation call (the slow personalized slice), and Lessons 02/48's caching (why one shared copy beats N unique renders). <b>Ask me follow-ups</b> — e.g. "how do edge-side includes (ESI) actually stitch a cached shell to a per-user slice?", "when is CSR the right call despite the blank-screen waterfall?", "what exactly are React Server Components doing to the hydration bill?", "how do you cache a page that's personalized only by country or logged-in/out (cache keying by a few buckets)?", or "how does streaming SSR interact with a CDN — can you cache a streamed response?" When you're ready, say <b>next</b> and we'll go deeper on <i>bot detection &amp; traffic authenticity — abuse reduction vs friction &amp; false positives.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your product page renders as a fast, cheap static file cached at the CDN edge (~15 ms TTFB, ~0 origin compute). A product manager asks you to add \"Hi Alice\" and a live cart badge to the top of every page. You wire it straight into the server-rendered HTML. What happens to your delivery costs?",
+    options: [
+      {t:"Every response is now unique to one user, so the cache key effectively becomes URL+user — 10M users means 10M distinct pages, the CDN hit ratio drops toward 0, and every request becomes a full origin render (~30 ms × 40k/s ≈ 150 cores) at ~150 ms TTFB instead of ~15 ms. Personalization made the response un-cacheable. The fix is to split the page: keep the shared shell cached and render only the per-user slice (as a client island, a streamed chunk, or an edge personalization).",
+       ok:true,
+       fb:"Right. This is Lesson 14's stray-tracking-param cache-killer in a new hat: anything that makes a response unique per request destroys the cache, and personalization is the ultimate uniqueness. You don't choose between fast-generic and slow-personal — you draw the personalization line so the big shared part stays a cache hit and only the thin per-user slice pays the per-request price."},
+      {t:"Nothing changes — the CDN will just cache each user's personalized page separately, so you keep the ~15 ms TTFB and ~0 compute while gaining personalization for free.",
+       ok:false,
+       fb:"A cache only helps when many requests share a response. Caching a page that's unique per user means one cache entry per user with a hit ratio near 0 — you've paid for a cache that never hits. Every request falls through to an origin render, so both TTFB and server cost jump back up. The cache and personalization pull in opposite directions."},
+      {t:"It gets cheaper, because personalized pages are smaller than generic ones and small pages are always cache hits.",
+       ok:false,
+       fb:"Size isn't the issue and personalized pages aren't smaller. The issue is uniqueness: a per-user response can't be shared across users, so it can't be served from one cache entry to many. The hit ratio collapses regardless of page size, and cost goes up, not down."}
+    ]
+  },
+  {
+    stem: "You switch the page to server-side rendering. Content now paints in ~180 ms (great!), but for roughly another ~500 ms the buttons don't respond to taps even though the page looks completely ready. What is happening, and what's the right lever?",
+    options: [
+      {t:"That gap is hydration: the server sent finished HTML (fast FCP), but the markup is inert until the JavaScript bundle downloads (~200 ms) and executes (~300 ms) to attach event handlers — the FCP-to-TTI gap. The cost scales with bundle size, so the lever is to ship less JS: hydrate only the interactive islands (the Buy button, the cart) instead of the whole tree, or send HTML-only components. Sending markup is cheap; sending interactivity is expensive.",
+       ok:true,
+       fb:"Exactly. SSR fixes when content appears but not when it becomes interactive — the page looks ready and taps do nothing until hydration finishes (the \"uncanny valley\"). Because hydration cost is the bundle you ship and run on the phone's CPU, partial hydration / islands / server components attack it directly. \"Just server-render everything\" fixes FCP but leaves the hydration tax untouched unless you also cut the bundle."},
+      {t:"The server is too slow — you need more origin CPU so the render finishes faster, which will close the 500 ms gap.",
+       ok:false,
+       fb:"The render already finished — content painted at ~180 ms. The 500 ms gap is on the client: downloading and executing the JS bundle to hydrate the static HTML. More origin CPU speeds the render, not the phone's parse+execute of the bundle. JavaScript execution doesn't get faster with a bigger server or a better network — you fix it by shipping less JS."},
+      {t:"The network is too slow — upgrading to a faster CDN will make the buttons respond immediately.",
+       ok:false,
+       fb:"A faster CDN speeds byte delivery, but the dominant part of hydration is the phone parsing and executing ~300 KB of JavaScript on its main thread (~300 ms), which no network upgrade touches. Download is ~200 ms of the gap; execution is the rest and is CPU-bound on the device. Ship less JS (islands/partial hydration) rather than trying to deliver a big bundle faster."}
+    ]
+  },
+  {
+    stem: "A teammate wants to move the whole content-heavy product page to pure client-side rendering \"to offload the server and save money.\" The server would send a ~3 KB shell plus a 300 KB bundle; the phone downloads it, runs it, fetches data, and renders. What's the main problem for THIS page?",
+    options: [
+      {t:"For a content-first page it trades a small server saving for a bad user experience and a real SEO/preview problem: the user sees a blank screen through a waterfall of dependent round trips (shell → bundle → data → render ≈ ~770 ms to content in our trace), and crawlers/link-preview bots see an empty page. CSR offloads compute but pays with slow first content and no server-rendered HTML — fine for app-like dashboards behind a login, wrong for a public, content-first, SEO-critical page.",
+       ok:true,
+       fb:"Right. CSR's offload is real (server compute ≈ 0), but the cost lands on first paint and discoverability. The blank-then-waterfall pattern is ~770 ms to content versus ~180 ms for SSR or ~42 ms for a static hit, and an empty initial HTML hurts search and social previews. Match the strategy to the page: CSR for logged-in app screens, server/edge rendering for public content."},
+      {t:"There's no problem — CSR is strictly better because it always has the fastest time-to-first-byte, and TTFB is the only metric that matters.",
+       ok:false,
+       fb:"CSR does have a fast TTFB, but that first byte is a blank shell — TTFB measures when bytes arrive, not when the user sees content. The metrics that matter for a content page are FCP (first contentful paint) and TTI, and CSR is worst on FCP because of the round-trip waterfall. A great TTFB showing nothing is not a win."},
+      {t:"The problem is that CSR makes the server MORE expensive, because the phone still sends every render back to the origin to be built.",
+       ok:false,
+       fb:"Backwards on the mechanism: CSR moves rendering onto the phone, so the origin cost goes down (it serves a static shell and an API call), not up. The real problem isn't server cost — it's the user-facing slowness (blank screen + waterfall) and the empty HTML that hurts SEO and link previews for a public content page."}
+    ]
+  },
+  {
+    stem: "Your server-rendered page is mostly ready in ~20 ms, but the personalized recommendation block needs a ~200 ms ML call (Lesson 53). With naive SSR the whole response waits for the recommendations before sending any HTML, so TTFB is ~300 ms. What's the best fix?",
+    options: [
+      {t:"Stream the response: flush the shared shell and above-the-fold content immediately (~120 ms TTFB, and the browser starts downloading the bundle in parallel), then stream the recommendation block in when the ML call returns — and if it times out, render a placeholder instead (graceful degrade, Lesson 49). The slow personalized slice no longer holds the fast shared shell hostage; TTFB and first content stay fast and the expensive part fills in progressively.",
+       ok:true,
+       fb:"Exactly. This is Lesson 28's \"don't let a slow dependency block a fast one\" and Lesson 49's BFF graceful-degrade, applied to HTML. Naive SSR runs the whole page at the speed of its slowest piece; streaming decouples them so the 95% that's fast ships now and the slow 5% arrives when ready or degrades to a placeholder. The user never waits on recommendations to see the product."},
+      {t:"Make the recommendation ML call faster so it fits in 20 ms — that's the only real fix, since the page can't render until all its data is ready.",
+       ok:false,
+       fb:"Speeding the ML call is nice but not always possible, and it accepts the false premise that the page must wait for all data. Streaming breaks that premise: the shell doesn't need the recommendations to render, so you send it first and stream the recs in later. You fix the coupling, not just the one slow call — otherwise the next slow dependency recreates the problem."},
+      {t:"Drop the recommendations entirely — any data that takes longer than the fastest part of the page should never be shown.",
+       ok:false,
+       fb:"Too blunt: the recommendations are valuable, and \"never show anything slower than the fastest part\" would strip most personalization from the page. The point of streaming is that a slow part doesn't have to block the fast part OR be dropped — send the shell now, stream the slow slice in when it's ready, and degrade to a placeholder only if it actually times out."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
