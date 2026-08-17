@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 61 — Bot Detection &amp; Traffic Authenticity: Telling Humans from Scripts at the Edge</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 61 · Worked Example</div>
+  <h1>Bot Detection &amp; Traffic Authenticity: Telling Humans from Scripts at the Edge</h1>
+  <p class="lead">Lesson 60 delivered the page to the screen as fast and cheap as the shared/personal split allows — and quietly assumed a real human on the other end. That assumption is often wrong. <span class="key">On any popular site a large fraction of requests come from <b>automated clients</b> — some you welcome (search crawlers), many you don't (scrapers, credential-stuffers, scalpers) — and serving, rendering, and rate-limiting them as if they were people wastes compute (Lesson 59) and enables abuse (Lesson 52).</span> This lesson takes one concrete front door — <b>the orders platform at 40,000 req/s (Lessons 27/49/55/60), plus its login endpoint</b> — and asks the question the edge must answer before it renders or rate-limits anything: <i>is this a person or a program?</i> We'll <b>estimate</b> how much of the traffic is automated and what it costs, and watch a distributed attack hide from the obvious defense. We'll <b>model</b> detection as a funnel of increasingly expensive checks — passive <b>signals</b>, active <b>challenges</b>, and the choice between <b>rate-based</b> and <b>behavioral</b> detection — every one of which has two ways to be wrong. We'll <b>trace</b> a loud scraper, a low-and-slow credential-stuffing botnet, and the graduated response that avoids blocking real customers. The first bottleneck decides the whole design: <span class="key">you cannot separate bots from humans perfectly — every signal is forgeable and the two error types trade off — so the real goal is not detection but making abuse cost more than it's worth, without taxing the humans.</span> The trade underneath: <b>abuse reduction vs friction &amp; false positives.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0061-bot-detection.html"</code></p>
+</header>
+
+<h2>The one problem we'll design</h2>
+<p>Two hundred thousand people an hour browse our product pages and, now and then, log in. The front door serves <b>40,000 req/s</b> at peak (Lesson 27's fleet, behind Lesson 49's gateway and Lesson 55's edge). But not every request is a person. Some are <b>search-engine crawlers</b> we <i>want</i> (they bring shoppers). Some are <b>scrapers</b> copying our whole catalog and prices for a competitor. Some are <b>credential-stuffers</b> trying millions of stolen username/password pairs against the login endpoint, hoping a few still work. Some are <b>scalpers</b> racing to buy every unit of a limited drop the instant it goes live. The naive instinct is "just block the bad ones." But a request arrives as a bare HTTP call — <span class="key">it does not come stamped <i>human</i> or <i>robot</i></span> — and a determined program can be made to look almost exactly like a browser. Deciding who to serve, who to challenge, and who to turn away, in a few milliseconds, without turning away real customers, is a system-design problem — and the two ways of getting it wrong cost very different amounts.</p>
+
+<div class="diagram"><pre>
+  40,000 req/s hit the edge. Which of these is a person?
+
+     incoming request  (a bare HTTP call -- no "I am human" stamp)
+            |
+            v
+   [1] PASSIVE SIGNALS   (free, every request, ask nothing)
+       IP reputation | requests/IP | TLS+header fingerprint (JA3)
+            |                  |                     |
+      looks human         suspicious            known-bad
+            |                  |                     |
+            v                  v                     v
+        ALLOW           [2] CHALLENGE            [3] BLOCK / tarpit
+        serve it        JS test / CAPTCHA /      (confident bot)
+                        proof-of-work
+                         | passes    | fails
+                         v           v
+                       ALLOW       BLOCK
+
+  The response is GRADUATED, not a binary gate: the more
+  suspicious a request looks, the more it must prove before
+  it is served. Cheap checks first, expensive checks only
+  on the doubtful few -- the same "narrow cheap, perfect
+  expensive" funnel as search (L16) and the CDN (L14).
+</pre></div>
+
+<p class="note"><span class="key">Bot detection is not a yes/no gate you put in front of the site. It is a <b>funnel</b>: cheap passive signals score every request, a graduated set of active challenges taxes the suspicious ones, and only the confidently-bad are blocked. The design question is where to draw the lines — because every line you draw both lets some bots through (a false negative) and stops some humans (a false positive), and those two mistakes do not cost the same.</span></p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Bot</b> — any client driven by a program, not a person typing in a browser. Ranges from a one-line script to a real browser automated by code.</li>
+  <li><b>Good bot vs bad bot</b> — automation you welcome (search crawlers, uptime monitors, link-preview fetchers) versus automation that harms you (scrapers, credential-stuffers, scalpers, spam). The <i>same</i> techniques serve both; intent is what differs.</li>
+  <li><b>Scraping</b> — a bot systematically copying your content (catalog, prices, reviews) at machine speed, often for a competitor or a reseller.</li>
+  <li><b>Credential stuffing</b> — trying a large list of <i>stolen</i> username/password pairs (leaked from some other breached site) against your login, betting that people reuse passwords.</li>
+  <li><b>Scalping / inventory hoarding</b> — bots buying up limited stock (sneakers, tickets, GPUs) the instant it drops, to resell.</li>
+  <li><b>Signal</b> — anything a request reveals about itself <i>without being asked</i> — its IP, its request rate, the exact shape of its headers and TLS handshake, how it moves through the site.</li>
+  <li><b>Fingerprint</b> — a signature built from those low-level details. A <b>TLS fingerprint (JA3)</b> hashes the exact order of cipher-suites and extensions in the connection's opening message; real browsers and script libraries produce different ones.</li>
+  <li><b>Challenge</b> — an active test that costs the client something to pass: a <b>CAPTCHA</b> (a puzzle easy for humans, hard for programs), a <b>JavaScript challenge</b> (can the client run JS at all?), or a <b>proof-of-work</b> (make the client burn measurable CPU).</li>
+  <li><b>Proof-of-work (PoW)</b> — force the client to compute a small but non-trivial puzzle (find a number whose hash starts with N zero bits) before it's served. Cheap once, expensive a million times.</li>
+  <li><b>Rate-based detection</b> — flag a client that makes too many requests per unit time (Lesson 08's rate limiter, used as a bot signal).</li>
+  <li><b>Behavioral detection</b> — flag a client whose <i>pattern</i> (navigation, timing, aggregate failure rate) doesn't look like a human's, even at a low request rate.</li>
+  <li><b>False positive / false negative</b> — a false positive blocks a real human (a lost customer); a false negative lets a bot through (wasted compute or abuse). You cannot drive both to zero.</li>
+  <li><b>Graduated response</b> — instead of block-or-allow, choose an action proportional to suspicion: serve, challenge, or block. The middle rung is what keeps friction off real users.</li>
+</ul>
+
+<h2>Move 1 — Estimate: how much traffic isn't human, and what it costs</h2>
+<p>Before designing a defense, size the problem. Two numbers matter: how much of the load is automated, and what the two kinds of mistake cost.</p>
+
+<table>
+  <tr><th>Piece</th><th>Value</th><th>Where it comes from</th></tr>
+  <tr><td>Peak front-door traffic</td><td><code>40,000 req/s</code></td><td>Lesson 27's fleet</td></tr>
+  <tr><td>Share that is automated</td><td><code>~40%</code></td><td>industry surveys put automated traffic near half of the web; varies by site</td></tr>
+  <tr><td>→ bot traffic</td><td><code>~16,000 req/s</code></td><td>40% of 40k</td></tr>
+  <tr><td>→ human traffic</td><td><code>~24,000 req/s</code></td><td>the 60% we're actually here to serve</td></tr>
+  <tr><td>Render cost per request</td><td><code>~30 ms CPU</code></td><td>Lesson 59/60 (turning data into HTML)</td></tr>
+  <tr><td>Leaked credential pairs (one attack)</td><td><code>10,000,000</code></td><td>a dump from someone else's breach</td></tr>
+  <tr><td>Attacker's proxy IPs (botnet)</td><td><code>10,000</code></td><td>rented residential / mobile proxies</td></tr>
+</table>
+
+<div class="card calc">
+  <p><b>What bots cost you just by being served.</b> If 40% of 40k req/s are bots, that's <b>16,000 bot requests every second</b> hitting the same render path as real users. Priced the Lesson 59/60 way: <code>0.030 s × 16,000 = 480 core-seconds every second = 480 CPU cores ≈ 60 servers</code> doing nothing but rendering pages for programs. <span class="key">Before a single account is stolen or a single price is scraped, automated traffic is already a ~60-server line item on the bill (Lesson 59) — the cheapest bot to handle is the one you never render for.</span></p>
+</div>
+
+<div class="card calc">
+  <p><b>Why the obvious defense fails — the low-and-slow attack.</b> A credential-stuffer has 10M stolen pairs to test against our login. The loud way — one machine firing 2,000 login attempts/s — is trivially caught by a per-IP rate limit (Lesson 08). So the attacker spreads the work across a <b>botnet of 10,000 rented IPs</b>, each making just <b>1 attempt per minute</b>. Per IP that is <code>1/60 ≈ 0.017 req/s</code> — slower than a real person who mistypes a password twice. A per-IP limit of even 30/min never fires. Yet the aggregate is <code>10,000 ÷ 60 ≈ 167 attempts/s</code>, grinding through all 10M pairs in <code>10,000,000 ÷ 167 ≈ 59,880 s ≈ 16.6 hours</code>. <span class="key">Each IP looks perfectly human; the <i>population</i> is an attack. Rate-limiting the thing you can see per-client is blind to an attack that is only visible when you add up all the clients.</span></p>
+</div>
+
+<div class="card calc">
+  <p><b>The asymmetry that governs everything — the two mistakes cost differently.</b> Suppose we tune a detector aggressive enough to block 95% of those 16,000 bot req/s (15,200 stopped — good), but at that sensitivity it also wrongly blocks <b>0.2% of humans</b>: <code>24,000 × 0.002 = 48 real people per second</code> hitting a wall, <code>≈ 4.1 million wrongly-blocked human requests per day</code>. And here's the trap: <span class="key">a blocked bot is silent and a blocked human is <i>invisible</i> too — they don't appear in your success metrics, they just leave. A false negative costs a little compute; a false positive costs a customer you never knew you lost.</span> That asymmetry — cheap, measurable mistakes on one side; expensive, unmeasured mistakes on the other — is why you cannot simply "turn the detector up to maximum."</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — abuse reduction vs friction &amp; false positives.</b> Every knob in this lesson moves along one dial. Tighten detection (block more, challenge more) and you stop more abuse — paid for in friction on real users and in humans wrongly turned away. Loosen it and the humans sail through — paid for in wasted compute and successful attacks. There is no setting that gives you both, because a program can be built to look arbitrarily human, so the honest goal is not "perfect separation" but "make abuse cost the attacker more than it earns them, while keeping the tax on real users near zero."</p>
+
+<h2>Move 2 — Model: a funnel of signals, challenges, and two detection styles</h2>
+<p>Model the defense as three layers, each more expensive than the last, applied to fewer requests as the cheap layers filter the obvious cases out. This is the same "cheap filter first, expensive check only on survivors" funnel as the search re-ranker (Lesson 16) and the CDN's shield (Lesson 14).</p>
+
+<h3>Layer 1 — passive signals (free, ask nothing)</h3>
+<div class="card calc">
+  <p>A request reveals a lot without being asked. <b>IP reputation:</b> is it from a residential ISP (probably a person) or a datacenter/known-proxy range (probably a program)? <b>Rate per client:</b> Lesson 08's counter, now read as a bot signal. <b>Fingerprint:</b> the exact order of HTTP headers, the User-Agent, and especially the <b>TLS handshake (JA3)</b> — a real Chrome offers its cipher-suites and extensions in a characteristic order; a generic HTTP library offers a different one, and a User-Agent claiming "Chrome" over a non-Chrome TLS fingerprint is a lie you can catch. <span class="key">These cost nothing (they're already in the request) and filter the lazy majority of bots — but every one of them is forgeable by an attacker who bothers to mimic a real browser.</span></p>
+</div>
+
+<h3>Layer 2 — active challenges (raise the cost of faking)</h3>
+<div class="card calc">
+  <p>When signals are ambiguous, make the client <i>prove</i> something. A <b>JavaScript challenge</b> asks the client to run a snippet and return the answer — a bare HTTP script that can't execute JS fails instantly, and even one that can pays a round trip. A <b>CAPTCHA</b> asks for something still hard to automate (though machine vision keeps eroding this). A <b>proof-of-work</b> makes the client find a nonce whose hash starts with N zero bits — pure CPU, no human needed, but <i>metered</i>. <span class="key">A challenge doesn't identify a bot; it changes the economics. It's nearly free for a human doing one login and expensive for a program doing ten million.</span></p>
+</div>
+
+<div class="card calc">
+  <p><b>Proof-of-work, with numbers.</b> Require the client to find a nonce so <code>hash(challenge‖nonce)</code> starts with 20 zero bits. Expected tries = <code>2²⁰ ≈ 1,050,000</code> hashes ≈ <b>~0.5 s</b> of a phone's CPU. For a real user logging in once, that half-second hides behind the network round trips — unnoticed. For the credential-stuffer testing 10M pairs: <code>10,000,000 × 0.5 s = 5,000,000 CPU-seconds ≈ 58 CPU-days</code> of work to grind the list, where before it was essentially free. <span class="key">Proof-of-work flips the attack from "free at any scale" to "priced per attempt" — but it taxes low-power legit devices too, and a botnet running on stolen CPU has cycles to burn, so PoW raises the cost, it doesn't build a wall.</span></p>
+</div>
+
+<h3>Layer 3 — the two ways to detect, and why you need both</h3>
+<div class="card calc">
+  <p><b>Rate-based detection</b> counts requests per key (IP, account, API token) and flags the ones over a threshold. It's cheap, stateless, and instantly catches the <i>loud</i> — the single IP at 2,000 req/s. Its blind spot is the whole low-and-slow attack above: spread thin enough, every individual key stays under the limit. <b>Behavioral detection</b> instead learns what normal <i>looks</i> like and flags deviation — not "how many requests" but "what pattern": a client that hits 500 product pages in perfect sequence with no mouse movement and identical 200 ms gaps, or an <i>endpoint</i> whose failed-login ratio jumps from 3% to 47%. <span class="key">Rate-based catches volume; behavioral catches shape. The distributed attack is invisible to the first and glaring to the second — which is exactly why a real defense runs both.</span></p>
+</div>
+
+<p class="note why"><b>The model in one line:</b> score every request with free passive signals; challenge the ambiguous middle to make faking expensive; and detect abuse two ways at once — by <i>rate</i> (catches the loud single client) and by <i>behavior</i> (catches the quiet distributed crowd). No single layer is trustworthy alone, because each is forgeable or blind in some way; the strength is in stacking many weak, independent checks — <b>defense in depth</b> — so an attacker has to defeat all of them at once.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Run three clients through the funnel and watch where each is caught — or isn't.</p>
+
+<h3>Path A — the loud scraper (one IP, machine speed)</h3>
+<div class="diagram"><pre>
+  A competitor's scraper copies the whole catalog from one server.
+
+    one IP  --2,000 req/s-->  edge
+        |
+        v
+    [1] rate signal: 2,000/s from one IP >> any human (a person
+        browses maybe 1 page / few seconds)  -> INSTANT flag
+    [1] fingerprint: JA3 = "python-requests", User-Agent claims
+        "Chrome 120"  -> the mismatch is a lie  -> confident bot
+        |
+        v
+    [3] BLOCK (or better: TARPIT -- answer very slowly with junk,
+        so the scraper wastes its OWN time and learns nothing).
+
+  Cost to us: ~free (caught at the cheapest layer, no render).
+  The attacker's response: stop being loud. Distribute.  --> Path B
+</pre></div>
+
+<h3>Path B — the low-and-slow botnet (rate-based defense goes blind)</h3>
+<div class="diagram"><pre>
+  Credential stuffing: 10M stolen pairs, 10,000 residential-proxy
+  IPs, each 1 attempt/MINUTE.
+
+    per IP:  0.017 req/s  -> under EVERY per-IP rate limit -> ALLOW
+    fingerprint: attacker runs a REAL headless browser
+                 -> JA3 looks like Chrome -> passive signals PASS
+        |
+        v
+    Rate-based + fingerprint detection: BLIND. Each request is
+    individually indistinguishable from a human login.
+
+    But add up the population (BEHAVIORAL):
+        normal login fail ratio ........ ~3%
+        under attack (165 fails/s added) ~47%   <-- glaring
+        same 10M usernames marching through in order
+        -> the ENDPOINT's aggregate shape screams attack even
+           though no single CLIENT does.
+        |
+        v
+    Response: don't try to pick the bad IPs (you can't). Raise the
+    cost on the whole login path -> proof-of-work + a step-up
+    challenge on any login after the Nth failure for that ACCOUNT.
+    10M attempts x 0.5s PoW = ~58 CPU-days: the attack gets a bill.
+</pre></div>
+
+<h3>Path C — the graduated response (keep friction off the human)</h3>
+<div class="diagram"><pre>
+  The trap: to stop Path B you could CAPTCHA every login. But a hard
+  challenge is abandoned by ~15-30% of real users. Challenging all
+  24,000 human req/s to catch bots would cost more humans than the
+  bots ever would. So don't gate -- SCORE, then respond in proportion.
+
+    request --> score from all signals (0 = human ... 1 = bot)
+        |
+   score < 0.3  --------------------->  ALLOW   (the ~99%, zero friction)
+   0.3 <= score < 0.8  --> CHALLENGE  (invisible JS/PoW first;
+                                       CAPTCHA only if that fails)
+   score >= 0.8  -------------------->  BLOCK / tarpit
+
+  Most humans never see a challenge. The suspicious few pay a small,
+  mostly-invisible tax. Only the confident bots are turned away.
+  The dial IS the two thresholds -- move them and you trade
+  false positives (blocked humans) against false negatives (served bots).
+</pre></div>
+
+<p>Path A shows the easy case: <span class="key">a loud, lazy bot is caught free at the cheapest layer — rate plus a fingerprint that contradicts its own User-Agent — and tarpitting it wastes the attacker's time instead of ours.</span> Path B is the case that decides the architecture: <span class="key">a distributed low-and-slow attack is invisible to rate-based and fingerprint checks (each request looks human), and only the <i>population-level</i> behavioral signal — the endpoint's failed-login ratio jumping to 47% — reveals it; the fix isn't to identify the bad IPs (you can't) but to raise the cost on the whole path with proof-of-work and account-level step-up.</span> Path C is how you pay for all this without driving humans away: <span class="key">score instead of gate, and respond in proportion, so the 99% who look human sail through untouched and only the doubtful few are taxed.</span></p>
+
+<h2>Move 4 — Find the first bottleneck: perfect separation is impossible, so change the goal</h2>
+<p>Two walls shape every bot-detection design, and both push you away from "detect the bots" toward "price the abuse."</p>
+
+<div class="card calc">
+  <p><b>First wall — you cannot separate bots from humans perfectly, and the two errors trade off.</b> Every signal is forgeable: an attacker willing to spend a little runs a <i>real</i> browser (headless Chrome with a genuine TLS fingerprint, real JS execution, even simulated mouse jitter), so no client-side signal is proof of anything. That means detection is always a <b>probability</b>, and wherever you set the threshold you make both mistakes at once — <span class="key">a false negative (a bot served: a little wasted compute) and a false positive (a human blocked: a customer lost, and lost <i>silently</i> — they never show up in your metrics).</span> These costs are wildly asymmetric and one of them is unmeasured, so cranking sensitivity to "catch everything" quietly destroys the business it protects. The resolution is to stop aiming for separation and aim for <b>economics</b>: make each abusive attempt cost the attacker more (proof-of-work, step-up challenges, tarpits) than the attempt earns them, while keeping the cost on a real user near zero. Bots don't stop because you detected them; they stop because you made the attack unprofitable. That reframing — from a detection problem to a cost problem — is the whole craft, and the <b>graduated response</b> (score, then serve / challenge / block) is how you apply the cost where the suspicion is and nowhere else.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Second wall — the adversary adapts, so no fixed signal stays good.</b> This is Lesson 52's lesson in a new setting: the moment you key your defense on one tell — a datacenter IP, a <code>python-requests</code> fingerprint, a missing JS engine — the attacker learns it and mimics a real browser, and that signal goes dead. So no single strong signal survives contact; <span class="key">the durable defense is <b>defense in depth</b> — many weak, <i>independent</i> signals combined, so the attacker has to defeat all of them simultaneously, and the cost of doing so is itself the deterrent.</span> Crucially, mix signals the attacker <i>can</i> see and forge (client-side: fingerprint, JS, mouse) with signals they <i>cannot</i> see (server-side aggregate: this account's failure rate across all IPs, this endpoint's population behavior, this IP-range's reputation history). A bot can perfectly fake its own request; it cannot fake the pattern that only emerges when your server adds up thousands of requests it has no view into. And because the adversary keeps moving, the models must be retrained continuously — bot detection is never "done," it's a standing arms race you keep paying to stay ahead of.</p>
+</div>
+
+<p>So the honest design for our front door is not a bot filter but a layered, economic defense: <b>score every request with free passive signals</b> (rate, IP reputation, TLS/header fingerprint) and catch the lazy majority for nothing; <b>challenge the ambiguous middle</b> with an invisible JS or proof-of-work test first and a CAPTCHA only as a last resort, so faking gets expensive without taxing humans; <b>detect the distributed attacks behaviorally</b>, at the account and endpoint level, where the population reveals what no single client does; and <b>respond in proportion</b> so real users almost never feel it. Each choice is made knowing its price — a tighter threshold buys less abuse and more lost customers; a challenge buys deterrence and a little friction; every signal you add buys robustness and a little latency.</p>
+
+<p><span class="key">The deepest point: "bot detection" sounds like a wall you build once, and it is really a market you keep tilting. You will never label every request correctly, because the other side can always spend more to look human — so the winning move is not perfect identification but making abuse cost more than it pays, applied precisely to the requests that look suspicious and never to the ones that don't. And the same asymmetry runs underneath: a served bot is a cheap, visible mistake; a blocked human is an expensive, invisible one — which is why the safest default is to doubt your own detector and let the graduated middle, not the block, do most of the work.</span> The standing tension: abuse reduction vs friction &amp; false positives.</p>
+
+<h3>The scoreboard: the layers and what each buys</h3>
+<table>
+  <tr><th>Layer</th><th>Cost to run</th><th>Catches</th><th>Blind to / risk</th></tr>
+  <tr><td><b>Rate-based signal</b> (L08)</td><td>~free</td><td>the loud single client</td><td>distributed low-and-slow</td></tr>
+  <tr><td><b>Fingerprint (JA3 / headers)</b></td><td>~free</td><td>lazy scripts, UA lies</td><td>a real headless browser</td></tr>
+  <tr><td><b>Behavioral / aggregate</b></td><td>compute + state</td><td>the population-level attack (47% fail spike)</td><td>lag; needs a baseline to compare against</td></tr>
+  <tr><td><b>JS / proof-of-work challenge</b></td><td>a round trip + client CPU</td><td>non-browsers; makes bulk expensive</td><td>taxes weak devices; botnet CPU can pay it</td></tr>
+  <tr><td><b>CAPTCHA</b></td><td>high (human friction)</td><td>what's left</td><td>~15–30% human abandonment; eroded by ML</td></tr>
+  <tr><td><b>Graduated response</b></td><td>the scoring logic</td><td>—</td><td>the tuning IS the false-pos/neg dial</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — relying on per-IP rate limiting alone.</b> It catches the loud scraper and is completely blind to a 10,000-IP botnet doing 1 req/min each. A per-client limit can't see an attack that's only visible when you sum the clients — add behavioral / aggregate detection at the account and endpoint level.</li>
+  <li><b>Trap 2 — cranking sensitivity to "catch everything."</b> The false positive (a blocked human) is an expensive, <i>invisible</i> lost customer, while the false negative (a served bot) is cheap compute. Maximizing detection quietly maximizes the costlier, unmeasured mistake. Doubt the detector; let the graduated middle absorb the ambiguity.</li>
+  <li><b>Trap 3 — trusting any single client-side signal.</b> A fingerprint, a JS check, even mouse movement can all be forged by an attacker running a real browser. No client signal is proof; combine many independent ones (defense in depth) and lean on server-side aggregate signals the attacker can't see or fake.</li>
+  <li><b>Trap 4 — CAPTCHA-ing everyone to be safe.</b> A hard challenge is abandoned by 15–30% of real users, so a blanket challenge costs more humans than the bots ever would. Challenge only the suspicious middle, invisibly first (JS/proof-of-work), and save the CAPTCHA for last.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>Telling humans from programs at the front door is an economics problem wearing a detection costume. <b>Estimate</b> found that ~40% of a 40k req/s front door can be automated — ~16k req/s, a ~60-server render bill (Lesson 59) before any abuse — and watched a credential-stuffer defeat the obvious defense by spreading 10M stolen pairs across 10,000 IPs at 1 attempt/minute each, invisible to any per-IP limit yet grinding the whole list in ~16.6 hours. <b>Model</b> built a funnel: free passive <b>signals</b> (rate, IP reputation, TLS/header <b>fingerprint</b>), active <b>challenges</b> (JS test, CAPTCHA, and <b>proof-of-work</b> that turns a free attack into ~58 CPU-days), and two detection styles run together — <b>rate-based</b> for the loud, <b>behavioral</b> for the quiet distributed crowd. <b>Tracing</b> caught a loud scraper for free (and tarpitted it), watched a low-and-slow botnet slip past rate and fingerprint checks only to be exposed by a population-level signal (a 3%→47% failed-login spike), and used a <b>graduated response</b> — score, then serve / challenge / block — to keep friction off the 99%. The <b>first bottleneck</b> reframes the whole thing: <span class="key">perfect separation is impossible because a program can be built to look arbitrarily human and the two error types trade off — a served bot is cheap and visible, a blocked human is expensive and invisible — so the goal isn't detection, it's making abuse cost more than it earns while taxing real users near zero; and because the adversary adapts (Lesson 52), the defense must be many weak independent signals (defense in depth), including server-side aggregates the attacker can't see.</span> The standing tension: abuse reduction vs friction &amp; false positives.</p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>That completes the queued curriculum spine — sixty-one worked examples from a URL shortener to the bot at the door. The course doesn't stop here; the next batch of advanced topics opens the black boxes we've been leaning on:</b></p>
+  <p style="margin:.2rem 0">• <b>Consensus internals (Raft/Paxos):</b> we've used "a consensus cluster" as a trusted black box for leader election (L10), service discovery (L34), and locks (L22) — the next lesson opens it: how a replicated log actually elects a leader, commits an entry by majority, and stays safe across crashes and partitions.</p>
+  <p style="margin:.2rem 0">• Then: <b>a distributed key-value store as a capstone</b> (wiring together consistent hashing, quorums, gossip, and LSM storage), <b>stream processing &amp; windowing</b> (stateful exactly-once with watermarks, past L29's lambda/kappa sketch), <b>vector databases &amp; semantic search</b> (nearest-neighbor over embeddings, where L16's keyword index can't reach), and <b>global rate limiting</b> (L08's single-node limiter coordinated across regions). Say <b>next</b> and we'll open the first black box.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">bot</span>
+    <span class="pill">good bot vs bad bot</span>
+    <span class="pill">scraping</span>
+    <span class="pill">credential stuffing</span>
+    <span class="pill">scalping</span>
+    <span class="pill">signal</span>
+    <span class="pill">fingerprint (JA3)</span>
+    <span class="pill">challenge</span>
+    <span class="pill">proof-of-work</span>
+    <span class="pill">rate-based detection</span>
+    <span class="pill">behavioral detection</span>
+    <span class="pill">false positive / false negative</span>
+    <span class="pill">graduated response</span>
+    <span class="pill">defense in depth</span>
+  </p>
+  <p>That's Lesson 61, built on Lesson 08's rate limiting (per-client counters, now read as a bot signal, and their blind spot for distributed attacks), Lesson 52's content-moderation adversary (the attacker adapts, so no fixed signal stays good → defense in depth), Lesson 55's edge (where this decision runs, before rendering), Lesson 59/60's cost-per-request lens (the ~60 servers wasted rendering for bots), Lesson 49's gateway (the front door where admission control lives), Lesson 16/14's "narrow cheap, perfect expensive" funnel (cheap signals first, expensive challenges only on the doubtful), and Lesson 07/28's admission control (reject junk at the door). <b>Ask me follow-ups</b> — e.g. "how does a JA3/TLS fingerprint actually get computed, and how do attackers spoof it?", "what makes account-level behavioral detection resistant to a botnet when IP-level isn't?", "how do you verify a <i>good</i> bot like Googlebot instead of just blocking automation?", "what's the difference between proof-of-work and a CAPTCHA as a cost lever?", or "how do you measure false positives when the blocked humans never appear in your metrics?" When you're ready, say <b>next</b> and we'll open the consensus black box — <i>Raft/Paxos internals: how a replicated log stays safe.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your login endpoint is protected by a per-IP rate limit of 30 attempts/minute — plenty of headroom for a real person, and it instantly stops any single machine hammering the endpoint. An attacker with 10 million stolen username/password pairs still tests the entire list against you in under a day, and the rate limit never fires once. How?",
+    options: [
+      {t:"They distributed the work: ~10,000 rented proxy IPs each make only ~1 attempt per minute (0.017 req/s), which is well under the 30/min per-IP limit, so every individual client looks human. The aggregate is ~167 attempts/s, enough to grind 10M pairs in ~16.6 hours. A per-IP limit is blind to an attack that's only visible when you sum thousands of low-rate clients — you need population-level behavioral detection (e.g. the endpoint's failed-login ratio spiking from ~3% to ~47%) and to raise the cost on the whole path (proof-of-work, account-level step-up).",
+       ok:true,
+       fb:"Right. This is the low-and-slow attack: spread thin enough, no single key crosses any per-client threshold, so rate-based detection goes blind. The tell isn't in any one request — it's in the aggregate the attacker can't see: the account's failures across all IPs, the endpoint's population failure rate. You stop it by pricing the path (PoW makes 10M attempts ≈ 58 CPU-days) and detecting behaviorally, not by tightening a per-IP number that already can't see the attack."},
+      {t:"The rate limiter must be misconfigured or bypassed — a correctly set per-IP limit of 30/min mathematically cannot allow 10M attempts in a day, so the fix is to lower the limit to 5/min.",
+       ok:false,
+       fb:"The limiter is working exactly as configured — it's counting per IP, and no IP exceeds the limit because the attack uses 10,000 IPs at ~1/min each. Lowering the per-IP limit to 5/min still doesn't fire (each IP does far less than that) and now risks blocking real people who fat-finger a password. The problem isn't the threshold value; it's that per-IP counting can't see a distributed attack at all."},
+      {t:"They must have stolen your rate-limiter's state, so you should encrypt the counters.",
+       ok:false,
+       fb:"No theft is involved. The counters are correct and honest; the attack simply stays under every per-IP counter by using many IPs slowly. Encrypting the counters changes nothing about a client that never approaches its own limit. The gap is architectural — you're keying detection on the wrong unit (single IP) for this attack shape."}
+    ]
+  },
+  {
+    stem: "A new bot-detection vendor demo shows their model catching 99.9% of bots if you set it to maximum sensitivity. Before flipping it on for all 24,000 human req/s, what's the most important thing to reason about?",
+    options: [
+      {t:"The asymmetry of the two mistakes. At maximum sensitivity the detector also produces false positives — real humans wrongly blocked — and those are far costlier and, worse, invisible: a blocked bot is cheap wasted compute you can measure, but a blocked customer just silently leaves and never appears in your success metrics. Even a 0.2% false-positive rate is 48 real people/s (~4.1M/day) hitting a wall. So you can't judge the setting by its bot-catch rate alone; you tune the threshold against the false-positive cost, and let a graduated response (challenge, don't block, the ambiguous middle) absorb the uncertainty.",
+       ok:true,
+       fb:"Exactly. \"Catch 99.9% of bots\" is only half a sentence — the other half is how many humans it stops to get there, and that half is unmeasured because the victims don't show up in your funnel. A served bot costs a little compute; a blocked human costs a customer you never knew you lost. That's why the safe default is to doubt the detector and route ambiguous requests to a challenge rather than a block."},
+      {t:"Whether the model runs fast enough — as long as it adds under 5 ms of latency, maximum sensitivity is always the right choice because catching more bots is strictly better.",
+       ok:false,
+       fb:"Latency matters, but it's not the governing concern, and \"catching more bots is strictly better\" is the exact trap. Maximum sensitivity maximizes false positives too — blocked humans — which are the costlier, invisible mistake. More bot-catching is not free; it's paid for in customers turned away. You have to weigh both error types, not just the one the demo shows you."},
+      {t:"Whether bots could reverse-engineer the model — if they can, the whole thing is pointless, so you should keep the model secret and change nothing else.",
+       ok:false,
+       fb:"Adversaries adapting is real (it's why you need defense in depth), but it's not the first thing to reason about before enabling a max-sensitivity setting. The immediate risk of flipping it on is the flood of false positives — real humans blocked — which is both costly and invisible. Secrecy of the model doesn't address that at all; tuning the threshold and using a graduated response does."}
+    ]
+  },
+  {
+    stem: "To stop the credential-stuffing and scraping for good, an engineer proposes putting a hard CAPTCHA in front of every request to the site. What's wrong with that, and what's the better shape?",
+    options: [
+      {t:"A hard challenge is abandoned by roughly 15–30% of real users, so CAPTCHA-ing all 24,000 human req/s would cost far more in lost customers than the bots ever cost in compute or abuse — you'd be paying the friction on the 99% who are human to tax the minority who aren't. The better shape is a graduated response: score each request from all signals, allow the clear-human majority with zero friction, challenge only the suspicious middle (invisibly first — a JS test or proof-of-work — and a CAPTCHA only if that fails), and block only the confident bots. Friction lands where suspicion is, and nowhere else.",
+       ok:true,
+       fb:"Right. A blanket challenge treats every human as a suspect and pays the abandonment cost on all of them. Because most traffic is unambiguous, you score first and spend friction only on the doubtful few — and even then reach for the invisible challenge (JS/PoW) before the human-visible one. The two score thresholds are the actual dial: move them and you trade false positives (blocked humans) against false negatives (served bots)."},
+      {t:"Nothing is wrong — a hard CAPTCHA on every request is the gold standard, since it's the one test bots definitively cannot pass.",
+       ok:false,
+       fb:"Two problems. First, machine vision has eroded CAPTCHAs — they're not unbeatable, and solving farms exist. Second and bigger: a hard CAPTCHA on every request drives away 15–30% of real users, a self-inflicted cost far larger than the bots'. The point of detection is to spend friction sparingly on the suspicious, not to tax every human to be safe."},
+      {t:"The problem is only cost — CAPTCHAs charge a per-solve fee — so switch to a free CAPTCHA provider and keep it on every request.",
+       ok:false,
+       fb:"The dominant cost isn't the provider's fee; it's the human abandonment — 15–30% of real users giving up when confronted with a challenge they didn't need. A free provider doesn't fix that. The fix is structural: don't challenge everyone. Score requests and challenge only the suspicious middle, so the humans who look human are never asked."}
+    ]
+  },
+  {
+    stem: "Your defense keys on a TLS/header fingerprint: requests whose JA3 fingerprint matches known scripting libraries get blocked. It works great for a week, then bot traffic quietly climbs back to where it was, with no fingerprint matches. What happened, and what's the durable fix?",
+    options: [
+      {t:"The adversary adapted: instead of a scripting library, they now drive a real headless browser, so the TLS fingerprint, headers, and JS execution all look genuinely like Chrome — the single signal you keyed on is now forged, and it's dead. This is the arms-race property: any one signal, once known, gets mimicked. The durable fix is defense in depth — combine many weak, independent signals, and critically mix client-side signals the attacker can see and fake (fingerprint, JS, mouse) with server-side aggregate signals they can't see (this account's failure rate across all IPs, this endpoint's population behavior, IP-range reputation history). The bot can fake its own request perfectly; it can't fake the pattern that only emerges when your server sums thousands of requests.",
+       ok:true,
+       fb:"Exactly. A strong single signal is a strong single point of failure — the moment it's known it's copied, and a real browser defeats every client-side tell. Durability comes from stacking independent checks so the attacker must beat all of them at once, and especially from server-side aggregates that live outside any single request's view. And because the adversary keeps moving (Lesson 52), the models need continuous retraining — bot detection is never \"done.\""},
+      {t:"The fingerprint database is stale — just download the latest JA3 signature list and blocking will work permanently again.",
+       ok:false,
+       fb:"Updating the signature list buys another short reprieve at best. The attacker isn't using a signature you're missing; they're using a real browser whose fingerprint is genuinely indistinguishable from a human's Chrome. No list update catches that, because there's nothing anomalous to list. Relying on one signal — even a well-maintained one — is the flaw; you need many independent signals, including ones the attacker can't observe."},
+      {t:"Your fingerprint check must have been turned off. Re-enable it and add a second identical fingerprint check for redundancy.",
+       ok:false,
+       fb:"The check is still on; it just no longer matches, because the bots now present a real browser's fingerprint. Two copies of the same check catch exactly what one copy catches — nothing new — since they share the same blind spot. Redundancy only helps when the signals are independent and fail differently. The fix is diverse signals (behavioral, aggregate, server-side), not a duplicate of the one that was defeated."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

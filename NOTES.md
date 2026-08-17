@@ -1175,9 +1175,54 @@
     vs-slice/stray-param, L55 edge render/decision-vs-truth, L59 render priced per request, L27 knee/~150 cores, L28
     backpressure + L49 BFF graceful-degrade (streaming), L53 rec ML call, L02/48 cache one-copy-vs-N. Trade:
     time-to-first-byte & offload vs freshness & compute. (Lesson 0060)
-61. Bot detection & traffic authenticity — telling real users from automated traffic at the edge (L52/55):
-    signals, challenges, rate-based vs behavioral detection, and the false-positive cost of blocking real users.
-    Trade: abuse reduction vs friction & false positives.
+61. ✅ **Bot detection & traffic authenticity** — the orders front door (40k req/s, L27/49/55/60) + its login
+    endpoint: a request arrives as a bare HTTP call with no "I am human" stamp, and ~40% of traffic is automated
+    (~16k req/s = a ~60-server render bill L59 before any abuse). The obvious defense fails: a per-IP rate limit
+    (L08) catches the loud scraper (1 IP @ 2,000/s) but is BLIND to credential stuffing spread over 10,000 proxy
+    IPs @ 1 attempt/min each (0.017 req/s/IP, under any per-IP limit) grinding 10M stolen pairs in ~16.6 h — the
+    attack is only visible when you SUM the clients. Model = a FUNNEL (L14/16 narrow-cheap-perfect-expensive):
+    [1] free passive **signals** (rate, IP reputation, TLS/header **fingerprint/JA3** — a UA claiming Chrome over
+    a python-requests TLS handshake is a catchable lie), [2] active **challenges** (JS test / CAPTCHA / **proof-of-
+    work** — 20 zero bits ≈ 2²⁰ ≈ 0.5s CPU, free for one login but 10M attempts × 0.5s ≈ 58 CPU-days: flips a free
+    attack to priced-per-attempt), [3] two detection styles run TOGETHER — **rate-based** (catches the loud single
+    client, blind to distributed) + **behavioral/aggregate** (catches the population: login-fail ratio spiking
+    3%→47%, a shape no single IP shows). Trace the loud scraper (caught free at layer 1 → tarpit), the low-and-slow
+    botnet (rate+fingerprint blind since it runs a REAL headless browser → only the endpoint-level fail-ratio
+    behavioral signal + PoW/account step-up stop it), and the **graduated response** (score 0–1 → allow the ~99% /
+    challenge the middle invisibly-first / block the confident) that keeps friction off humans. First wall = perfect
+    separation is IMPOSSIBLE (a program can be built to look arbitrarily human → detection is a PROBABILITY, and the
+    two errors trade off: a served bot = cheap+visible compute, a blocked human = expensive+INVISIBLE lost customer
+    that never shows in your metrics → cranking sensitivity destroys the business it protects) → reframe from
+    DETECTION to ECONOMICS: make each abusive attempt cost more than it earns (PoW/step-up/tarpit) while taxing real
+    users ≈0, graduated response applying the cost only where suspicion is. Second wall = the adversary ADAPTS (L52):
+    any single signal, once keyed on, gets mimicked and dies → **defense in depth** (many weak INDEPENDENT signals),
+    mixing client-side (forgeable: fingerprint/JS/mouse) with server-side AGGREGATE (unforgeable: this account's fail
+    rate across all IPs, this endpoint's population behavior) — a bot fakes its own request perfectly but can't fake
+    the pattern that only emerges when the server sums thousands it has no view into; models retrained continuously
+    (never "done"). Four traps: per-IP limiting alone (blind to distributed); max sensitivity (maximizes the costly
+    invisible false positive); trusting one client-side signal (real browser forges it); CAPTCHA everyone (15–30%
+    human abandonment > the bots' cost). Reuses L08 rate limiting + its distributed blind spot, L52 adaptive
+    adversary → defense in depth, L55 edge (where the decision runs), L59/60 wasted render compute, L49 gateway
+    admission control, L14/16 narrow-cheap-perfect-expensive funnel, L07/28 admission/reject-at-the-door. Trade:
+    abuse reduction vs friction & false positives. (Lesson 0061)
+
+### Advanced topics (next batch — queued so the course never runs dry)
+62. Consensus internals (Raft / Paxos) — open the black box used as "a consensus cluster" in L10/22/34/43: the
+    replicated log, leader election with terms + majority vote, committing an entry by quorum, log matching &
+    safety across crashes, and membership changes. Trade: understandability & correctness vs latency of agreement.
+63. Building a distributed key-value store (capstone) — wire consistent hashing (L03/04) + quorum reads/writes
+    (L06/11) + gossip membership & Merkle anti-entropy (L43) + LSM storage (L47) + hinted handoff into ONE
+    Dynamo/Bigtable-style system, and see where the seams pull against each other. Trade: tunable consistency vs
+    availability & operational complexity.
+64. Stream processing & windowing — beyond L29's lambda/kappa sketch: a stateful stream processor (tumbling/
+    sliding/session windows, watermarks for late data L17/29, checkpointing for exactly-once state, keyed state &
+    rescaling). Trade: latency & correctness of windowed results vs state size & recovery cost.
+65. Vector databases & semantic search — where L16's keyword inverted index can't reach: embeddings + approximate
+    nearest-neighbor (HNSW / IVF), recall vs latency, hybrid keyword+vector retrieval, and reindexing as the model
+    changes. Trade: recall/quality vs query latency & index cost.
+66. Global rate limiting & quota — L08's single-node limiter coordinated across regions and a fleet: sloppy/
+    approximate counters (L21), token sync vs local buckets + reconciliation, per-tenant global quotas (L40), and
+    the CAP tension of a shared limit under partition (L11). Trade: limit accuracy vs coordination latency & cost.
 
 ## Lesson format conventions
 - Four reusable "moves" framing introduced in Lesson 01: estimate → model →
