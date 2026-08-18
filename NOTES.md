@@ -1207,9 +1207,40 @@
     abuse reduction vs friction & false positives. (Lesson 0061)
 
 ### Advanced topics (next batch — queued so the course never runs dry)
-62. Consensus internals (Raft / Paxos) — open the black box used as "a consensus cluster" in L10/22/34/43: the
-    replicated log, leader election with terms + majority vote, committing an entry by quorum, log matching &
-    safety across crashes, and membership changes. Trade: understandability & correctness vs latency of agreement.
+62. ✅ **Consensus internals (Raft)** — open the black box used as "a consensus cluster" in L10/22/34/43: five
+    nodes hold a tiny replicated config store (the lock/leader/registry truth) and must agree on ONE ordered log of
+    commands despite crashes + an unreliable network, so every copy stays identical (**replicated state machine**:
+    same commands + same order = same state; agree on the LOG and you've agreed on everything). Estimate the magic
+    of **majority** (⌊N/2⌋+1 = 3 of 5): any two majorities of 5 OVERLAP in ≥1 node (3+3>5, L11 pigeonhole) → two
+    leaders per term impossible AND a committed entry impossible to lose; fault tolerance N=2f+1 → f=2, and even N
+    buys nothing (6 also tolerates 2, L10) so clusters are odd. Price a commit = **one fsync + one majority round
+    trip** (~2 ms intra-DC, ~30 ms cross-region, L11/23 tax); ceiling ~1,000/s per leader (fsync-bound) lifted ~100×
+    by **group-commit batching** (L47/33, amortizes the flush, never the RTT). Model Raft's three pieces: (1) leader
+    election — **terms** (a logical clock L35 + fencing epoch L10/22, old-term msgs rejected), one vote/term,
+    majority wins, at most one leader/term by overlap; (2) log replication — leader appends (idx,term,cmd) → sends
+    **AppendEntries** → **committed** when a majority stores it DURABLY → apply + ack + propagate commitIndex;
+    **log-matching** (prev-entry check) auto-repairs stragglers so logs converge to identical prefixes; (3) safety —
+    the **election restriction** (refuse to vote for a less-up-to-date log) chains with overlap so a new leader ALWAYS
+    holds every committed entry (**Leader Completeness**). Trace: (A) clean ~2 ms commit that never waits for the two
+    slowest nodes (majority, not all); (B) leader crash → election in ~150–300 ms, **randomized** timeout breaks the
+    split-vote symmetry that would loop forever (L10 flap / L26 herd); (C) the crux — a **committed** entry (majority,
+    client acked) survives any leader change (overlap carries it), while an **uncommitted** entry (minority, client
+    saw a TIMEOUT = unknown, L13) may be safely OVERWRITTEN because the client retries with an idempotency key (L13) →
+    committed vs uncommitted IS the exact boundary of what a distributed system may promise. First bottleneck =
+    agreement is a toll paid per decision (durable majority): attack cost-per-entry not the toll → batch + pipeline;
+    when one leader still isn't enough, **shard into many Raft groups** (multi-Raft, L03, capstone L63) — throughput
+    scales with #groups but you LOSE the single global order (cross-shard → 2PC/saga L32); consensus is your most
+    expensive storage → put ONLY agreement-critical metadata in it, keep bulk data out (L20/30 metadata/data split);
+    a majority must be alive or the cluster STOPS (CP, L11 — opposite of L34's AP routing pick), and Raft/Paxos handle
+    crash-stop not Byzantine (liars need BFT). Deepest: consensus is the one place "it probably worked" is banned —
+    everywhere else we embraced approximation (L02/06/09/21) because it was cheaper; here disagreement corrupts
+    everything downstream, so you pay a round trip + flush per decision to buy a fact every node agrees on forever.
+    Paxos = the original, same guarantees, famously harder to follow; Raft trades nothing in correctness for teachability.
+    Four traps: ack on the leader's LOCAL write (lost acked write); a fixed election timeout (split-vote storm); bulk
+    data in the cluster; expecting availability under partition (CP stops = working as designed). Reuses L11 quorum
+    overlap, L35 logical clock (term), L10/22 fencing/leader election/flap, L13 idempotency + timeout=unknown, L26
+    jitter, L47/33 group commit, L20/30 metadata split, L34 the opposite AP pick. Trade: correctness &
+    understandability vs latency of agreement. (Lesson 0062)
 63. Building a distributed key-value store (capstone) — wire consistent hashing (L03/04) + quorum reads/writes
     (L06/11) + gossip membership & Merkle anti-entropy (L43) + LSM storage (L47) + hinted handoff into ONE
     Dynamo/Bigtable-style system, and see where the seams pull against each other. Trade: tunable consistency vs

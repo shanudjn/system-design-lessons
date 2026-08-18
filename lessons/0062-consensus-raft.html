@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 62 — Consensus Internals (Raft): How Five Servers Agree on One Log</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 62 · Worked Example</div>
+  <h1>Consensus Internals (Raft): How Five Servers Agree on One Log</h1>
+  <p class="lead">Since Lesson 10 we've hidden the hardest part of distributed systems behind three innocent words: <i>"a consensus cluster."</i> Leader election (Lesson 10), distributed locks (Lesson 22), service discovery (Lesson 34), and anti-entropy coordination (Lesson 43) all said "store the truth in etcd / ZooKeeper / Consul" and moved on. <span class="key">This lesson opens that black box.</span> The problem inside is exact: <b>make five servers agree on one ordered list of commands — even though servers crash and the network delays, drops, and reorders messages — such that they never, ever disagree about what was decided.</b> We'll take one concrete cluster — <b>five nodes holding a tiny replicated config store</b> (the exact thing that backs the lock and the leader lease from earlier lessons) — and design it end to end with <b>Raft</b>, the algorithm built to make this understandable. We'll <b>estimate</b> why you need a majority and what agreement costs in latency and fault tolerance; <b>model</b> Raft's three pieces (leader election, log replication, safety); <b>trace</b> a normal commit, a leader crash, and the one scenario that decides everything — why a committed entry can never be lost. The first bottleneck is built into correctness itself: <span class="key">every decision must be durably stored on a majority before it counts, so consensus costs a round trip and a disk flush that you cannot optimize away — you can only pay it less often.</span> The trade underneath: <b>understandability &amp; correctness vs the latency of agreement.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0062-consensus-raft.html"</code></p>
+</header>
+
+<h2>The one problem we'll design</h2>
+<p>Five servers each hold a copy of a small, critical table — who currently holds the billing lock (Lesson 22), which node is the current leader (Lesson 10), where each service instance lives (Lesson 34). Clients send it commands like <code>SET lock:billing = node1, token=42</code> or <code>SET leader = node3</code>. The whole point of running five copies instead of one is to survive a crash: if any one server dies, the truth is still there. But that creates the problem. <span class="key">If two clients send conflicting commands, and different servers apply them in different orders, the five copies disagree — and now there is no truth at all, just five opinions.</span> One server holding the truth alone can't be the answer (it crashes, and it can also be <i>stale</i> — the network might have hidden a newer write from it). So the servers must <b>agree</b>: settle on one single ordered log of commands that every server applies identically, so that all five copies are always the same, and stay the same across any crash. That agreement, reached despite crashes and an unreliable network, is <b>consensus</b>, and it is the foundation every coordination service is built on.</p>
+
+<div class="diagram"><pre>
+  Five servers must agree on ONE ordered log of commands.
+
+    clients' commands  (may arrive in any order, from anywhere)
+          |
+          v
+     +----------+   AppendEntries (replicate)   +----------+
+     |  LEADER  | ----------------------------> | follower |
+     |  node 3  | ----------------------------> | follower |
+     |  term 4  | ----------------------------> | follower |
+     +----------+ <---------- acks ------------- | follower |
+          |
+          |  an entry is COMMITTED once a MAJORITY (3 of 5)
+          |  has it durably on disk -- then it can never be undone
+          v
+     LOG (identical on every node, applied in order):
+       idx: 1     2         3            4
+       cmd: SET   SET       SET          SET x=5
+            a=1   b=2       lock=n1      (term 4)
+       term:1     1         3            4
+          |
+          v
+     each node APPLIES the committed log to its copy, in order
+     -> all five copies end in the SAME state  (a replicated
+        state machine: same commands + same order = same result)
+</pre></div>
+
+<p class="note"><span class="key">Consensus is not "pick a value." It's "agree on an ever-growing <b>ordered log</b> of values, and never disagree, even as servers die and the network misbehaves." Agree on the log and you've agreed on everything: replay the same commands in the same order on every node and every node reaches the same state.</span> Raft breaks this into three problems it solves one at a time: elect one leader, replicate the log through that leader, and guarantee that nothing committed is ever lost.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Consensus</b> — getting a group of nodes to agree on one value (here, one ordered sequence of commands), such that they never disagree, even when some crash and the network delays/drops/reorders messages.</li>
+  <li><b>Replicated state machine (RSM)</b> — the trick that turns consensus into a database: if every node starts identical and applies the <i>same</i> commands in the <i>same</i> order, every node ends identical. So agreeing on the command <i>log</i> is enough.</li>
+  <li><b>Replicated log</b> — the ordered list of commands. Each <b>entry</b> is <code>(index, term, command)</code>. Index = its position; term = which leadership era created it.</li>
+  <li><b>Leader / follower / candidate</b> — Raft has one <b>leader</b> at a time that takes all writes and imposes the order; the rest are <b>followers</b>; a node that times out waiting for a leader becomes a <b>candidate</b> and stands for election.</li>
+  <li><b>Term</b> — a monotonically increasing number, one leader per term. It is a logical clock (Lesson 35) and a fencing epoch (Lesson 10/22): a message from an older term is stale and rejected.</li>
+  <li><b>Majority / quorum</b> — more than half the nodes: <code>⌊N/2⌋+1</code>. For N=5 that's 3. Every decision needs a majority; this is Lesson 11's quorum, and its overlap property is the whole safety argument.</li>
+  <li><b>Committed</b> — an entry is committed once it is durably stored on a <i>majority</i> of nodes. Only then is it safe, applied, and acknowledged to the client. An entry on fewer than a majority is <i>not</i> committed and may still be discarded.</li>
+  <li><b>AppendEntries / RequestVote</b> — the two messages. The leader sends <b>AppendEntries</b> to replicate log entries (an empty one is a heartbeat); a candidate sends <b>RequestVote</b> to ask for votes.</li>
+  <li><b>Election timeout / heartbeat</b> — followers expect a heartbeat regularly; if none arrives within a randomized <b>election timeout</b>, a follower assumes the leader died and starts an election.</li>
+  <li><b>Paxos</b> — the original consensus algorithm (1998), famous for correctness and for being very hard to understand. Raft (2014) targets the same guarantees with an emphasis on being teachable; both are widely used.</li>
+</ul>
+
+<h2>Move 1 — Estimate: why a majority, and what does agreement cost?</h2>
+<p>Two questions size the whole design: how many failures does five nodes survive, and what does each committed decision cost in time?</p>
+
+<table>
+  <tr><th>Piece</th><th>Value</th><th>Where it comes from</th></tr>
+  <tr><td>Cluster size N</td><td><code>5</code></td><td>the odd number that tolerates 2 failures</td></tr>
+  <tr><td>Majority (quorum)</td><td><code>3</code></td><td><code>⌊5/2⌋+1 = 3</code></td></tr>
+  <tr><td>Failures tolerated f</td><td><code>2</code></td><td><code>N = 2f+1 → f = 2</code></td></tr>
+  <tr><td>Heartbeat interval</td><td><code>~50 ms</code></td><td>leader→followers, keeps them from timing out</td></tr>
+  <tr><td>Election timeout (randomized)</td><td><code>150–300 ms</code></td><td>~3–6× heartbeat so a live leader isn't falsely replaced</td></tr>
+  <tr><td>Disk flush (fsync) per node</td><td><code>~1 ms</code></td><td>SSD; an entry isn't durable until flushed</td></tr>
+  <tr><td>Intra-datacenter RTT</td><td><code>~0.5 ms</code></td><td>leader ↔ follower on the same network</td></tr>
+</table>
+
+<div class="card calc">
+  <p><b>Why a majority, and why an odd N.</b> Every decision requires a majority to agree. This one rule buys the whole thing, because <span class="key">any two majorities of the same cluster must share at least one node</span> — for N=5, <code>3 + 3 = 6 &gt; 5</code>, so by the pigeonhole principle two groups of 3 overlap in ≥1 node (Lesson 11's quorum overlap, exactly). That shared node is what makes disagreement impossible, as we'll see. Fault tolerance follows: to keep making decisions you need a majority <i>alive</i>, so five nodes survive losing <code>5 − 3 = 2</code>. And this is why clusters are odd: six nodes still need a majority of <code>4</code>, so six also tolerate only <code>2</code> failures — the sixth node adds cost and zero extra safety (Lesson 10's "even N buys nothing," now the same math for data).</p>
+</div>
+
+<div class="card calc">
+  <p><b>What one committed decision costs.</b> A write isn't done when the leader has it — it's done when a <i>majority</i> has it <i>durably</i>. So every commit pays two unavoidable costs: <b>one disk flush</b> (the entry must survive a crash → <code>~1 ms</code> fsync) and <b>one round trip to enough followers to reach a majority</b>. With 5 nodes the leader needs 2 follower acks (leader + 2 = 3); it waits for the <i>second-fastest</i> follower. Intra-datacenter that's roughly <code>max(leader fsync, RTT + follower fsync) ≈ 0.5 + 1 ≈ ~2 ms</code> per commit. <span class="key">That ~2 ms is the price of certainty, and no faster CPU removes it — it's a network round trip plus a physical disk flush, on a majority, by definition of "safe."</span></p>
+</div>
+
+<div class="card calc">
+  <p><b>The throughput ceiling, and the one lever.</b> A single leader flushing once per commit is fsync-bound: <code>1 commit / 1 ms ≈ 1,000 commits/s</code> — modest. The lever is <b>batching (group commit)</b>: while one fsync is in flight, entries pile up; flush them all together, and one <code>~1 ms</code> disk write commits, say, 100 entries → <code>~100,000 entries/s</code> before the leader's network or CPU becomes the wall (the same amortize-the-flush trick as Lesson 47's storage engines and Lesson 33's outbox relay). <span class="key">Batching cuts the cost <i>per entry</i>; it cannot remove the majority round trip that each batch still pays.</span> And across regions the round trip dominates: five nodes ~30 ms apart make the leader wait for a ~30 ms RTT to its second-nearest follower → <code>~30 ms per commit</code>, ~15× the intra-DC cost. That is Lesson 11/23's latency-vs-consistency tax, now with a number on it.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — correctness vs the latency of agreement.</b> Consensus gives you a single, crash-proof, agreed-upon order of events. You pay for it in latency (a majority round trip + a durable flush on every decision) and in a throughput ceiling (one leader, serialized). Every design move below is about paying that toll <i>less often</i> — batch many entries per flush, keep the cluster small and nearby, and put <i>only</i> the data that truly needs agreement inside it — never about avoiding the toll, because the toll is what makes the answer correct.</p>
+
+<h2>Move 2 — Model: Raft's three pieces</h2>
+<p>Raft deliberately splits the problem so you can understand one part at a time: <b>elect a leader</b>, <b>replicate the log</b> through it, and <b>guarantee safety</b> so nothing committed is ever lost. A strong single leader is the simplification — all writes flow through one node, which imposes the order, so there's no arguing about ordering in the common case.</p>
+
+<h3>Piece 1 — Leader election (terms + one vote + majority)</h3>
+<div class="card calc">
+  <p>Time is divided into <b>terms</b>, each a numbered era with at most one leader. A follower that hears no heartbeat within its election timeout becomes a <b>candidate</b>: it increments the term, votes for itself, and sends <b>RequestVote</b> to everyone. A node grants its vote at most <b>once per term</b>, first-come. A candidate that collects a <i>majority</i> becomes leader and starts sending heartbeats; the others revert to followers. <span class="key">Two candidates can't both win the same term, because each needs 3 votes out of 5 and the two majorities would have to share a node — and that node only votes once (Lesson 11 overlap → at most one leader per term).</span> The term is also a fencing epoch (Lesson 10/22): any message stamped with an older term is rejected, so a slow or revived old leader can do no damage.</p>
+</div>
+
+<h3>Piece 2 — Log replication (leader appends, majority commits)</h3>
+<div class="card calc">
+  <p>The leader takes each client command, appends it to its own log as <code>(index, term, command)</code>, and sends <b>AppendEntries</b> to the followers. When a majority has stored the entry durably, the leader marks it <b>committed</b>, applies it to its state machine, and answers the client; it then tells followers the new commit index on the next heartbeat so they apply it too. AppendEntries also carries the <i>previous</i> entry's index and term, and a follower <b>rejects</b> the message if that doesn't match its own log — this <b>log-matching</b> check forces the follower to backfill any gap before accepting new entries, which is how a follower that fell behind gets repaired automatically. <span class="key">Result: all logs converge to be identical prefixes of the leader's log.</span></p>
+</div>
+
+<h3>Piece 3 — Safety (the election restriction)</h3>
+<div class="card calc">
+  <p>Replication alone isn't enough — you must also guarantee that a new leader can never <i>erase</i> something the old leader already committed. Raft's rule: <span class="key">a node refuses to vote for any candidate whose log is <i>less up-to-date</i> than its own</span> (more entries, or a higher last term, wins). Now chain two facts: a committed entry is, by definition, on a majority; and any election requires a majority. Those two majorities overlap in at least one node (Lesson 11 again), and that node <i>has</i> the committed entry — so it will only vote for a candidate that also has it. Therefore <b>every new leader already contains every committed entry</b> (Raft calls this <i>Leader Completeness</i>). Committed means permanent, no matter who leads next.</p>
+</div>
+
+<p class="note why"><b>The model in one line:</b> one leader per term imposes an order; entries commit when a majority stores them durably; and the majority-overlap between "committed" and "elected" guarantees a new leader always holds everything committed — so the log only ever grows forward, never contradicts itself, and every node applying it stays identical. Raft is just these three pieces, kept deliberately simple; Paxos reaches the same guarantees by a different (harder to follow) route.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Run three scenarios: a clean commit, a leader crash, and the one case that decides the whole design.</p>
+
+<h3>Path A — a normal commit (the happy path, ~2 ms)</h3>
+<div class="diagram"><pre>
+  Client: SET lock:billing = node1  (to the leader, node 3, term 4)
+
+    t=0.0ms  leader appends (idx 7, term 4, "SET lock...") to its log,
+             starts its own fsync AND sends AppendEntries to all 4 followers
+    t~1.0ms  leader's entry is durable on disk
+    t~1.5ms  followers B and C have received, fsynced, and ACKed
+             -> leader now has itself + B + C = 3 of 5 = MAJORITY
+             -> entry 7 is COMMITTED
+    t~1.5ms  leader applies "SET lock..." to its state machine,
+             replies SUCCESS to the client
+    next HB  leader tells all followers "commitIndex = 7";
+             they apply entry 7 too -> all copies identical
+
+  Followers D and E ack a moment later -- but the commit did NOT
+  wait for them. A majority is enough; the two slowest (or dead)
+  nodes never gate the write. That's the whole point of "majority."
+</pre></div>
+
+<h3>Path B — the leader crashes (election, ~150–300 ms)</h3>
+<div class="diagram"><pre>
+  Leader (node 3, term 4) dies. Heartbeats stop.
+
+    followers wait out their RANDOMIZED election timeouts (150-300ms).
+    node 1's timer fires first (say at 170ms):
+       -> becomes candidate, term = 5, votes for itself,
+          sends RequestVote(term 5, "my log ends at idx 7, term 4")
+    nodes 2,4,5 each: "term 5 > my term, and candidate's log is at
+       least as up-to-date as mine" -> GRANT vote
+    node 1 has 1 (self) + 3 grants = 4 >= majority -> LEADER, term 5
+       -> starts heartbeats; the cluster keeps serving.
+
+  Why randomize the timeout? If all four followers timed out at the
+  SAME instant, they'd all become candidates, split the vote (no one
+  gets 3), and retry -- forever (a split-vote storm, L10's flap /
+  L26's thundering herd). Random timers make one fire first and win.
+  Failover cost ~= one election timeout + a vote round trip.
+</pre></div>
+
+<h3>Path C — the case that decides everything: committed survives, uncommitted may not</h3>
+<div class="diagram"><pre>
+  Two sub-cases at the instant a leader crashes.
+
+  (1) Entry 7 reached a MAJORITY before the crash  (COMMITTED,
+      client was told SUCCESS):
+        the next election needs 3 votes; those 3 overlap the 3 that
+        hold entry 7 in >=1 node; that node won't vote for anyone
+        missing entry 7 -> the new leader HAS entry 7 -> it stays.
+        A promise kept: what we acked is never lost.
+
+  (2) Entry 8 reached only a MINORITY before the crash  (NOT
+      committed, client was NEVER told SUCCESS -- its request
+      timed out into "unknown", L13):
+        a new leader may lack entry 8 and OVERWRITE it when it
+        forces its own log onto followers.
+        This is CORRECT: we never promised entry 8. The client,
+        seeing a timeout, must retry with the same idempotency key
+        (L13) -- so a safe overwrite here can't double-apply there.
+
+  The line between (1) and (2) -- "did a majority store it durably
+  BEFORE we answered the client?" -- is the entire definition of a
+  correct distributed write. Consensus is the machine that draws
+  that line and never smudges it.
+</pre></div>
+
+<p>Path A shows the toll from Move 1 made concrete: <span class="key">a commit is one fsync plus one majority round trip (~2 ms in a datacenter), and it deliberately does not wait for the two slowest nodes</span> — that's why a majority, not all, is the bar. Path B shows leadership recovering on its own in a few hundred milliseconds, with <b>randomized</b> timeouts breaking the split-vote symmetry that would otherwise loop forever (the same jitter fix as Lesson 26's reconnect storm and the same flap risk as Lesson 10). Path C is the crux the whole algorithm exists to guarantee: <span class="key">anything you acknowledged to a client was on a majority, and majority-overlap means the next leader inherits it — while anything you never acknowledged is fair game to discard, which is safe precisely because the client saw a timeout and will retry idempotently (Lesson 13).</span> Committed vs uncommitted is not a technicality; it is the exact boundary of what a distributed system may promise.</p>
+
+<h2>Move 4 — Find the first bottleneck: agreement is a toll you pay per decision</h2>
+<p>Consensus is correct and it is <i>expensive on purpose</i>. The walls all come from the same place — every decision needs a durable majority — and the fixes are all "pay the toll less often," never "skip it."</p>
+
+<div class="card calc">
+  <p><b>First wall — the single leader is a serialization point, and every commit pays a majority round trip + fsync.</b> One leader ordering all writes is what makes Raft simple, and also what caps it (Lesson 03's single counter, Lesson 22's serial gate, in a new costume). You attack the <i>cost per entry</i>, not the toll: <b>batch</b> many entries into one fsync and one AppendEntries (group commit → ~100× throughput), and <b>pipeline</b> so the next batch ships before the last one's acks return. When one group still isn't enough, you cannot speed up a single log — its whole value is one total order — so you <b>shard into many independent Raft groups</b> (one per key range: "multi-Raft"), each with its own leader and its own order, running in parallel (Lesson 03's sharding, and the capstone of Lesson 63). <span class="key">The trade you just made: cross-shard operations lose the single global order you were paying for — throughput bought with the loss of one universal timeline.</span></p>
+</div>
+
+<div class="card calc">
+  <p><b>Second wall — consensus is the most expensive storage you own, so put almost nothing in it.</b> Because every write costs a majority round trip and a flush, a Raft cluster is for <i>the little bit of state that must be agreed</i>: who holds the lock, who is leader, the current config, cluster membership — kilobytes, changing rarely. It is emphatically <i>not</i> where your 100 PB of blobs (Lesson 20), your feed (Lesson 15), or your bulk records live. <span class="key">This is the metadata/data split again (Lesson 20's metadata plane, Lesson 30's KMS holding only keys, Lesson 26's connection registry): route the truth that needs agreement into the small, slow, correct core, and keep the mountain of data in cheap, fast, eventually-consistent storage around it.</span></p>
+</div>
+
+<div class="card calc">
+  <p><b>Third wall — a majority must be alive and connected, and the nodes must be honest.</b> Lose a majority (3 of 5 down, or a partition that strands the leader with only a minority) and the cluster <b>stops accepting writes</b> — it chooses consistency over availability (Lesson 10/11's CP), because continuing would risk two leaders committing different histories. That's a feature: a config store that returns a stale leader is worse than one that briefly returns an error (Lesson 34 drew the opposite choice for the <i>routing</i> layer, which prefers stale-but-available — different job, different pick). And note the assumption baked in: Raft and Paxos handle <b>crash-stop</b> faults (a node dies or is slow), not <b>Byzantine</b> ones (a node that lies) — surviving liars needs a different, costlier class of algorithm (BFT), which is why blockchains, not your config store, pay for it.</p>
+</div>
+
+<p>So the honest design for our five-node config store is: <b>elect one leader per term by majority vote</b>, fenced by the term so no stale leader can act; <b>replicate every command through it</b>, committing an entry only when a majority holds it durably; <b>guarantee safety</b> by letting only an up-to-date node win an election, so majority-overlap carries every committed entry into every future leader; and then <b>use it sparingly</b> — batch to survive the fsync toll, shard into many groups to survive the leader ceiling, and store only the agreement-critical scraps inside it. Every choice names its price: a majority round trip buys certainty; batching buys throughput at a little latency; sharding buys throughput at the loss of one global order; refusing writes under partition buys correctness at the cost of availability.</p>
+
+<p><span class="key">The deepest point: consensus is the one place in a distributed system where "it probably worked" is not allowed. Everywhere else we embraced approximation — eventual consistency (L06), sketches (L21), best-effort delivery (L09), stale caches (L02) — because it was cheaper and good enough. Consensus is what you build when good-enough isn't: when two nodes disagreeing about who holds the lock or who is leader corrupts everything downstream. You pay a round trip and a disk flush on a majority for every single decision, and in return you get a fact that every node will agree on forever. That is why you route the whole system's small, load-bearing truths through this small, slow, expensive core — and keep everything else out of it.</span> The standing tension: correctness &amp; understandability vs the latency of agreement.</p>
+
+<h3>The scoreboard: the mechanisms and what each buys</h3>
+<table>
+  <tr><th>Mechanism</th><th>What it guarantees</th><th>Cost / limit</th></tr>
+  <tr><td><b>Majority quorum</b> (3 of 5)</td><td>at most one leader/term; committed = durable</td><td>needs a majority alive; tolerates only ⌊(N−1)/2⌋ down</td></tr>
+  <tr><td><b>Term</b> (logical clock + fence)</td><td>one leader per era; old leaders can't act</td><td>—</td></tr>
+  <tr><td><b>Randomized election timeout</b></td><td>breaks split-vote symmetry</td><td>failover latency ≈ one timeout (150–300 ms)</td></tr>
+  <tr><td><b>Commit = majority + fsync</b></td><td>acked writes survive any single crash-set</td><td>~2 ms/commit intra-DC; ~30 ms cross-region</td></tr>
+  <tr><td><b>Election restriction</b></td><td>new leader holds all committed entries</td><td>—</td></tr>
+  <tr><td><b>Batching / pipelining</b></td><td>amortizes the fsync toll</td><td>~100× throughput; still one majority RTT/batch</td></tr>
+  <tr><td><b>Multi-Raft (sharding)</b></td><td>throughput scales with #groups</td><td>loses a single global order across shards</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — treating "the leader has it" as done.</b> An entry is safe only when a <i>majority</i> has it durably. Ack the client on the leader's local write and a crash before replication loses an acknowledged write. Commit is a majority event, not a local one.</li>
+  <li><b>Trap 2 — a fixed (non-randomized) election timeout.</b> If followers time out in lockstep they all become candidates, split the vote, and loop — a split-vote storm (Lesson 10's flap, Lesson 26's herd). Randomize the timeout so one node reliably goes first.</li>
+  <li><b>Trap 3 — putting bulk data in the consensus cluster.</b> Every write costs a majority round trip and a flush; that price is worth it for kilobytes of load-bearing metadata and ruinous for your actual dataset. Keep data out; store only what must be agreed (Lesson 20/30's split).</li>
+  <li><b>Trap 4 — expecting availability during a partition.</b> A correct consensus cluster stranded without a majority <i>stops</i> (CP, Lesson 11). That's the design working. If you need the thing to stay available under partition, you wanted a different (AP) system for that layer, not a "more available Raft."</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We opened the black box every earlier lesson leaned on. The problem: five servers must agree on one ordered log despite crashes and an unreliable network, so that every copy stays identical (a replicated state machine). <b>Estimate</b> showed why a majority is the magic number — any two majorities of 5 overlap in ≥1 node (<code>3+3&gt;5</code>), which makes two leaders per term impossible and makes a committed entry impossible to lose — and priced a commit at one fsync plus one majority round trip (<code>~2 ms</code> in a DC, <code>~30 ms</code> across regions), ceiling ~1,000/s per leader lifted ~100× by batching. <b>Model</b> built Raft's three pieces: leader election (terms, one vote, majority; the term also a fencing epoch), log replication (append → majority → commit → apply, with log-matching repairing stragglers), and safety (only an up-to-date node can win, so majority-overlap carries every committed entry into every future leader). <b>Tracing</b> ran a clean ~2 ms commit that never waits for the two slowest nodes, a leader crash that self-heals in a few hundred ms with randomized timeouts breaking the split vote, and the decisive case: <span class="key">a committed entry (on a majority, client acked) always survives a leader change, while an uncommitted one (minority only, client saw a timeout) may be safely discarded — because the client will retry idempotently (Lesson 13). Committed vs uncommitted is the exact boundary of what a distributed system may promise.</span> The <b>first bottleneck</b> is agreement's own price — a durable majority per decision — so you pay it less often (batch, pipeline), shard into many Raft groups when one leader isn't enough (trading the single global order), and store only agreement-critical metadata inside, keeping the mountain of data in cheaper storage around it. The standing tension: correctness &amp; understandability vs the latency of agreement.</p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we've now built the hardest primitive. Time to wire the primitives together.</b></p>
+  <p style="margin:.2rem 0">• <b>Building a distributed key-value store (capstone, Lesson 63):</b> take consistent hashing (L03/04) for placement, quorum reads/writes (L06/11) for tunable consistency, gossip + Merkle anti-entropy (L43) for membership and repair, LSM storage (L47) for the disk, and a consensus core (this lesson) for the metadata — and assemble one Dynamo/Bigtable-style system, watching where the pieces pull against each other.</p>
+  <p style="margin:.2rem 0">• Then: <b>stream processing &amp; windowing</b> (stateful exactly-once with watermarks, past L29's lambda/kappa sketch), <b>vector databases &amp; semantic search</b> (nearest-neighbor over embeddings, where L16's keyword index can't reach), and <b>global rate limiting</b> (L08's single-node limiter coordinated across regions). Say <b>next</b> to build the KV store.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">consensus</span>
+    <span class="pill">replicated state machine</span>
+    <span class="pill">replicated log</span>
+    <span class="pill">leader / follower / candidate</span>
+    <span class="pill">term</span>
+    <span class="pill">majority / quorum</span>
+    <span class="pill">committed entry</span>
+    <span class="pill">AppendEntries</span>
+    <span class="pill">RequestVote</span>
+    <span class="pill">election timeout</span>
+    <span class="pill">heartbeat</span>
+    <span class="pill">log matching</span>
+    <span class="pill">leader completeness</span>
+    <span class="pill">split vote</span>
+    <span class="pill">multi-Raft</span>
+    <span class="pill">Paxos</span>
+  </p>
+  <p>That's Lesson 62, opening the black box that Lesson 10 (leader election — now with terms, the log, and the safety proof), Lesson 22 (locks / leases — the same fencing epoch, now called a term), Lesson 34 (service discovery — which chose AP for routing where this chooses CP for the truth), and Lesson 43 (gossip / anti-entropy — the eventually-consistent cousin) all leaned on. It reuses Lesson 11's quorum overlap (the pigeonhole argument that makes two leaders impossible and committed entries unlosable), Lesson 35's logical clocks (the term), Lesson 13's idempotency (why discarding an uncommitted entry is safe), Lesson 26's jitter / Lesson 10's flap (randomized election timeouts), Lesson 47/33's group-commit batching, and Lesson 20/30's metadata/data split (keep bulk data out of the consensus core). <b>Ask me follow-ups</b> — e.g. "what exactly does log-matching do when a follower's log has diverged?", "why can't a leader commit an entry from a <i>previous</i> term just by counting replicas (the Raft Figure-8 hazard)?", "how does cluster membership change safely without two majorities existing at once (joint consensus)?", "how is Multi-Paxos different from Raft in practice?", or "when would you actually need Byzantine fault tolerance instead of Raft?" When you're ready, say <b>next</b> and we'll assemble the capstone — <i>a distributed key-value store, wiring every primitive together.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your 5-node Raft cluster commits entry 7 (a majority of 3 nodes have it durably) and the client is told SUCCESS. A microsecond later the leader crashes. A new leader is elected for the next term. Can the new leader be missing entry 7 — i.e., can a committed, acknowledged write be lost?",
+    options: [
+      {t:"No. Entry 7 is on a majority (3 of 5), and winning the election also requires a majority (3 of 5). Any two majorities of 5 share at least one node (3+3 > 5), so at least one voter in the election holds entry 7 — and Raft's election restriction makes nodes refuse to vote for a candidate whose log is less up-to-date than their own. So the winner must already contain entry 7. Committed means permanent across any leader change; that's exactly what the majority rule buys.",
+       ok:true,
+       fb:"Right. This is the whole safety argument (Leader Completeness) and it rests on one fact from Lesson 11: two majorities of the same cluster must overlap. The overlapping node holds every committed entry and won't vote for a candidate that lacks it, so every future leader inherits everything committed. That's why 'a majority stored it durably' is the definition of safe."},
+      {t:"Yes — once the leader that committed it dies, the entry is gone unless all five nodes had it, so you should require all-nodes replication (N of N) before acknowledging any write.",
+       ok:false,
+       fb:"Requiring all N nodes to ack before commit destroys the fault tolerance that was the entire point: a single slow or dead node would now block every write, so you'd tolerate zero failures instead of two. And it isn't necessary — majority-overlap already guarantees the committed entry reaches the next leader. Committing on a majority is both safe and available; committing on all is neither."},
+      {t:"It depends on timing — if the election happens before the followers apply entry 7 to their state machines, it's lost.",
+       ok:false,
+       fb:"Applying to the state machine happens after commit and doesn't affect durability of the log entry. What matters is that entry 7 is durably stored (fsynced) on a majority of logs before the ack — which it was. Any elected leader overlaps that majority and therefore has the entry in its log, regardless of whether followers had applied it yet."}
+    ]
+  },
+  {
+    stem: "A different write, entry 8, reached only 2 of 5 nodes (a minority) before the leader crashed; the client's request timed out with no success response. The new leader lacks entry 8 and overwrites it. Is this a bug?",
+    options: [
+      {t:"No — it's correct. Entry 8 was never committed (a minority, not a majority, had it) and the client was never told it succeeded; its request became an 'unknown' outcome (Lesson 13's timeout = partial failure). Raft only promises to preserve committed entries. Discarding an unacknowledged entry is safe precisely because the client, seeing a timeout, retries with the same idempotency key — so the retried write applies exactly once whether or not the original fragment survived.",
+       ok:true,
+       fb:"Exactly. The committed/uncommitted line is the boundary of what the system promised. We promised nothing about entry 8, so overwriting it breaks no promise — and idempotent retry (Lesson 13) turns the client's 'unknown' back into a clean exactly-once effect. This interplay is why consensus and idempotency are designed to work together."},
+      {t:"Yes — any write that reached any node must be preserved, so the new leader should merge entry 8 back in from whichever nodes still have it.",
+       ok:false,
+       fb:"Preserving every partially-replicated entry would be both impossible and wrong. Two different minority entries could exist at the same index from competing leaders; 'merge them all' has no consistent meaning and would let un-acknowledged, possibly-conflicting writes resurrect. Raft's rule — keep only what a majority committed — is what keeps the log a single consistent history."},
+      {t:"Yes — the fix is to acknowledge the client as soon as the leader writes entry 8 locally, so it's never 'unknown'.",
+       ok:false,
+       fb:"That makes it far worse: acking on the leader's local write (before a majority has it) means a crash loses an entry you already called a success — a lost acknowledged write, the cardinal sin. The 'unknown' outcome is the honest one for a write that didn't reach a majority; the client resolves it by idempotent retry, not by the server lying early."}
+    ]
+  },
+  {
+    stem: "Someone proposes growing the cluster from 5 nodes to 6 'to be safer.' What actually changes?",
+    options: [
+      {t:"Almost nothing good. With 6 nodes the majority becomes 4, so you still tolerate only 6 − 4 = 2 failures — the same as 5 — while every commit now needs a 4th durable ack and you pay for an extra machine. Even N gives no more fault tolerance than the odd N below it, and can make split votes slightly more likely; that's why Raft clusters are almost always odd (3, 5, 7).",
+       ok:true,
+       fb:"Right. Fault tolerance is ⌊(N−1)/2⌋: N=5→2, N=6→2, N=7→3. The sixth node buys zero extra failures survived, adds cost, and can widen the commit quorum. To actually tolerate 3 failures you jump to 7, not 6. This is Lesson 10's 'even N buys nothing,' now as the data-safety version."},
+      {t:"You'd tolerate 3 failures instead of 2, since 6 nodes means you can lose half of them.",
+       ok:false,
+       fb:"You can't lose half — you need a strict majority to make decisions, and a majority of 6 is 4, so losing 3 leaves only 3, which is not a majority and the cluster stops accepting writes. Six nodes tolerate 2 failures, exactly like five. 'Half' would be a tie, and consensus can't proceed on a tie."},
+      {t:"Commits get faster, because there are more followers to ack in parallel.",
+       ok:false,
+       fb:"More followers don't speed up a commit — the leader waits for the majority-th fastest ack, and with 6 nodes the majority is 4 (it now waits for the 3rd-fastest follower, not the 2nd). More nodes to hear from tends to make the commit wait on a slightly slower ack, if anything. Extra followers add read replicas and durability, not commit speed."}
+    ]
+  },
+  {
+    stem: "Your single Raft group is maxed out: even with group-commit batching, one leader can't keep up with the write rate, and commit latency is creeping up. What's the right next move — and what does it cost?",
+    options: [
+      {t:"Shard the keyspace into many independent Raft groups (multi-Raft), each with its own leader and its own log, so writes to different key ranges commit in parallel. Throughput then scales with the number of groups. The cost: there is no longer a single global order across groups — an operation spanning two shards can't be one atomic, totally-ordered commit, so cross-shard consistency needs extra machinery (e.g. two-phase commit or sagas, Lesson 32). You traded the universal timeline for throughput.",
+       ok:true,
+       fb:"Exactly. A single Raft log's value is one total order, so you can't parallelize within it — you replicate the pattern across many groups instead (Lesson 03's sharding, the heart of Lesson 63's capstone). Each group stays linearizable; the global order is what you give up, which is why cross-shard transactions become their own design problem."},
+      {t:"Acknowledge writes after the leader appends them locally but before replication, to cut the commit latency — replication can catch up in the background.",
+       ok:false,
+       fb:"That abandons the one guarantee consensus exists to provide: an acked write that isn't on a majority can be lost in a crash (Trap 1). You'd get lower latency and silent data loss. The commit toll (a durable majority) is not the part you optimize away; you pay it less often via batching, or you scale out with more groups."},
+      {t:"Switch the followers to also accept writes directly, so the load spreads across all five nodes instead of funneling through one leader.",
+       ok:false,
+       fb:"Multiple nodes independently accepting writes is exactly the multi-leader situation Raft forbids — it would let two nodes commit conflicting entries at the same log index, which is the disagreement consensus prevents. The single leader is the simplification that makes ordering trivial. To get more write capacity you add more single-leader groups (multi-Raft), not more leaders per group."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
