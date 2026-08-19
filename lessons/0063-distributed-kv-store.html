@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 63 — Building a Distributed Key-Value Store: Wiring Every Primitive Into One System</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 63 · Worked Example</div>
+  <h1>Building a Distributed Key-Value Store: Wiring Every Primitive Into One System</h1>
+  <p class="lead">For sixty-two lessons we built primitives one at a time. Now we assemble them. <span class="key">This is the capstone: take a real system — a Dynamo-style key-value store — and wire consistent hashing (Lessons 3–4), quorum reads and writes (Lessons 6, 11), gossip membership and Merkle anti-entropy (Lesson 43), an LSM storage engine (Lesson 47), and a small consensus core (Lesson 62) into one machine that actually holds data.</span> The concrete job is exact: <b>store a billion shopping carts, keep them available for writes even while a datacenter is on fire, and never silently lose a cart-add.</b> We'll take one system — <b>a 100-node store spread across 3 datacenters, 1 TB of carts, 100k writes/s and 500k reads/s</b> — and design it end to end. We'll <b>estimate</b> the fleet and the quorum math; <b>model</b> how the six primitives snap together into a placement plane, a replication plane, and a membership plane; <b>trace</b> a write, a read, and a write during a partition; and find <span class="key">the first bottleneck, which in a capstone is not one wall but the <i>seams</i> — the places where two primitives pull against each other and force a choice.</span> The trade underneath every knob: <b>tunable consistency vs availability &amp; operational complexity.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0063-distributed-kv-store.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>A shopping-cart store. Every logged-in user has a cart: a key like <code>cart:U-8842</code> mapping to a small value (the items). The business rule that decides the whole architecture: <span class="key">a customer must <i>always</i> be able to add to their cart.</span> A cart-add that fails is a lost sale; a cart-add that's briefly stale (an item shows up a second late) is fine. So the system must stay <b>writable</b> through node crashes, rack failures, even a datacenter partition — it prefers being available and slightly-inconsistent over being consistent and sometimes-down. That single preference (<b>availability over strong consistency</b>, Lesson 11's AP corner) is the seed from which every design choice grows, and it is why we are building a leaderless, quorum-based store and <i>not</i> a single-leader Raft cluster per key.</p>
+
+<div class="diagram"><pre>
+  One key-value store, assembled from six primitives.
+
+    client:  PUT cart:U-8842 = {milk, eggs}
+        |
+        v
+   [ ANY node = COORDINATOR for this request ]
+        |  1. hash(key) -> a position on the RING          (L03/04)
+        |  2. walk clockwise -> preference list =
+        |     the next N=3 DISTINCT physical nodes
+        v
+    the ring (2^128 positions; virtual nodes even the load):
+
+                 .--- n17 ---.
+            n88               n42        preference list for
+             |     * key *     |         cart:U-8842  =  [n17, n42, n88]
+             '--- (clockwise) -'         (its N=3 replicas)
+
+        |  3. send the write to all 3 replicas;
+        |     wait for W acks, not all N            (quorum, L06/11)
+        v
+      n17        n42        n88
+     [LSM]      [LSM]      [LSM]      <- per-node storage engine (L47)
+      ack        ack       (slow/down)
+       \________/  W=2 reached -> reply SUCCESS to client
+                   (did NOT wait for the 3rd replica)
+
+    running quietly underneath, forever:
+      * GOSSIP spreads "who is up / down / joining"     (L43)
+      * MERKLE anti-entropy repairs replicas that drifted (L43)
+      * a small RAFT core holds the ring/token map         (L62)
+</pre></div>
+
+<p class="note"><span class="key">A distributed database is not one idea — it is a stack of the primitives you already know, each solving one sub-problem, wired so their outputs feed each other.</span> Placement (where does a key live?) is consistent hashing. Durability + availability (how many copies, and when is a write "done"?) is quorum replication. Knowing who's alive is gossip. Fixing copies that drifted apart is anti-entropy. Writing bytes fast is the LSM engine. Agreeing on the one thing that <i>must</i> be agreed — the ring itself — is consensus. The lesson is how the seams behave when these meet.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Key-value store</b> — a database whose only operations are <code>PUT(key, value)</code> and <code>GET(key)</code>. No joins, no ranges (in the simplest form) — that narrowness is what lets it scale to a billion keys across a hundred nodes.</li>
+  <li><b>Coordinator</b> — the node that handles one client request: it hashes the key, finds the replicas, sends them the read/write, and counts acks. <i>Any</i> node can coordinate any request (there is no single master), which is the source of the store's availability.</li>
+  <li><b>Preference list</b> — the ordered list of the <code>N</code> nodes responsible for a key: hash the key onto the ring, then walk clockwise and collect the next <code>N</code> <i>distinct physical</i> nodes. These are its replicas.</li>
+  <li><b>N / W / R</b> — the replication factor <code>N</code> (how many copies), the <b>write quorum</b> <code>W</code> (acks required before a write returns success), and the <b>read quorum</b> <code>R</code> (replies required before a read returns). Tuning these is how you dial consistency (Lesson 6/11).</li>
+  <li><b>Sloppy quorum + hinted handoff</b> — when a replica is down, write to the next healthy node instead and tag the copy with a <b>hint</b> ("this really belongs to n88"); when n88 returns, the holder <b>hands the data off</b> to it. Keeps writes flowing during failures.</li>
+  <li><b>Gossip</b> — nodes periodically exchange membership facts with a few random peers, so "n88 is down" spreads epidemically across the whole cluster in <code>O(log N)</code> rounds, with no central registry (Lesson 43).</li>
+  <li><b>Anti-entropy / Merkle tree</b> — a background process where two replicas compare compact hash trees of their data to find <i>only</i> the keys that differ, and repair them — without shipping the whole dataset (Lesson 43).</li>
+  <li><b>Version vector</b> — a small map <code>{node → counter}</code> attached to each value that records which replicas have seen which updates, so the store can tell whether one write <i>happened-after</i> another or the two are <b>concurrent</b> (Lessons 23, 35).</li>
+  <li><b>Sibling / conflict resolution</b> — when two concurrent writes to the same key can't be ordered, the store keeps <i>both</i> values as <b>siblings</b> and resolves them at read time (merge them, or last-write-wins).</li>
+  <li><b>LSM-tree</b> — the log-structured storage engine each node uses on disk: buffer writes in memory, flush sorted runs, compact in the background — built for a high write rate (Lesson 47).</li>
+</ul>
+
+<h2>Move 1 — Estimate: the fleet, and the quorum math that sets consistency</h2>
+<p>Two sizings decide the shape: how much iron do we need, and what do the numbers <code>N</code>, <code>W</code>, <code>R</code> actually buy?</p>
+
+<table>
+  <tr><th>Piece</th><th>Value</th><th>Where it comes from</th></tr>
+  <tr><td>Keys</td><td><code>1 billion</code></td><td>one cart per active user</td></tr>
+  <tr><td>Value size</td><td><code>~1 KB</code></td><td>a small list of items</td></tr>
+  <tr><td>Logical data</td><td><code>~1 TB</code></td><td><code>1e9 × 1 KB</code></td></tr>
+  <tr><td>Replication factor N</td><td><code>3</code></td><td>survive 2 replica losses; standard for AP stores</td></tr>
+  <tr><td>Stored bytes (with N=3)</td><td><code>~3 TB</code></td><td><code>1 TB × 3</code></td></tr>
+  <tr><td>Nodes</td><td><code>100</code></td><td>across 3 datacenters</td></tr>
+  <tr><td>Data per node</td><td><code>~30 GB</code></td><td><code>3 TB ÷ 100</code> — comfortable</td></tr>
+  <tr><td>Write rate</td><td><code>100k/s</code></td><td>each becomes <code>×N=3</code> replica writes</td></tr>
+  <tr><td>Read rate</td><td><code>500k/s</code></td><td>each becomes <code>×R</code> replica reads</td></tr>
+</table>
+
+<div class="card calc">
+  <p><b>Per-node load — is 100 nodes enough?</b> A write hits all <code>N=3</code> replicas: <code>100,000/s × 3 = 300,000</code> replica-writes/s, spread over 100 nodes ≈ <code>3,000</code> writes/s each. Reads at <code>R=2</code>: <code>500,000 × 2 = 1,000,000</code> replica-reads/s ÷ 100 ≈ <code>10,000</code> reads/s each. A single LSM node (Lesson 47) handles tens of thousands of small ops/s easily, so <span class="key">100 nodes is comfortable — the fleet is sized by <i>replication-amplified</i> load, not raw request count.</span> Note the amplification is a real cost you chose: <code>N=3</code> triples both your storage bill and your write traffic to buy durability and availability.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The quorum knob — what W and R actually decide.</b> The one rule (Lesson 6/11): if <span class="key"><code>W + R &gt; N</code>, the read set and the write set must <i>overlap</i> in at least one node</span> (pigeonhole again), so a read is guaranteed to see the latest committed write — read-your-writes holds. If <code>W + R ≤ N</code>, they may not overlap, and a read can miss a fresh write (stale). With <code>N=3</code>:</p>
+  <table>
+    <tr><th>W, R</th><th>W+R vs N</th><th>What you get</th><th>What you pay</th></tr>
+    <tr><td><code>1, 1</code></td><td><code>2 ≤ 3</code></td><td>fastest; writable/readable with 2 of 3 down</td><td>reads can be stale; conflicts common</td></tr>
+    <tr><td><code>2, 2</code></td><td><code>4 &gt; 3</code></td><td>read-your-writes; tolerates 1 node down</td><td>waits for the 2nd-of-3 on both paths</td></tr>
+    <tr><td><code>3, 1</code></td><td><code>4 &gt; 3</code></td><td>fast reads, strongly consistent</td><td>a write needs <i>all</i> 3 up → fragile writes</td></tr>
+    <tr><td><code>1, 3</code></td><td><code>4 &gt; 3</code></td><td>fast, always-available writes</td><td>a read needs all 3 up → fragile reads</td></tr>
+  </table>
+  <p>For a cart we want writes never to block, so we lean write-available: <code>N=3, W=2, R=2</code> is the balanced default (overlap <i>and</i> single-failure tolerance on both sides), and we drop to <code>W=1</code> only when we'd rather accept staleness than ever reject a cart-add. <span class="key">One slider, and the same <code>W+R&gt;N</code> inequality, moves the whole system between "always consistent" and "always available."</span></p>
+</div>
+
+<div class="card calc">
+  <p><b>Why quorum beats waiting for everyone.</b> With <code>W=2</code>, the coordinator replies as soon as the <i>second-fastest</i> of 3 replicas acks — it never waits on the slowest or a dead one. That's the same tail-latency win as Lesson 62's Raft commit ("majority, not all") and Lesson 17's fan-out tail: <span class="key">a quorum is a deliberate refusal to let the one slow replica set your latency.</span> The price is exactly the consistency you gave up by not waiting for all N — which is why <code>W+R&gt;N</code> exists, to buy back a correctness guarantee from a subset.</p>
+</div>
+
+<p class="note why"><b>Name the trade-off — tunable consistency vs availability.</b> A single knob (<code>W</code>, <code>R</code> against <code>N</code>) lets each workload place itself on the Lesson 11 spectrum: crank <code>W+R&gt;N</code> for consistency, drop it for availability and speed. The capstone insight is that this isn't a one-time architecture decision — it's a <i>per-operation</i> dial, and the rest of the system (conflict resolution, anti-entropy, hinted handoff) exists to clean up after the availability end of the dial.</p>
+
+<h2>Move 2 — Model: three planes, six primitives</h2>
+<p>Group the primitives by the sub-problem each solves. <b>Placement</b> answers "where does a key live?" <b>Replication</b> answers "how many copies and when is a write done?" <b>Membership</b> answers "who's alive, and how do drifted copies get fixed?" Under all three sits the storage engine, and beside them sits the tiny consensus core.</p>
+
+<h3>Plane 1 — Placement: the consistent-hashing ring (L03/04)</h3>
+<div class="card calc">
+  <p>Hash the key onto a huge ring (<code>2^128</code> positions). Each physical node owns many <b>virtual nodes</b> scattered around the ring, so load spreads evenly and a node's departure is absorbed by <i>many</i> neighbors, not dumped on one (Lesson 4). A key's <b>preference list</b> is the next <code>N</code> distinct <i>physical</i> nodes clockwise from its hash — <span class="key">we skip virtual nodes that map back to a physical node already in the list, so the 3 replicas are 3 <i>different machines</i></span> (and, better, we keep walking to land them in 3 different racks or datacenters, so one rack losing power can't take all 3 copies of a cart). Because placement is a pure function of the ring, <i>any</i> coordinator computes the same preference list for a key with zero lookups — that's what makes every node interchangeable.</p>
+</div>
+
+<h3>Plane 2 — Replication &amp; consistency: quorum + hinted handoff + versions (L06/11/23)</h3>
+<div class="card calc">
+  <p>The coordinator sends every write to all <code>N</code> replicas and returns after <code>W</code> acks; reads gather <code>R</code> replies. When a replica is down, a strict quorum would start rejecting writes — unacceptable for a cart — so we use a <b>sloppy quorum</b>: the coordinator sends the write to the next healthy node on the ring instead, tagged with a <b>hint</b> naming the real owner. That temporary holder stores it aside and, via <b>hinted handoff</b>, replays it to the owner once gossip reports the owner back. Meanwhile, because two coordinators can accept writes to the same key during a partition, each value carries a <b>version vector</b> (Lesson 23/35) so the store can later tell an update that <i>happened-after</i> another (keep the newer) from two <i>concurrent</i> updates (keep both as <b>siblings</b>, resolve at read).</p>
+</div>
+
+<h3>Plane 3 — Membership &amp; repair: gossip + Merkle anti-entropy (L43)</h3>
+<div class="card calc">
+  <p>Nobody owns the membership list. Each node <b>gossips</b> — every second it picks a few random peers and swaps "who's up, who's down, who's joining" — so a failure or a new node propagates to all 100 in <code>O(log N)</code> ≈ a handful of rounds, with no central registry to be a SPOF (Lesson 43; the AP-flavored cousin of Lesson 34's registry). Hinted handoff catches <i>recent</i> misses, but slow drift (a replica that was down for an hour, a dropped message) needs a sweep: pairs of replicas run <b>anti-entropy</b>, comparing <b>Merkle trees</b> of their key ranges. Identical subtree hashes are skipped wholesale; only the differing leaves are exchanged — so repairing two 30 GB replicas costs kilobytes of tree-walking plus the handful of keys that actually diverged, not a 30 GB copy.</p>
+</div>
+
+<h3>The engine and the core: LSM (L47) + a small Raft (L62)</h3>
+<div class="card calc">
+  <p>Each node stores its ~30 GB in an <b>LSM-tree</b> (Lesson 47): writes hit an in-memory table and a durable log, flush to sorted files, and compact in the background — perfect for our write-heavy, key-value shape. And the one thing that must <i>never</i> disagree — the ring itself: the token map, which physical nodes exist, which datacenter each is in — is too important for eventual consistency (two nodes disagreeing about who owns a token range corrupts placement). So it lives in a <b>small consensus core</b> (Lesson 62's Raft, 3–5 nodes) holding kilobytes of cluster config. <span class="key">This is the metadata/data split one more time (Lesson 20/30/62): the mountain of cart data lives in the fast, eventually-consistent, gossip-managed store; the tiny load-bearing map of the ring lives in the slow, strongly-consistent core.</span></p>
+</div>
+
+<p class="note why"><b>The model in one line:</b> a pure-function ring places each key on <code>N</code> distinct machines; quorum <code>W/R</code> dials how much of that <code>N</code> a write or read must touch; sloppy quorum + hinted handoff keep writing through failures; version vectors record what happened concurrently; gossip tracks who's alive and Merkle anti-entropy repairs what drifted; an LSM engine stores the bytes; and a small Raft core agrees on the one map everything else depends on. Every primitive you learned, each doing exactly its one job.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Three scenarios: a healthy write, a read that finds conflict, and a write during a datacenter partition — the case the whole AP design exists for.</p>
+
+<h3>Path A — a healthy write (N=3, W=2)</h3>
+<div class="diagram"><pre>
+  Client: PUT cart:U-8842 = {milk, eggs}
+
+    t=0     request lands on node n50 -> n50 is the COORDINATOR
+    t=0     n50 hashes the key -> walks the ring -> preference
+            list = [n17, n42, n88]  (3 distinct machines, 3 racks)
+    t=0     n50 attaches a version vector, sends the write to
+            n17, n42, n88 in parallel
+    t~2ms   n17 acks (wrote to its LSM memtable + commit log)
+    t~3ms   n42 acks
+            -> 2 acks = W reached -> n50 replies SUCCESS
+    t~9ms   n88 is busy; its ack arrives later (or never, if down)
+            -> the write already succeeded WITHOUT it
+
+  The client waited for the 2nd-fastest replica, not the slowest.
+  n88 either catches up on the next write, or gets repaired by
+  anti-entropy later. W=2 bought durability-on-two + a fast tail.
+</pre></div>
+
+<h3>Path B — a read that finds a conflict (R=2, siblings)</h3>
+<div class="diagram"><pre>
+  Client: GET cart:U-8842   (coordinator n50, R=2)
+
+    n50 asks the preference list; first 2 replies:
+       n17 -> value {milk, eggs},     version vector [n50:1]
+       n42 -> value {milk, bread},    version vector [n61:1]
+
+    Compare the vectors: NEITHER is >= the other.
+       -> the two writes are CONCURRENT, not ordered
+       -> this is a genuine conflict (two devices, mid-partition)
+
+    The store does NOT silently pick one (that would drop items).
+    Two honest options:
+       (a) return BOTH siblings to the app; the cart merges them
+           by UNION -> {milk, eggs, bread}  (a business rule)
+       (b) last-write-wins by wall clock -> drops one write
+           (fine for a "last seen page", WRONG for a cart)
+
+    Then READ REPAIR: n50 writes the resolved value back to any
+    replica that was stale, so the divergence heals on the read path.
+</pre></div>
+
+<h3>Path C — a write during a datacenter partition (the reason we're AP)</h3>
+<div class="diagram"><pre>
+  A network cut isolates datacenter DC3 (holds n88 + others).
+  cart:U-8842's preference list is [n17(DC1), n42(DC2), n88(DC3)].
+
+    A shopper hits a coordinator in DC1. It wants W=2.
+       n17 (DC1) acks. n42 (DC2) acks. n88 (DC3) unreachable.
+       -> 2 acks reached WITHOUT DC3 -> write SUCCEEDS.
+       The cart-add is NOT rejected. (Availability: kept.)
+
+    If the partition were worse and only n17 were reachable, a
+    SLOPPY quorum writes the 2nd copy to the next healthy ring
+    node n23 with a HINT "belongs to n88". Still W=2. Still a yes.
+
+    Meanwhile a shopper on the DC3 side of the cut also adds an
+    item, and DC3's replicas accept it too. Now two versions of
+    the cart exist, on two sides of a partition that can't talk.
+
+    When the cable heals:
+       - hinted handoff replays n23's copy to n88
+       - anti-entropy (Merkle) finds the divergent key
+       - the two versions are CONCURRENT (version vectors) ->
+         resolved by the cart's union rule -> nothing lost.
+
+  We chose to accept a temporary split (two truths) rather than
+  reject the write. CAP forced the choice; we picked A over C,
+  and the machinery above is the bill for that choice (L11).
+</pre></div>
+
+<p>Path A shows the quorum win made concrete: <span class="key">a write is durable on <code>W=2</code> replicas and returns without waiting for the slow third</span> — the Lesson 62 "majority, not all" tail trick, now on a leaderless store. Path B shows why version vectors are non-negotiable in an AP store: two concurrent writes are a <i>fact</i>, not a bug, and the store's job is to <b>detect</b> the conflict (vectors) and hand the app an honest choice — merge (right for a cart) or last-write-wins (right for a scalar you don't mind losing), never a silent drop (Lesson 6's lost update, Lesson 23's ocean-crossing version). Path C is the payoff of the whole design: <span class="key">under a partition the store keeps taking writes on both sides (available), accepts that two truths briefly exist (not consistent), and cleans up afterward with hinted handoff + anti-entropy + conflict resolution.</span> That is CAP's A-over-C, paid in exactly the machinery Move 2 built.</p>
+
+<h2>Move 4 — Find the first bottleneck: the seams where primitives fight</h2>
+<p>In a single-primitive lesson the first wall is one thing. In a capstone, the walls are the <b>seams</b> — every place two primitives, each correct alone, pull in opposite directions and force you to name a trade.</p>
+
+<div class="card calc">
+  <p><b>Seam 1 — availability vs consistency is the sloppy quorum itself.</b> Sloppy quorum keeps writes flowing during a partition, but it does so by <i>breaking</i> the <code>W+R&gt;N</code> overlap guarantee: the two copies written under a hint aren't on the key's real replicas, so a reader on the other side of the partition can miss them. <span class="key">The exact feature that buys availability (write anywhere healthy) is what voids the consistency inequality — you cannot have both, and the version vector + read repair + anti-entropy stack exists solely to reconcile the divergence you deliberately allowed.</span> Trade named: every ounce of extra availability is paid for in reconciliation complexity later. Choose LWW and reconciliation is cheap but lossy; choose semantic merge and it's correct but you must write merge logic for every value type.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Seam 2 — the hot key that consistent hashing was never going to fix.</b> The ring spreads <i>keys</i> evenly, and virtual nodes spread <i>ranges</i> evenly — but a single blazing-hot key (a flash-sale product's inventory cart, a celebrity's session) still lands on exactly <code>N=3</code> nodes and hammers them, while 97 nodes idle. Lesson 4 warned this explicitly: consistent hashing solves <i>rebalancing</i>, not <i>skew</i>. The fixes come from other lessons, and each names its price: cache the hot key at the coordinator (Lesson 2, staleness), split it into sub-keys and merge at read (Lesson 21's sharded counter, more read work), or add read replicas beyond <code>N</code> for that key (more storage). <span class="key">A capstone reveals that no single primitive is complete — the hot key is a hole in placement that you patch with caching or sharding, not with a better hash.</span></p>
+</div>
+
+<div class="card calc">
+  <p><b>Seam 3 — the ring is data, but it can't be eventually consistent.</b> Everything in this store tolerates staleness <i>except</i> the ring itself. If two nodes disagree about who owns a token range — one thinks n88 left, one thinks it's still there — they place the same key on different replicas, and now a write and a read for one key touch <i>disjoint</i> node sets: overlap is gone even with <code>W+R&gt;N</code>, and the data is silently lost. So membership <i>gossip</i> (fast, eventually consistent, fine for "is n88 up?") is <b>not</b> allowed to decide <i>ring topology</i> (which must be agreed exactly). That's why the token map lives in the Raft core (Lesson 62): <span class="key">the same system runs an AP plane for the mountain of data and a CP plane for the small map that the data plane's correctness depends on — mixing them up (a gossiped ring, or a Raft'd dataset) breaks the whole thing.</span></p>
+</div>
+
+<div class="card calc">
+  <p><b>Seam 4 — the AP/CP fork you chose at the very top.</b> Everything above assumed the cart's "always writable" rule → leaderless quorum, AP, conflicts-are-normal. The <i>other</i> whole family of KV stores makes the opposite call: range-shard the keyspace, put one <b>Raft group per shard</b> (Lesson 62), route each key to its shard's single leader → one writer, one order, <i>no conflicts ever</i> (Bigtable/Spanner/CockroachDB shape). The price is the mirror image: a shard whose leader is on the minority side of a partition <b>stops accepting writes</b> (CP, Lesson 11) — unacceptable for a cart, correct for a bank balance (Lesson 11/25's scalar that must never diverge). <span class="key">There is no universally right answer here; there is only "what does <i>this</i> data cost when it's briefly wrong?" — a mergeable cart picks AP, an un-mergeable balance picks CP, and the same six primitives assemble into either machine depending on that one answer.</span></p>
+</div>
+
+<p>So the honest capstone design for our cart store is: <b>place</b> keys with a virtual-node consistent-hashing ring (3 distinct replicas across 3 racks); <b>replicate</b> with a tunable quorum (<code>N=3, W=2, R=2</code> as the balanced default, sloppy quorum + hinted handoff to stay writable through failures); <b>detect and reconcile</b> the divergence that availability creates with version vectors, sibling merge, and read repair; <b>track membership</b> with gossip and <b>repair drift</b> with Merkle anti-entropy; <b>store</b> the bytes in an LSM engine; and <b>agree</b> on the one thing that must never disagree — the ring — in a small Raft core. Every choice names its price: quorum buys a fast tail at the cost of the consistency you don't wait for; sloppy quorum buys availability at the cost of reconciliation; consistent hashing buys smooth rebalancing but not hot-key relief; the AP shape buys always-on writes at the cost of ever having a single global order.</p>
+
+<p><span class="key">The deepest point of the whole course: a distributed database is not a monolithic invention — it is these primitives, composed. Once you can see a real system as "consistent hashing for placement, quorums for the consistency dial, gossip for membership, anti-entropy for repair, LSM for the disk, and a consensus core for the one map that must be agreed," you can read <i>any</i> of them — Dynamo, Cassandra, Bigtable, CockroachDB, Riak — as different settings of the same knobs, and you can design a new one by choosing those settings deliberately.</span> The single question that sets every knob is the one we started from: <i>what does this data cost the business when it is briefly wrong?</i> Answer that, and the whole architecture — AP or CP, merge or LWW, gossip or Raft — falls out. The standing tension, from Lesson 1 to here: tunable consistency vs availability &amp; operational complexity.</p>
+
+<h3>The scoreboard: which primitive solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Primitive (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>Where does a key live?</td><td>Consistent hashing + vnodes (L03/04)</td><td>even spread, cheap rebalance / no hot-key relief</td></tr>
+  <tr><td>How many copies, when done?</td><td>Quorum N/W/R (L06/11)</td><td>tunable consistency + fast tail / staleness if W+R≤N</td></tr>
+  <tr><td>Stay writable through failure</td><td>Sloppy quorum + hinted handoff</td><td>availability / breaks overlap → conflicts</td></tr>
+  <tr><td>Order vs concurrency of writes</td><td>Version vectors (L23/35)</td><td>detect conflicts / metadata per value</td></tr>
+  <tr><td>Two concurrent writes</td><td>Siblings + merge / LWW (L06/23)</td><td>no lost update (merge) / lossy (LWW)</td></tr>
+  <tr><td>Who's alive?</td><td>Gossip (L43)</td><td>no SPOF registry / eventually consistent</td></tr>
+  <tr><td>Fix drifted replicas</td><td>Merkle anti-entropy (L43)</td><td>repair without full copy / background CPU</td></tr>
+  <tr><td>Write bytes fast</td><td>LSM-tree (L47)</td><td>high write throughput / read + compaction cost</td></tr>
+  <tr><td>Agree on the ring itself</td><td>Consensus core (L62)</td><td>one correct map / CP, must keep a majority</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — putting the ring/token map in gossip instead of consensus.</b> Membership "who's up" can be eventually consistent; ring <i>topology</i> cannot. Two nodes disagreeing about ownership place keys on disjoint replica sets → reads and writes stop overlapping → silent data loss. Gossip tracks liveness; a consensus core owns the map (Seam 3).</li>
+  <li><b>Trap 2 — last-write-wins on a value that must merge.</b> LWW silently drops the loser by a wall-clock compare (skewable, Lesson 22/23/35). Fine for "last page viewed," catastrophic for a cart or any set that should union. Use version vectors + a semantic merge for anything you can't afford to lose.</li>
+  <li><b>Trap 3 — expecting consistent hashing to fix a hot key.</b> The ring balances the <i>keyspace</i>, not the <i>traffic to one key</i>. A single hot key still bakes its <code>N</code> replicas while the fleet idles. Patch it with caching (L02), key-splitting (L21), or extra read replicas — not a fancier hash (Seam 2).</li>
+  <li><b>Trap 4 — reading <code>W+R&gt;N</code> as an unconditional guarantee.</b> The overlap only holds for a <i>strict</i> quorum on the key's real replicas. The moment a sloppy quorum writes to a stand-in during failure, overlap is void and you can read stale — which is <i>by design</i>, and why the reconciliation stack exists. Know when the inequality is actually in force (Seam 1).</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We built a real distributed database by composing the course. The system: a 100-node, 3-datacenter, 1 TB cart store that must stay writable through failures and never lose a cart-add. <b>Estimate</b> sized the fleet by <i>replication-amplified</i> load (<code>N=3</code> → 3 TB, ~3k writes + ~10k reads per node) and laid out the quorum table where one inequality, <code>W+R&gt;N</code>, slides the whole system between consistency and availability (we picked <code>N=3, W=2, R=2</code>). <b>Model</b> grouped six primitives into three planes: placement (consistent-hashing ring + vnodes → a preference list of 3 distinct machines), replication (quorum + sloppy quorum + hinted handoff + version vectors), and membership/repair (gossip + Merkle anti-entropy), over an LSM engine, beside a small Raft core that owns the ring. <b>Tracing</b> ran a healthy <code>W=2</code> write that never waits for the slow third replica, a read that detects a concurrent conflict and resolves it by cart-union with read repair, and a datacenter partition where the store keeps writing on both sides and reconciles afterward — CAP's A-over-C paid in exactly the machinery we built. The <b>first bottleneck</b> was the <i>seams</i>: sloppy quorum buys availability by voiding the consistency inequality; consistent hashing can't touch a hot key; the ring must be CP even though the data is AP; and the top-level AP/CP fork (leaderless quorum vs Raft-per-shard) is decided entirely by <span class="key">what the data costs the business when it's briefly wrong</span> — a mergeable cart picks AP, an un-mergeable balance picks CP, from the very same primitives. The standing tension, all the way back to Lesson 1: tunable consistency vs availability &amp; operational complexity.</p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we've assembled a database. Now the moving-data and specialized-retrieval systems built on top.</b></p>
+  <p style="margin:.2rem 0">• <b>Stream processing &amp; windowing (Lesson 64):</b> past Lesson 29's lambda/kappa sketch — a stateful stream processor with tumbling/sliding/session windows, watermarks for late data (L17/29), checkpointing for exactly-once state, and keyed state that rescales. Trade: latency &amp; correctness of windowed results vs state size &amp; recovery cost.</p>
+  <p style="margin:.2rem 0">• Then: <b>vector databases &amp; semantic search</b> (approximate nearest-neighbor over embeddings, where L16's keyword index can't reach), and <b>global rate limiting &amp; quota</b> (L08's single-node limiter coordinated across regions, the CAP tension of a shared limit under partition). Say <b>next</b> to build the stream processor.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">key-value store</span>
+    <span class="pill">coordinator</span>
+    <span class="pill">preference list</span>
+    <span class="pill">consistent hashing ring</span>
+    <span class="pill">virtual nodes</span>
+    <span class="pill">N / W / R quorum</span>
+    <span class="pill">W+R&gt;N overlap</span>
+    <span class="pill">sloppy quorum</span>
+    <span class="pill">hinted handoff</span>
+    <span class="pill">version vector</span>
+    <span class="pill">sibling / conflict resolution</span>
+    <span class="pill">read repair</span>
+    <span class="pill">gossip</span>
+    <span class="pill">Merkle anti-entropy</span>
+    <span class="pill">LSM-tree</span>
+    <span class="pill">consensus core</span>
+    <span class="pill">tunable consistency</span>
+    <span class="pill">AP vs CP</span>
+  </p>
+  <p>That's Lesson 63 — the capstone. It wires together Lesson 3/4 (consistent hashing + virtual nodes for placement, and its "doesn't solve hot keys" warning), Lesson 6/11 (quorum reads/writes and the <code>W+R&gt;N</code> overlap that dials consistency, and CAP's A-vs-C fork), Lesson 23/35 (version vectors to tell concurrent writes from ordered ones), Lesson 43 (gossip membership + Merkle anti-entropy repair), Lesson 47 (the LSM storage engine), and Lesson 62 (a consensus core holding the ring — the metadata/data split from Lesson 20/30). It reuses Lesson 2's caching (for hot keys) and Lesson 21's sharded counter (for key-splitting), and Lesson 17/62's "majority, not all" tail-latency trick. <b>Ask me follow-ups</b> — e.g. "walk the consistent-hashing preference-list computation for a specific key", "why exactly does a sloppy quorum void the <code>W+R&gt;N</code> guarantee?", "how do version vectors decide 'concurrent' vs 'happened-after' with a worked example?", "what changes if we range-shard with a Raft group per shard instead (the CP design)?", or "how does Cassandra's tunable consistency map onto this exact model?" When you're ready, say <b>next</b> and we'll build the stream processor — <i>stateful windows, watermarks, and exactly-once over a moving firehose.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your cart store runs N=3. A user adds an item (a PUT that succeeds at W=2), then immediately reloads the cart (a GET at R). Which quorum setting guarantees the reload sees the item they just added?",
+    options: [
+      {t:"R=2. With W=2 and R=2, W+R = 4 > N = 3, so the set of replicas the write touched and the set the read touches must overlap in at least one node (pigeonhole). That shared replica has the new item, so the read is guaranteed to see it — read-your-writes holds. R=1 would give W+R = 3, not greater than 3, so the read set could miss the write set entirely and return the pre-add cart.",
+       ok:true,
+       fb:"Right. The whole consistency dial is the single inequality W+R>N (Lesson 6/11's quorum overlap). W=2,R=2 → 4>3 → guaranteed overlap → read-your-writes. Drop R to 1 and 2+1=3 is not >3, so the read can hit the one replica that never got the write. Consistency here is bought purely by making the two quorums forced to intersect."},
+      {t:"Any R works, because once W=2 acked, all three replicas have the write — replication is synchronous to all N.",
+       ok:false,
+       fb:"W=2 means the coordinator returned after just 2 of 3 replicas acked; the third may not have the write yet (it was slow, or down and served by a hint). So a read that happens to hit only that stale third replica misses the item. That's exactly why R matters: you need W+R>N to force the read to touch at least one node that has the write."},
+      {t:"R=1, because a single fast read is enough and consistency is the coordinator's job to guarantee regardless of R.",
+       ok:false,
+       fb:"R=1 reads whichever single replica answers first, which may be the one that missed the W=2 write — so it can return the stale, pre-add cart. The coordinator can't conjure consistency from a non-overlapping quorum; the guarantee comes only from the W+R>N math forcing an intersection. R=1 is a deliberate 'fast but possibly stale' choice."}
+    ]
+  },
+  {
+    stem: "During a network partition, two of the user's devices each add a different item to the same cart, on opposite sides of the cut. Both writes succeed (the store is AP). When the partition heals, the store finds two versions of the cart. What's the correct resolution for a shopping cart?",
+    options: [
+      {t:"The version vectors show the two writes are concurrent (neither happened-after the other), so keep both as siblings and merge them with the cart's business rule — union the item sets — yielding a cart with both items. Nothing the customer added is lost.",
+       ok:true,
+       fb:"Exactly. Concurrent writes are a fact the AP design deliberately allows (Path C), and version vectors (L23/35) are how the store detects 'concurrent' vs 'ordered' without a global clock. For a set-like value the right merge is union — the Dynamo shopping-cart result. The reconciliation stack (siblings + merge + read repair) is the bill you pay for choosing availability under partition."},
+      {t:"Last-write-wins: compare the two wall-clock timestamps and keep the newer write, discarding the older one.",
+       ok:false,
+       fb:"LWW silently drops one of the two adds — the customer loses an item they added, and worse, the decision rests on wall clocks that can be skewed across datacenters (L22/23/35). LWW is acceptable only for values where dropping a concurrent write is harmless (a 'last page viewed'), never for a cart or any set that must accumulate. Detect the conflict and merge instead."},
+      {t:"Neither write should have succeeded during a partition — the store should have rejected both to avoid the conflict entirely.",
+       ok:false,
+       fb:"Rejecting writes during a partition is the CP choice, and it directly violates the cart's 'always writable' requirement — a lost sale on every partition. We chose AP precisely so both adds succeed; the price is exactly this reconciliation. If the data were an un-mergeable bank balance you'd flip to CP and reject, but for a mergeable cart, accepting both and merging is the correct trade."}
+    ]
+  },
+  {
+    stem: "One product goes viral and its cart key gets 50,000 reads/s — 100× any other key — while the other 97 nodes sit nearly idle. Someone suggests 'add more nodes so consistent hashing spreads the load.' Does that fix it?",
+    options: [
+      {t:"No. Consistent hashing spreads the keyspace evenly, but a single hot key still hashes to exactly one place on the ring and lands on the same N=3 replicas no matter how many nodes exist — adding nodes just makes the other 97 idle nodes into 197 idle nodes. The fix is a different primitive: cache the hot key at the coordinator (L02), split it into sub-keys merged at read (L21), or add extra read replicas for that key.",
+       ok:true,
+       fb:"Right, and Lesson 4 flagged this explicitly: consistent hashing solves rebalancing (moving ~1/N of keys when membership changes), not skew (traffic concentrated on one key). More nodes don't help a single hot key. This is Seam 2 — a capstone shows no one primitive is complete; you patch placement's hot-key hole with caching or key-splitting."},
+      {t:"Yes — with more nodes and more virtual nodes, the ring redistributes so the hot key's traffic is shared across many machines.",
+       ok:false,
+       fb:"Virtual nodes even out how key RANGES map to physical machines, but one key is one point on the ring; it maps to one preference list of N replicas regardless of how finely the ring is sliced. All 50,000 reads/s still hit those N nodes. Virtual nodes fix uneven range ownership, not a single scorching key."},
+      {t:"Yes — raise N (the replication factor) so the key has more replicas to read from.",
+       ok:false,
+       fb:"Raising N globally to help one key triples-plus your storage and write cost for every key in the system — a huge bill to patch one hot key. Targeted extra read replicas for just that key (or caching / key-splitting) is the proportionate fix. Cranking N for everyone is the wrong lever, even if it incidentally helps the hot read."}
+    ]
+  },
+  {
+    stem: "In this AP store, almost everything is eventually consistent. Why does the ring/token map (which physical nodes exist and which token ranges they own) get stored in a strongly-consistent Raft core instead of spread by the same gossip that tracks node liveness?",
+    options: [
+      {t:"Because if two nodes disagree about ring ownership, they compute different preference lists for the same key — a write and a read for that key touch disjoint replica sets, so W+R>N no longer overlaps and data is silently lost. Placement correctness depends on one agreed map, so the ring is CP even though the data it places is AP. Liveness ('is n88 up?') tolerates staleness; topology ('who owns this token range?') does not.",
+       ok:true,
+       fb:"Exactly — Seam 3. The store runs an AP plane for the mountain of cart data and a CP plane for the small map that plane's correctness rests on (the L20/30/62 metadata/data split). Gossip is fine for liveness because a briefly-stale 'up/down' just costs a retry; a briefly-disagreed ring breaks the overlap guarantee and loses writes. Different data, different consistency requirement."},
+      {t:"Because Raft is faster than gossip, so putting the ring there speeds up every read and write.",
+       ok:false,
+       fb:"Raft is not faster — it's slower, costing a majority round trip plus a disk flush per change (Lesson 62). The ring lives there despite that cost, because it needs agreement, not speed. It changes rarely (only when membership changes), so the slowness is affordable; the data plane stays on the fast, gossip-managed path precisely because it can't afford Raft's per-write toll."},
+      {t:"Because gossip can't represent structured data like a token map — it only carries simple up/down flags.",
+       ok:false,
+       fb:"Gossip can carry arbitrary structured state, including ring information (some systems do gossip their ring). The reason to use consensus isn't a representational limit — it's a correctness one: gossip is eventually consistent, and an eventually-consistent ring means transient disagreement about ownership, which silently loses data. You want the ring AGREED, not merely eventually-propagated."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

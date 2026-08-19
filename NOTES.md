@@ -1241,10 +1241,36 @@
     overlap, L35 logical clock (term), L10/22 fencing/leader election/flap, L13 idempotency + timeout=unknown, L26
     jitter, L47/33 group commit, L20/30 metadata split, L34 the opposite AP pick. Trade: correctness &
     understandability vs latency of agreement. (Lesson 0062)
-63. Building a distributed key-value store (capstone) — wire consistent hashing (L03/04) + quorum reads/writes
-    (L06/11) + gossip membership & Merkle anti-entropy (L43) + LSM storage (L47) + hinted handoff into ONE
-    Dynamo/Bigtable-style system, and see where the seams pull against each other. Trade: tunable consistency vs
-    availability & operational complexity.
+63. ✅ **Building a distributed key-value store (capstone)** — assemble the course into ONE Dynamo-style store:
+    a 100-node / 3-DC / 1 TB shopping-cart store that must stay writable while a DC is on fire and never lose a
+    cart-add (the "always writable" rule → AP, L11 — the seed of every choice). Estimate the fleet by
+    REPLICATION-AMPLIFIED load (N=3 → 3 TB, ~3k writes + ~10k reads/node) and the quorum table where ONE inequality
+    `W+R>N` slides the whole system between consistency & availability (pick N=3,W=2,R=2 as the balanced default;
+    W=1 when never-reject beats staleness). Model six primitives as THREE PLANES: placement = consistent-hashing
+    ring + virtual nodes → a **preference list** of the next N=3 DISTINCT physical nodes/racks (L03/04, a pure
+    function so any node coordinates with zero lookups); replication = quorum W/R + **sloppy quorum** + **hinted
+    handoff** to stay writable through failure + **version vectors** (L23/35) to tell concurrent from ordered;
+    membership = **gossip** (L43, no-SPOF AP registry, O(log N)) + **Merkle anti-entropy** (L43, repair only the
+    differing keys, not a 30 GB copy); over an **LSM engine** (L47); beside a small **Raft core** (L62) that owns
+    the ring/token map (L20/30 metadata/data split). Trace (A) healthy W=2 write that never waits for the slow 3rd
+    replica (L62's "majority not all" tail trick); (B) read that finds two CONCURRENT versions (vectors: neither ≥
+    other) → keep BOTH siblings → merge by cart UNION (a business rule) + **read repair** the stale replica, NOT
+    silent LWW; (C) DC partition → keep writing on both sides (available), two truths briefly exist (not
+    consistent), reconcile on heal via hinted handoff + anti-entropy + merge = CAP's A-over-C paid in exactly that
+    machinery. First bottleneck = the SEAMS where primitives fight: (1) sloppy quorum buys availability by VOIDING
+    the `W+R>N` overlap → the reconciliation stack exists solely to clean up the divergence you allowed; (2) a HOT
+    KEY still bakes its N replicas — consistent hashing fixes rebalancing not skew (L04) → cache (L02) / key-split
+    (L21) / extra read replicas, not a better hash; (3) the ring must be CP even though the data is AP (a gossiped
+    ring → disjoint replica sets → silent loss); (4) the top-level AP/CP fork (leaderless quorum vs Raft-group-
+    per-shard, L62) is decided ENTIRELY by "what does this data cost when briefly wrong?" — mergeable cart → AP,
+    un-mergeable balance → CP (L11/25), same six primitives assemble into EITHER machine. Deepest point of the
+    course: a distributed DB isn't a monolithic invention — it's these primitives composed; read Dynamo/Cassandra/
+    Bigtable/Cockroach as different SETTINGS of the same knobs, and design a new one by choosing them deliberately.
+    Four traps: gossip the ring (→ silent loss); LWW on a value that must merge; expect consistent hashing to fix a
+    hot key; read `W+R>N` as unconditional (a sloppy quorum voids it — by design). Reuses L03/04 ring, L06/11 quorum
+    overlap + CAP fork, L23/35 version vectors, L43 gossip/Merkle, L47 LSM, L62 consensus core, L02 cache/L21 shard
+    (hot key), L17/62 tail trick, L20/30 metadata split. Trade: tunable consistency vs availability & operational
+    complexity. (Lesson 0063)
 64. Stream processing & windowing — beyond L29's lambda/kappa sketch: a stateful stream processor (tumbling/
     sliding/session windows, watermarks for late data L17/29, checkpointing for exactly-once state, keyed state &
     rescaling). Trade: latency & correctness of windowed results vs state size & recovery cost.
