@@ -1271,15 +1271,53 @@
     overlap + CAP fork, L23/35 version vectors, L43 gossip/Merkle, L47 LSM, L62 consensus core, L02 cache/L21 shard
     (hot key), L17/62 tail trick, L20/30 metadata split. Trade: tunable consistency vs availability & operational
     complexity. (Lesson 0063)
-64. Stream processing & windowing — beyond L29's lambda/kappa sketch: a stateful stream processor (tumbling/
-    sliding/session windows, watermarks for late data L17/29, checkpointing for exactly-once state, keyed state &
-    rescaling). Trade: latency & correctness of windowed results vs state size & recovery cost.
+64. ✅ **Stream processing & windowing** — a live sales leaderboard ("revenue in the last minute, per product,
+    refreshed every second") over a 100k-events/sec purchase stream, the streaming answer to L29's stale batch
+    warehouse. Estimate the shape-defining fact: state scales with KEYS × WINDOWS (~1M active products × 24 B ≈
+    24 MB running sums), NOT with the 20 MB/s firehose — an aggregate collapses many events into one number per
+    key (L21), flipping the cost model so the expensive/fragile thing is STATE, not throughput; re-running batch
+    every second re-scans 60× (L29 cost ∝ history×frequency), streaming reads each event ONCE (cost ∝ new data).
+    Model three window shapes (tumbling = 1 update/event; sliding 60s/10s = 6 overlapping windows = 6× state, the
+    responsiveness-vs-state trade; session = gap-defined, unbounded-state hazard on a never-idle entity) and the
+    idea it all turns on: bucket by EVENT TIME (fixed at source, replayable) not PROCESSING TIME (arrival →
+    wrong + non-deterministic); a WATERMARK = max_event_seen − allowed_lateness asserts "seen everything ≤ t" and
+    fires a window when it passes the window end — allowed-lateness is the latency-vs-completeness dial (L17 tail /
+    L29 late data). State lives in RAM + a local LSM store (L47); CHECKPOINT snapshots {all state + source offsets}
+    together so recovery restores state AND rewinds the log (L09) to the matching offset → each replayed event folds
+    in ONCE = exactly-once STATE, NOT exactly-once delivery (L09/13 — sink still needs idempotent upsert by
+    (window,key) or a transactional/outbox sink, L13/33). Trace: (A) a 5s-late event lands in its correct
+    [10:00,10:01) window because a 5s watermark held it open; (B) same sale = 1 update tumbling vs 6 sliding;
+    (C) worker crash → restore last checkpoint + rewind offset + replay ≤1 interval of events → sum climbs back
+    exactly, no double-count. First bottleneck = the STATE itself: rescaling 20→40 workers must RELOCATE keyed
+    state, and hash%N remaps ~94% (L03) → minutes of downtime → fixed KEY GROUPS (1024, consistent hashing L03/04
+    on state) move only ~1/N; checkpoint interval = steady overhead vs replay time (L24/02 two-sided dial),
+    incremental checkpoints (L47) cut it; unbounded state (never-idle session / no-window global / stalled
+    watermark from a dead partition) → OOM, every window needs a reason it closes (fire/gap/TTL, L20/39). Four
+    traps: processing-time bucketing; exactly-once state ≠ exactly-once delivery; %N rescaling; unbounded state.
+    Reuses L29 lambda/kappa speed-layer, L09 log/offsets/replay, L13 idempotent sink, L17/29 watermark/tail, L33
+    transactional sink, L47 LSM state backend, L21 aggregate-collapse, L03/04 consistent hashing (key groups),
+    L24/02 interval dial, L20/39 lifecycle. Trade: latency & correctness of windowed results vs state size &
+    recovery cost. (Lesson 0064)
 65. Vector databases & semantic search — where L16's keyword inverted index can't reach: embeddings + approximate
     nearest-neighbor (HNSW / IVF), recall vs latency, hybrid keyword+vector retrieval, and reindexing as the model
     changes. Trade: recall/quality vs query latency & index cost.
 66. Global rate limiting & quota — L08's single-node limiter coordinated across regions and a fleet: sloppy/
     approximate counters (L21), token sync vs local buckets + reconciliation, per-tenant global quotas (L40), and
     the CAP tension of a shared limit under partition (L11). Trade: limit accuracy vs coordination latency & cost.
+67. Data lakes & the lakehouse (open table formats) — beyond L29's warehouse: raw files on object storage (L20)
+    made queryable by an open table format (Iceberg/Delta/Hudi) — a metadata layer giving ACID snapshots, schema
+    evolution (L24), time-travel, and compaction over immutable Parquet; separation of storage from many compute
+    engines. Trade: openness/flexibility & cheap storage vs query performance & metadata-management complexity.
+68. Delivery guarantees & the dead-letter lifecycle — end-to-end at-least-once vs effectively-once across a whole
+    pipeline (L09/13/33/64): where dedup lives, poison-message quarantine, DLQ triage/replay tooling, and proving a
+    message was handled. Trade: delivery certainty & operability vs pipeline latency & storage of in-flight state.
+69. Hot/warm/cold path & the serving vs analytics split — one event feeding a low-latency serving store, a
+    streaming speed layer (L64), and a batch warehouse (L29) at once, kept consistent enough; the read-path router
+    that picks a path per query (L37 CQRS). Trade: freshness & query latency per path vs duplicated pipelines & cost.
+70. Idempotent, resumable data APIs (uploads & long jobs) — resumable multipart uploads (L20), long-running job
+    status endpoints (L05), and safely retryable mutations (L13/18) over flaky mobile networks: chunk + checksum +
+    commit-last (L20/25), resume tokens, and progress polling. Trade: robustness on bad networks vs protocol &
+    server-state complexity.
 
 ## Lesson format conventions
 - Four reusable "moves" framing introduced in Lesson 01: estimate → model →

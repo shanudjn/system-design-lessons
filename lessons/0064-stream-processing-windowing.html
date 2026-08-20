@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 64 — Stream Processing &amp; Windowing: Correct Answers From a Moving Firehose</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 64 · Worked Example</div>
+  <h1>Stream Processing &amp; Windowing: Correct Answers From a Moving Firehose</h1>
+  <p class="lead">Lesson 29 built a warehouse that answers "revenue by region by day" in half a second — but the answer was <i>stale</i>, only as fresh as the last batch load. It waved at a "speed layer" and moved on. <span class="key">This lesson opens that box: how do you compute a <b>continuously-updating</b> aggregate — "revenue in the last minute, per product, refreshed every second" — over a never-ending stream of events, and get an answer that is both fast <i>and</i> correct?</span> The concrete job: a live sales leaderboard over a <b>100,000-events/sec purchase stream</b>, end-to-end lag under a few seconds. We'll <b>estimate</b> the stream and the state it forces; <b>model</b> the three window shapes and the one idea — <b>event time vs processing time</b> — that decides whether the numbers are even right; <b>trace</b> a late event, a firing window, and a worker crash; and find <span class="key">the first bottleneck, which for a <i>stateful</i> processor is not throughput but the <b>state itself</b> — recovering it after a crash and moving it when you rescale.</span> The trade underneath every knob: <b>latency &amp; correctness of windowed results vs state size &amp; recovery cost.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0064-stream-processing-windowing.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>A <b>live sales leaderboard</b>. A stream of purchase events flows in — one event per checkout, <code>{product_id, price_cents, event_time, user_id}</code> — and a dashboard must show, updated every second, the total revenue for each product <i>in the last minute</i>. The batch warehouse of Lesson 29 can't do this: it re-scans history on a schedule, so its freshest answer is minutes-to-hours old. We want an answer that is at most a few seconds behind reality and never <i>wrong</i> — a number that stays correct even though events arrive out of order, workers crash, and traffic doubles at noon. That "never wrong" requirement is the seed of the whole design: <span class="key">a stream processor's hard part is not moving the bytes fast — it's keeping a <b>correct running answer</b> in the face of late data and failure.</span></p>
+
+<div class="diagram"><pre>
+  A stateful stream processor: standing query over a moving log.
+
+    purchase events (100k/s), each stamped with its EVENT TIME
+        |
+        v
+   [ SOURCE ]  reads the log (L09), keeps an OFFSET per partition
+        |   partition-by product_id  (L09 keyed routing)
+        v
+   [ KEYED WINDOW OPERATOR ]  <- the stateful heart
+        |
+        |  bucket each event by its EVENT TIME, not arrival time
+        |  keep one running SUM per (product, window) in STATE
+        |
+        |     window [10:00:00 , 10:01:00)   product P-7:  $ 4,120
+        |     window [10:00:00 , 10:01:00)   product P-9:  $ 2,300
+        |     window [10:01:00 , 10:02:00)   product P-7:  $   80  ...
+        |
+        |  a WATERMARK ("I've now seen everything up to time t")
+        |  decides WHEN a window is complete enough to FIRE
+        v
+   [ SINK ]  emit the finished window's totals to the dashboard
+
+    running quietly underneath, forever:
+      * STATE lives on each worker (in RAM + a local LSM store, L47)
+      * CHECKPOINTS snapshot {all state + source offsets} together
+        so a crashed worker restores exactly where it left off
+</pre></div>
+
+<p class="note"><span class="key">A stream processor is a database query turned inside out.</span> A database stores data and runs a query when you ask. A stream processor stores the <i>query</i> — the standing aggregation — and runs it forever as data flows past, keeping the answer materialized in <b>state</b>. Everything hard about it comes from that inversion: the input never ends (so "when is a window done?"), the input arrives out of order (so "which window does this event belong to?"), and the state is precious and large (so "what happens when the worker holding it dies?").</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Stream / unbounded input</b> — an input with no end: events keep arriving forever. A batch job reads a finite file and stops; a stream job runs indefinitely, so it can never "wait for all the data" before answering.</li>
+  <li><b>Event time vs processing time</b> — <b>event time</b> is when the thing actually happened (stamped on the event at its source: a phone at checkout). <b>Processing time</b> is when your processor happens to see it (arrival). Network delay, retries (Lesson 7), and offline buffering make the two differ — often by seconds.</li>
+  <li><b>Window</b> — a finite slice of the endless stream that you aggregate over: "the last minute," "9:00–9:01." Windowing is how you get a finite answer out of an infinite input.</li>
+  <li><b>Tumbling / sliding / session window</b> — the three shapes. <b>Tumbling</b>: fixed, non-overlapping buckets (each event in exactly one). <b>Sliding</b>: fixed-length but overlapping (each event in several). <b>Session</b>: gap-defined, grows with activity and closes after a period of silence.</li>
+  <li><b>Watermark</b> — the processor's moving assertion "I believe I have now seen every event with event time ≤ <code>t</code>." When the watermark passes a window's end, the window is declared complete and <b>fires</b> (emits its result). It is the dial between answering early and answering completely.</li>
+  <li><b>Keyed state</b> — the per-key running aggregates the operator holds (here: one revenue sum per product per open window). It is partitioned by key across workers, exactly like Lesson 9's partition-by-key.</li>
+  <li><b>Checkpoint</b> — a periodic, consistent snapshot of <i>all</i> operator state <i>together with</i> the source offsets it corresponds to, saved to durable storage, so a crashed job can restore state and rewind the input to the matching position.</li>
+  <li><b>Exactly-once state</b> — the guarantee that each event affects the stored aggregates exactly once <i>even though</i> events may be re-read after a crash. It is about the <i>effect on state</i>, not about delivery on the wire (Lessons 9/13 — there is still no exactly-once delivery).</li>
+</ul>
+
+<h2>Move 1 — Estimate: the stream, and the state it forces</h2>
+<p>Two sizings decide everything: how fast do bytes arrive, and — the number that actually shapes the system — how much <i>state</i> must the processor hold?</p>
+
+<table>
+  <tr><th>Piece</th><th>Value</th><th>Where it comes from</th></tr>
+  <tr><td>Event rate</td><td><code>100,000/s</code></td><td>one per checkout, peak (reuse L09's firehose scale)</td></tr>
+  <tr><td>Event size</td><td><code>~200 B</code></td><td>product id, price, timestamps, user id</td></tr>
+  <tr><td>Ingest bandwidth</td><td><code>20 MB/s</code></td><td><code>100,000 × 200 B</code></td></tr>
+  <tr><td>Events per 1-min window</td><td><code>6,000,000</code></td><td><code>60 s × 100,000/s</code></td></tr>
+  <tr><td>Active products / min</td><td><code>~1,000,000</code></td><td>distinct keys that get a sale in the minute</td></tr>
+  <tr><td>Per-window keyed state</td><td><code>~24 MB</code></td><td><code>1M keys × ~24 B</code> (sum + counters)</td></tr>
+  <tr><td>Target end-to-end lag</td><td><code>&lt; a few seconds</code></td><td>vs L29 batch = minutes-to-hours stale</td></tr>
+</table>
+
+<div class="card calc">
+  <p><b>The number that matters: state scales with KEYS and WINDOWS, not with the event rate.</b> Notice we do <i>not</i> store the 6,000,000 events in a window — we store one running sum per product. So the state is <code>~1M keys × 24 B ≈ 24 MB</code> per in-flight window, and because we hold a couple of windows open at once (the current one plus one waiting for stragglers), <span class="key">the live keyed state is tens of megabytes, not the ~1.2 GB/min the raw events would be.</span> This is the whole reason streaming aggregation is cheap where the raw firehose is not: <b>an aggregate collapses many events into one number per key</b> (Lesson 21's sketches, again — trade exact-events-kept for a compact running summary). But it flips the cost model: the expensive, fragile thing to manage is no longer throughput — it's <i>this state</i>. Lose it in a crash and the running answer is gone; grow the key count without bound and the worker runs out of memory.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Why not just re-run the batch query more often?</b> Lesson 29 already priced this: the batch cost is proportional to <i>history scanned × frequency</i>. To refresh "last minute" every second by re-scanning, you'd re-read a rolling 60 s of events (6M rows) every second — <code>60×</code> the work of reading each event once, and it still can't get below the batch interval in freshness. A stream processor reads each event <b>once</b>, folds it into a running sum, and is done — <span class="key">cost proportional to <i>new</i> data, not to history re-scanned.</span> That is the streaming payoff, and the reason the "speed layer" of Lesson 29's lambda architecture exists at all.</p>
+</div>
+
+<h2>Move 2 — Model: three window shapes, and the one idea that makes them correct</h2>
+
+<h3>The three window shapes</h3>
+<div class="card calc">
+  <p><b>Tumbling</b> — fixed, non-overlapping buckets. A 1-minute tumbling window puts the event at <code>10:00:05</code> into exactly one bucket, <code>[10:00:00, 10:01:00)</code>. Each event contributes to one window, so state and compute are minimal. This is our leaderboard's default: "revenue per clock-minute."</p>
+  <p><b>Sliding</b> — fixed length, but stepped so windows overlap: "revenue over the last 60 s, recomputed every 10 s." Each event now belongs to <code>60 ÷ 10 = 6</code> windows at once, so <span class="key">it costs up to 6× the state and 6× the aggregate updates of a tumbling window.</span> You buy a smoother, more responsive curve and pay in multiplied state — name that trade before you reach for a slide.</p>
+  <p><b>Session</b> — no fixed clock; group an entity's events until a <b>gap</b> of inactivity (say 30 min) closes the window. A user's browsing session has no predetermined length — it's "however long they kept clicking." Session state is per-active-entity and lives until the gap elapses, so <span class="key">an unbounded number of never-idle sessions is an unbounded-state hazard</span> (cap the max session length so a bot that never stops can't hold state forever).</p>
+</div>
+
+<h3>The idea the whole lesson turns on: event time, not processing time</h3>
+<div class="card calc">
+  <p>Here is the trap that quietly makes every dashboard wrong. An event happens at event time <code>10:00:59</code> — a checkout on a phone with a flaky connection. It reaches your processor at <code>10:01:04</code>, five seconds later, because of network delay, a broker retry (Lesson 7), or the phone buffering while offline. <span class="key">If you bucket by <b>processing time</b> (when it arrived), this sale lands in the <code>[10:01, 10:02)</code> window — but it belongs to <code>[10:00, 10:01)</code>.</span> The 10:00 window under-counts and the 10:01 window over-counts. Worse, the error is <b>non-deterministic</b>: replay the same events on a faster network and they'd bucket differently, so you can't even reproduce the number. The fix is to bucket by the event's own <b>event time</b> stamp — an event's window is a property of <i>the event</i>, fixed forever, independent of when or how fast it arrives.</p>
+</div>
+
+<div class="card calc">
+  <p><b>But event time creates a new problem: when is a window "done"?</b> If a window's membership is decided by event time, and events can arrive late, then at <code>10:01:00</code> processing time you can't safely close the <code>[10:00, 10:01)</code> window — a straggler stamped <code>10:00:59</code> might still be in flight. Wait forever and you never emit an answer; close immediately and you drop stragglers. This is what a <b>watermark</b> resolves. A watermark is a promise the source emits, riding <i>in</i> the stream: "as of here, I've seen every event with event time ≤ <code>t</code>." It's computed as <code>watermark = (max event time seen so far) − (allowed lateness)</code>. When the watermark reaches a window's end, the window fires.</p>
+  <div class="diagram"><pre>
+  Watermark with allowed lateness = 5 s. Window W = [10:00:00, 10:01:00).
+
+    events seen (by event time): ... 10:00:58, 10:00:59, 10:01:03 ...
+    max event time seen                         = 10:01:05
+    watermark = max_seen - 5 s                   = 10:01:00
+        watermark has now reached W's END (10:01:00)
+        -> W FIRES: emit each product's minute revenue
+
+    a straggler stamped 10:00:57 that arrives AFTER W fired is LATE:
+        watermark (10:01:00) is already past it
+        -> drop it, OR route to a side output, OR emit a correction
+
+  Latency to fire W  ~=  allowed lateness (5 s) + pipeline delay.
+  Bigger allowed lateness -> fire later (more lag) but catch more
+  stragglers. Smaller -> fire sooner but drop more late events.
+</pre></div>
+  <p><span class="key">The watermark's allowed-lateness bound is the exact dial between latency and completeness</span> — the same freshness-vs-completeness tension as Lesson 17's tail (a slow span you either wait for or give up on) and Lesson 29's watermark for late-arriving batch data. Set it from the real tail of your arrival delay: if 99.9% of events arrive within 5 s, a 5 s bound catches almost everything and costs 5 s of dashboard lag.</p>
+</div>
+
+<h3>Where the state lives, and how it survives a crash</h3>
+<div class="card calc">
+  <p>The keyed sums live on the worker that owns each key's partition — in RAM for speed, backed by a local <b>LSM store</b> (Lesson 47's RocksDB-style engine: fast writes, spills to disk when state outgrows memory). That state is the whole answer, so losing it is catastrophic. A crashed worker must come back with its sums <i>intact</i> and reprocess no event twice into them. The mechanism is the <b>checkpoint</b>: periodically, the processor snapshots <i>all</i> operator state <b>together with the source offsets</b> (Lesson 9) that produced it, atomically, to durable storage. The offset-and-state pairing is the trick — <span class="key">a checkpoint records "these sums correspond to having consumed the log up to exactly these offsets."</span> On recovery: restore the sums from the last checkpoint, rewind the source to the offsets in that same checkpoint, and resume. Every event after that offset is reprocessed, but since the state was rolled back to <i>before</i> those events too, each one folds into the sums exactly once.</p>
+  <p class="note why"><b>This is "exactly-once state," not "exactly-once delivery."</b> Records after the last checkpoint <i>are</i> re-read and re-processed on recovery (Lessons 9/13: no exactly-once on the wire). What's exactly-once is the <b>effect on the stored state</b> — because state and offset roll back together, the reprocessing lands the same sums, not doubled ones. Pushing that guarantee out to the <i>dashboard</i> (the sink) needs one more thing: either an <b>idempotent write</b> keyed by <code>(window, product)</code> so a replayed emit overwrites rather than adds (Lesson 13), or a transactional sink that commits its output together with the checkpoint (Lesson 33's outbox flavor). Skip that and recovery double-counts <i>downstream</i> even though the internal state was perfect.</p>
+</div>
+
+<p class="note why"><b>The model in one line:</b> bucket each event by its own <b>event time</b> into tumbling / sliding / session windows; hold one running aggregate per key in <b>keyed state</b> on an LSM-backed worker; let a <b>watermark</b> decide when a window has waited long enough for stragglers to fire; and <b>checkpoint</b> state-plus-offsets together so a crash costs a rewind, not a wrong answer.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Three scenarios: a late event finding its correct window, a window firing, and a worker crash — the case the checkpoint machinery exists for.</p>
+
+<h3>Path A — a late event lands in the right window</h3>
+<div class="diagram"><pre>
+  A phone checks out at event_time 10:00:59 ($40, product P-7),
+  but buffers offline and the event ARRIVES at 10:01:04.
+
+    t=10:01:04  source reads the event; reads its EVENT TIME = 10:00:59
+                -> its window is [10:00:00, 10:01:00), decided by the
+                   stamp, NOT by the 10:01:04 arrival time
+    t=10:01:04  is W=[10:00,10:01) still open? watermark so far
+                = max_seen(10:01:03) - 5 s = 10:00:58  < 10:01:00
+                -> W has NOT fired yet -> add $40 to P-7's sum in W
+    t=10:01:05  an event stamped 10:01:05 arrives; max_seen=10:01:05
+                watermark = 10:01:00 -> reaches W's end -> W FIRES
+                with the late $40 correctly included.
+
+  Had we bucketed by ARRIVAL (10:01:04), the $40 would have wrongly
+  landed in [10:01,10:02) and both minutes would be off. Event time
+  + a 5 s watermark caught the straggler and kept the numbers right.
+</pre></div>
+
+<h3>Path B — a sliding window vs a tumbling window on the same event</h3>
+<div class="diagram"><pre>
+  One $40 sale of P-7 at event_time 10:00:59.
+
+  TUMBLING (1 min):   belongs to exactly ONE window
+       [10:00:00, 10:01:00)   +$40      (1 state update)
+
+  SLIDING (len 60 s, step 10 s): belongs to 60/10 = 6 windows
+       [10:00:00,10:01:00) +$40
+       [10:00:10,10:01:10) +$40
+       [10:00:20,10:01:20) +$40
+       [10:00:30,10:01:30) +$40
+       [10:00:40,10:01:40) +$40
+       [10:00:50,10:01:50) +$40      (6 state updates, 6x the state)
+
+  Same event, 6x the work + memory for a smoother refresh curve.
+  That multiplier IS the trade: responsiveness vs state size.
+</pre></div>
+
+<h3>Path C — a worker crashes mid-window (why checkpoints exist)</h3>
+<div class="diagram"><pre>
+  Checkpoint interval = 10 s. Last good checkpoint C5 saved:
+     { P-7 sum in W = $3,200, ... }  AT source offset = 5,000,000
+
+    t=+7 s after C5   worker has since folded 700,000 more events;
+                      P-7's live sum is now $4,120 (in RAM)
+    t=+7 s            *** worker crashes *** -> the $4,120 (and all
+                      un-checkpointed state) is GONE from that box
+
+    RECOVERY:
+      1. a standby worker restores state from C5  -> P-7 sum = $3,200
+      2. rewind the source to C5's offset          -> 5,000,000
+      3. replay the ~700,000 events since C5 (10 s x 100k = <=1M)
+         -> each folds in ONCE (state rolled back with the offset)
+         -> P-7 sum climbs back to exactly $4,120. No double-count.
+
+    Recovery cost = restore state (tens of MB) + replay <= 1 interval
+    of events. Checkpoint OFTEN -> short replay, steady overhead.
+    Checkpoint RARELY -> cheap steady state, long replay on crash.
+</pre></div>
+
+<p>Path A is the payoff of event time: <span class="key">an event's window is a fact fixed at its source, so a straggler still counts where it belongs</span> — and the watermark held the window open exactly long enough (5 s) to receive it. Path B makes the window-shape trade concrete: the same event costs 1 update tumbling and 6 sliding, so a sliding window's smoothness is paid for in a state multiplier you should name out loud. Path C is why the whole checkpoint apparatus exists: <span class="key">by snapshotting state and offset <i>together</i>, a crash becomes a bounded rewind — reprocess at most one checkpoint interval of events — rather than a lost or doubled answer.</span> Exactly-once <i>state</i>, paid for by re-reading (never exactly-once <i>delivery</i>, Lessons 9/13).</p>
+
+<h2>Move 4 — Find the first bottleneck: the state, when you must recover or rescale it</h2>
+<p>A stateless service scales by adding boxes and shrinks by removing them — nothing moves. A <b>stateful</b> processor can't: the running sums are pinned to the workers that own their keys, so both recovery and scaling become exercises in <i>moving state</i>. That is the wall.</p>
+
+<div class="card calc">
+  <p><b>The bottleneck — rescaling means relocating state, and the naive key mapping reshuffles almost all of it.</b> Traffic doubles at noon; you want to go from 20 workers to 40. Each key's state must live on the worker that will now receive that key's events — so the keyed state has to <i>move</i> to match the new assignment. If you assign keys by <code>hash(key) % N</code>, changing <code>N</code> from 20 to 40 remaps almost every key (Lesson 3's exact result: <code>% N</code> resharding moves ~94% of keys) — so ~94% of your <i>state</i> has to be shipped across the network before the job can resume. On tens of GB of state that's minutes of downtime on every scale change. <span class="key">The cost of rescaling a stateful processor is proportional to state size, not to throughput</span> — the opposite of a stateless tier.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The fix — key groups (consistent hashing, applied to state).</b> Pre-split the keyspace into a fixed, large number of <b>key groups</b> (say 1,024), assigned once at job start. Each worker owns a contiguous <i>range</i> of key groups; a key belongs to <code>hash(key) mod 1024</code>, and that mapping <b>never changes</b>. Rescaling reassigns whole key groups to workers — moving only the groups that changed hands (~<code>1/N</code> of them), not reshuffling every key. This is exactly Lesson 3/4's move: put a fixed indirection layer between keys and machines so adding a machine relocates a small slice, not the whole world. <span class="key">Key groups make the reassignment cheap; the state transfer is still real, but bounded to ~<code>1/N</code>.</span> The same snapshot format that a checkpoint uses is what makes a group portable — you restore a savepoint into a differently-sized job (Lessons 31/38's redeploy-by-replay).</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — the checkpoint interval is a two-sided dial.</b> Checkpointing is not free: snapshotting tens of MB (or GB) of state to durable storage steals I/O and briefly stalls processing. Checkpoint too <i>often</i> and steady-state throughput drops under the overhead; checkpoint too <i>rarely</i> and a crash forces a long replay (recovery reprocesses up to one full interval of events — at 100k/s, a 60 s interval means replaying 6M events). <span class="key">The interval trades steady-state cost against recovery time</span>, the same shape as Lesson 24's backfill-batch size and Lesson 2's cache TTL. For large state, <b>incremental checkpoints</b> (snapshot only the LSM segments changed since last time, Lesson 47) cut the steady cost so you can checkpoint often and keep recovery short.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — unbounded state.</b> Keyed state is only cheap because windows <i>close</i> and release their memory. Break that and state grows without limit: a session window on a bot that never goes idle stays open forever; a "count distinct users ever" with no window keeps every key for all time; a watermark that never advances (one dead source partition stops emitting, so <code>max_seen</code> freezes) leaves every window open, holding state indefinitely. <span class="key">Every piece of state needs a reason it will eventually be released</span> — a window that fires, a session gap, a state TTL (Lessons 20/39's lifecycle). A processor whose state only grows is a slow-motion out-of-memory crash.</p>
+</div>
+
+<p>So the honest design for our live leaderboard is: read the purchase log partitioned by product (Lesson 9); bucket each event by its <b>event time</b> into 1-minute <b>tumbling</b> windows (slide only where the smoother curve is worth 6× the state); hold one revenue sum per product per window in <b>keyed state</b> on an LSM-backed worker; let a <b>watermark</b> with a 5 s allowed-lateness bound decide when each window has waited long enough to <b>fire</b> (dropping or side-outputting anything later); <b>checkpoint</b> state-and-offsets together often enough that a crash costs a short replay; write results to the dashboard <b>idempotently</b> keyed by <code>(window, product)</code> so recovery can't double-count downstream; and partition state into fixed <b>key groups</b> so noon's scale-out moves ~<code>1/N</code> of the state, not ~94% of it. Every choice names its price: event time buys correctness at the cost of waiting on a watermark; a bigger watermark buys completeness at the cost of latency; frequent checkpoints buy fast recovery at the cost of steady overhead; key groups buy cheap rescaling at the cost of an indirection layer.</p>
+
+<p><span class="key">The deepest point: a stream processor is a materialized query kept correct against three enemies at once — the input never ends, it arrives out of order, and the machine holding the answer can die.</span> Windows tame the endlessness, event-time-plus-watermarks tame the disorder, and checkpoints-plus-key-groups tame the fragility of state. Get those three right and "give me a correct, live, always-fresh aggregate over a firehose" stops being magic and becomes a set of dials you can point at your own latency and correctness budget. The standing tension, from Lesson 29's stale-but-cheap batch to here: latency &amp; correctness of windowed results vs state size &amp; recovery cost.</p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>Finite answer from an endless input</td><td>Windows: tumbling/sliding/session</td><td>a boundable aggregate / choosing the shape's cost</td></tr>
+  <tr><td>Which window does an event belong to?</td><td>Event time, not processing time (L29)</td><td>correct, replayable / needs a stamp + waiting</td></tr>
+  <tr><td>When is a window complete?</td><td>Watermark + allowed lateness (L17/29)</td><td>fire without waiting forever / latency vs dropped late data</td></tr>
+  <tr><td>Hold the running answer</td><td>Keyed state on an LSM store (L47)</td><td>compact per-key sums / state to recover &amp; move</td></tr>
+  <tr><td>Survive a crash</td><td>Checkpoint state + offsets (L09/13)</td><td>exactly-once state / interval = overhead vs replay</td></tr>
+  <tr><td>Push it to the sink correctly</td><td>Idempotent / transactional write (L13/33)</td><td>no downstream double-count / write-side effort</td></tr>
+  <tr><td>Scale a stateful job</td><td>Key groups = consistent hashing (L03/04)</td><td>move ~1/N of state / an indirection layer</td></tr>
+  <tr><td>Keep state from exploding</td><td>Window close / session gap / TTL (L20/39)</td><td>bounded memory / must guarantee release</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — bucketing by processing time.</b> Using arrival time to assign windows makes every out-of-order or delayed event land in the wrong bucket, and makes the result non-deterministic (a replay gives different numbers). Bucket by the event's own event-time stamp; use a watermark to decide completeness.</li>
+  <li><b>Trap 2 — confusing exactly-once <i>state</i> with exactly-once <i>delivery</i>.</b> After a crash, events since the last checkpoint <i>are</i> reprocessed. The internal sums stay correct because state and offset roll back together — but the sink double-counts unless the write is idempotent or transactional (Lessons 13/33). There is still no exactly-once on the wire (Lesson 9).</li>
+  <li><b>Trap 3 — rescaling by <code>hash(key) % N</code>.</b> Changing worker count remaps ~94% of keys (Lesson 3), so ~94% of state must ship before the job resumes — minutes of downtime per scale change. Use fixed key groups so only ~<code>1/N</code> of state moves (Lessons 3/4).</li>
+  <li><b>Trap 4 — unbounded state.</b> A session that never idles, a global aggregate with no window, or a stalled watermark (one dead partition freezes <code>max_seen</code>) keeps state growing until the worker OOMs. Give every window a reason it will close — a fire, a gap, or a TTL (Lessons 20/39).</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We built a live sales leaderboard — a correct, always-fresh aggregate over a 100,000-events/sec purchase stream — the thing Lesson 29's stale batch warehouse couldn't do. <b>Estimate</b> showed the shape-defining number: state scales with <i>keys and windows</i> (~24 MB of running sums), not with the 20 MB/s firehose, because an aggregate collapses many events into one number per key — which is why streaming is cheap on throughput but expensive on <i>state</i>. <b>Model</b> laid out the three window shapes (tumbling cheap, sliding = a state multiplier, session = an unbounded-state hazard) and the idea the whole lesson turns on: bucket by <b>event time</b> not processing time, and let a <b>watermark</b> (with an allowed-lateness bound that dials latency against completeness) decide when a window has waited long enough to fire; state lives on LSM-backed workers and survives crashes via <b>checkpoints</b> that snapshot state <i>and</i> offsets together — exactly-once <i>state</i>, not delivery. <b>Tracing</b> ran a 5-second-late event into its correct window, showed the same sale costing 1 update tumbling and 6 sliding, and rewound a crashed worker from its last checkpoint with no double-count. The <b>first bottleneck</b> was the <i>state itself</i>: rescaling relocates it, and the naive <code>% N</code> mapping reshuffles ~94% of it → fixed <b>key groups</b> (Lesson 3/4 again) move only ~<code>1/N</code>; the checkpoint interval trades steady overhead against replay time; and unbounded windows OOM the worker. Every dial named its trade. The standing tension, straight from Lesson 29: <span class="key">latency &amp; correctness of windowed results vs state size &amp; recovery cost.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we can compute live aggregates over a stream. Now the specialized retrieval systems built beside it.</b></p>
+  <p style="margin:.2rem 0">• <b>Vector databases &amp; semantic search (Lesson 65):</b> where Lesson 16's keyword inverted index can't reach — "find products <i>like</i> this one" by meaning, not exact words. Embeddings turn text/images into vectors; <b>approximate nearest-neighbor</b> (HNSW / IVF) finds close ones without scanning all of them; recall vs latency, hybrid keyword+vector retrieval, and re-indexing when the model changes. Trade: recall/quality vs query latency &amp; index cost.</p>
+  <p style="margin:.2rem 0">• Then: <b>global rate limiting &amp; quota</b> (Lesson 8's single-node limiter coordinated across regions — approximate counters, local buckets + reconciliation, and the CAP tension of one shared limit under partition). Say <b>next</b> to build the vector search engine.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">stream / unbounded input</span>
+    <span class="pill">event time vs processing time</span>
+    <span class="pill">window</span>
+    <span class="pill">tumbling window</span>
+    <span class="pill">sliding window</span>
+    <span class="pill">session window</span>
+    <span class="pill">watermark</span>
+    <span class="pill">allowed lateness</span>
+    <span class="pill">keyed state</span>
+    <span class="pill">checkpoint</span>
+    <span class="pill">exactly-once state</span>
+    <span class="pill">source offset</span>
+    <span class="pill">idempotent sink</span>
+    <span class="pill">key groups</span>
+    <span class="pill">rescaling</span>
+    <span class="pill">state TTL</span>
+  </p>
+  <p>That's Lesson 64. It opens the "speed layer" Lesson 29 waved at, and threads: Lesson 9 (the partitioned log, offsets, at-least-once, and no exactly-once delivery), Lesson 13 (idempotency for the sink), Lesson 17 &amp; 29 (the tail / late-arriving data and watermarks), Lesson 33 (transactional/outbox sinks), Lesson 47 (the LSM state backend), Lesson 21 (aggregates that collapse events into a compact running summary), Lesson 3/4 (consistent hashing — here as key groups for cheap rescaling), Lesson 24/2 (interval/TTL as a two-sided dial), and Lesson 20/39 (state lifecycle so it doesn't grow forever). <b>Ask me follow-ups</b> — e.g. "walk the watermark computation when one source partition goes silent", "how does a checkpoint barrier flow through the operator graph to get a consistent global snapshot?", "how do I get exactly-once all the way to a non-transactional sink?", "when should I pick a session window over a sliding one?", or "how do key groups make a savepoint restorable into a bigger job?" When you're ready, say <b>next</b> and we'll build the vector search engine — <i>embeddings, approximate nearest-neighbor, and recall-vs-latency.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "A checkout happens at event time 10:00:59, but the event doesn't reach your processor until 10:01:04 (the phone was buffering offline). Your 1-minute tumbling windows must show correct per-minute revenue. Which window should this sale count in, and how do you make that happen?",
+    options: [
+      {t:"The [10:00:00, 10:01:00) window, chosen by the event's own event-time stamp (10:00:59) — never by its 10:01:04 arrival time. A watermark with an allowed-lateness bound keeps the 10:00 window open a few seconds past 10:01:00 so this straggler is still folded into the right bucket before the window fires.",
+       ok:true,
+       fb:"Right. An event's window is a property of the event, fixed at its source, so a late arrival still counts where it belongs. Bucketing by arrival (processing time) would drop it into 10:01 and make both minutes wrong — and non-deterministically so, since a faster network would bucket it differently. Event time + a watermark (allowed lateness) is what keeps the numbers correct and replayable."},
+      {t:"The [10:01:00, 10:02:00) window, because that's when the processor actually saw the event — you can only aggregate over what has arrived.",
+       ok:false,
+       fb:"That's bucketing by processing time, and it's exactly the trap. The sale genuinely happened at 10:00:59, so putting it in the 10:01 minute makes the 10:00 window under-count and the 10:01 window over-count — and the error depends on network speed, so a replay gives a different answer. Use the event-time stamp, and a watermark to wait for stragglers."},
+      {t:"Neither — an event that arrives after its minute has elapsed is late data and must always be discarded to keep windows deterministic.",
+       ok:false,
+       fb:"A watermark with allowed lateness exists precisely so you DON'T have to drop every late event. Here the event is only 5 s late; a 5 s allowed-lateness bound keeps the 10:00 window open long enough to include it, then fires. You only drop (or side-output) events later than the bound. Discarding all late data would make the numbers systematically low."}
+    ]
+  },
+  {
+    stem: "Your dashboard needs 'revenue over the last 60 seconds, refreshed every 10 seconds' instead of fixed clock-minutes. You switch from a 1-minute tumbling window to a 60-second sliding window with a 10-second step. What's the main cost, and why?",
+    options: [
+      {t:"Each event now belongs to 6 overlapping windows (60 ÷ 10) at once, so it drives up to 6× the aggregate updates and up to 6× the keyed state versus tumbling, where each event lands in exactly one window. You buy a smoother, more responsive curve and pay in a state-and-compute multiplier.",
+       ok:true,
+       fb:"Exactly. A sliding window overlaps, so one sale is added to every window that currently covers its timestamp — here 6 of them. That multiplier IS the trade: responsiveness and smoothness of the refresh vs state size and update cost. Name it before you reach for a slide; if fixed clock-minutes are acceptable, tumbling is far cheaper."},
+      {t:"Sliding windows require processing-time bucketing, so you lose event-time correctness and can no longer handle late data.",
+       ok:false,
+       fb:"Window shape (tumbling/sliding/session) is independent of the time domain (event vs processing). A sliding window still buckets by event time and still uses watermarks for late data exactly as tumbling does. The real cost of sliding is the overlap multiplier — each event in several windows — not any loss of event-time semantics."},
+      {t:"Sliding windows can't be checkpointed, so you give up crash recovery and exactly-once state.",
+       ok:false,
+       fb:"Sliding-window state is just more keyed state (the several open windows per key), and it checkpoints exactly like any other state — snapshot it with the source offsets. You keep crash recovery and exactly-once state; you just have more state to snapshot. The cost is the overlap multiplier, not a loss of recoverability."}
+    ]
+  },
+  {
+    stem: "A worker crashes 7 seconds after its last checkpoint. Recovery restores the checkpointed sums, rewinds the source to the offset saved in that checkpoint, and replays the ~700,000 events since. The internal sums come back exactly right. Does the DASHBOARD automatically stay correct too?",
+    options: [
+      {t:"Not necessarily. The replayed events re-emit their window results to the sink, so unless the dashboard write is idempotent (keyed by (window, product) so a replay overwrites) or transactional (committed with the checkpoint), those re-emits double-count downstream. Exactly-once STATE is guaranteed; exactly-once DELIVERY to the sink is not.",
+       ok:true,
+       fb:"Right — this is the state-vs-delivery distinction. State and offset roll back together, so reprocessing lands the same internal sums (exactly-once state). But every reprocessed record can also re-fire an output; without an idempotent or transactional sink those outputs are applied twice. There's still no exactly-once on the wire (Lessons 9/13) — you engineer it at the sink."},
+      {t:"Yes. Because the checkpoint restored the state perfectly and no event is lost, the outputs are automatically exactly-once end to end.",
+       ok:false,
+       fb:"The checkpoint guarantees the internal state is exactly-once, but it says nothing about outputs already sent to the dashboard before the crash. The replayed events re-run the operator and can emit again. If the sink just ADDS, the dashboard double-counts. You need an idempotent (upsert-by-key) or transactional sink to extend exactly-once past the processor's own state."},
+      {t:"Yes, as long as the checkpoint interval is short enough that few events are replayed.",
+       ok:false,
+       fb:"A shorter interval means fewer replayed events, so a smaller double-count — but 'smaller wrong' is still wrong. Correctness at the sink doesn't come from replaying less; it comes from making the write idempotent or transactional so any number of replays lands the same result. The interval trades overhead against recovery time, not correctness."}
+    ]
+  },
+  {
+    stem: "Traffic doubles at noon and you scale the job from 20 workers to 40. Someone assigns each key to a worker with hash(key) % N. Why does the job stall for minutes on the resize, and what's the fix?",
+    options: [
+      {t:"Changing N from 20 to 40 remaps ~94% of keys (the % N reshuffle from Lesson 3), and because each key's running state must live on the worker that now owns it, ~94% of the state has to be shipped across the network before the job can resume. Fix: fixed key groups — hash keys into a large constant number of groups, assign whole groups to workers, so a resize moves only ~1/N of the state.",
+       ok:true,
+       fb:"Exactly. In a stateful processor, moving a key means moving its state, so the classic % N key-shuffle (Lesson 3) becomes a mass state migration — cost proportional to state size, minutes of downtime. Key groups are consistent hashing (Lesson 3/4) applied to state: a fixed indirection layer so adding workers relocates a small slice, not the whole world."},
+      {t:"The stall is unavoidable overhead of any scale-up; stateful processors simply can't rescale without a full stop, so you should over-provision and never resize.",
+       ok:false,
+       fb:"Rescaling does require moving some state, but it's not all-or-nothing. The stall here is caused specifically by % N remapping ~94% of keys. With fixed key groups only ~1/N of the state moves, so resizes are cheap and routine. Over-provisioning to avoid ever scaling wastes money and still can't handle an unplanned surge."},
+      {t:"Because 40 isn't a divisor-friendly number; using a power-of-two worker count (like 32) would make % N move almost no state.",
+       ok:false,
+       fb:"The reshuffle problem is inherent to % N under any change of N — powers of two don't save it; hash(key) % 32 vs % 20 still remaps almost everything. The fix isn't a magic worker count, it's decoupling keys from worker count via a fixed number of key groups (Lesson 3/4), so worker count can change while the key→group mapping stays put."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
