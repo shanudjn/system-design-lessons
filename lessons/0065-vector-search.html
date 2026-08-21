@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 65 — Vector Databases &amp; Semantic Search: Finding Things by Meaning</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 65 · Worked Example</div>
+  <h1>Vector Databases &amp; Semantic Search: Finding Things by Meaning</h1>
+  <p class="lead">Lesson 16 built a keyword search engine: an inverted index that maps the word "shoes" to every document containing the literal token "shoes." It is fast and exact — and it is <i>blind to meaning.</i> Type "comfortable footwear for marathon training" and it will miss a product titled "cushioned long-distance running sneakers," because the two share almost no words. <span class="key">This lesson builds the engine that <i>can</i> match them: a semantic search over a <b>10-million-product catalog</b> that finds items by what they <b>mean</b>, not which tokens they happen to contain.</span> The trick is to turn every product and every query into a point in a high-dimensional space where <i>closeness = similarity of meaning</i>, then answer "find things like this" as "find the nearest points." We'll <b>estimate</b> the index and discover that the honest, exact answer costs about a second per query; <b>model</b> the embedding, the distance metric, why ordinary tree indexes collapse in high dimensions, and the two approximate-nearest-neighbor families (HNSW and IVF) that rescue us; <b>trace</b> a query end to end, a graph walk that visits 2,000 of 10 million vectors, and the recall knob being turned; and find <span class="key">the first bottleneck, which is not storage or throughput but the three-way tension between <b>recall, latency, and memory</b> — and the day someone upgrades the embedding model and the whole index must be rebuilt.</span> The trade under every knob: <b>recall &amp; quality vs query latency &amp; index cost.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0065-vector-search.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>A <b>semantic product search</b>. We have the 10-million-item catalog from Lesson 48. A shopper types a phrase — "comfortable shoes for marathon training" — and we must return the ten products whose <i>meaning</i> is closest, even when they share no keywords with the query. The keyword engine of Lesson 16 can't do this: its inverted index matches tokens, so "marathon" finds only documents literally containing "marathon," and a great result titled "cushioned long-distance running sneaker" is invisible. We want an engine that understands "marathon training" and "long-distance running" are the same idea. That single requirement — <span class="key">match by meaning, not by shared words</span> — is the seed of the whole design, and it forces a completely different data structure from the inverted index: instead of "which documents contain this word," we ask "which points are nearest this point."</p>
+
+<div class="diagram"><pre>
+  Semantic search: turn meaning into geometry, then find nearest points.
+
+    "comfortable shoes for marathon training"   (the query text)
+        |
+        v
+   [ EMBEDDING MODEL ]  same model used to index every product
+        |   text  ->  a 768-number vector (a point in 768-D space)
+        v
+     query vector  q = [0.02, -0.71, 0.13, ... ]   (768 dims)
+        |
+        v
+   [ VECTOR INDEX ]  10,000,000 product vectors, ~30 GB
+        |   find the points NEAREST to q by cosine distance
+        |   exact = compare q to all 10M  (~1 s, hopeless)
+        |   approximate (ANN) = visit ~2,000 of them  (~ms)
+        v
+     top-K nearest product ids  ->  [P-8842, P-1190, P-77, ...]
+        |
+        v
+   [ RE-RANK + HYBRID ]  fuse with L16 keyword score (BM25),
+        re-score the K with a heavier model, apply filters
+        v
+     final results to the shopper
+
+    built offline, refreshed as the catalog and the MODEL change:
+      * every product embedded by ONE model version -> one vector
+      * vectors from model v1 and v2 are NOT comparable (rebuild!)
+</pre></div>
+
+<p class="note"><span class="key">A vector database answers a different question than every database before it in this course.</span> Lesson 12's B-tree answers "find the row where <code>id = 8842</code>" — an <i>exact match</i> on a value. Lesson 16's inverted index answers "find documents containing this word" — an exact match on a token. A vector index answers "find the items <i>most similar</i> to this one" — a <b>nearest-neighbor</b> query with no exact key at all. That shift, from lookup-by-equality to search-by-proximity, is why none of our earlier indexes work here and why we need a new machine.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Embedding</b> — a fixed-length list of numbers (a <b>vector</b>) that a machine-learning model produces from a piece of content (text, image, audio). The model is trained so that <i>similar meanings produce nearby vectors.</i> "running shoes" and "sneakers for jogging" land close together; "running shoes" and "kitchen blender" land far apart.</li>
+  <li><b>Dimension</b> — how many numbers are in each vector. Common sizes are 384, 768, or 1536. Our catalog uses <b>768 dimensions</b>. Each number is a coordinate; a vector is one point in 768-dimensional space.</li>
+  <li><b>Distance / similarity metric</b> — the rule for "how close are two vectors." <b>Cosine similarity</b> measures the angle between them (are they pointing the same way?); <b>Euclidean distance</b> measures straight-line gap. Smaller distance = more similar. We'll use cosine, the usual choice for text embeddings.</li>
+  <li><b>Nearest-neighbor search (kNN)</b> — given a query point, return the <code>k</code> catalog points closest to it. "Find 10 products like this" is a k=10 nearest-neighbor query.</li>
+  <li><b>Exact vs approximate (ANN)</b> — <b>exact</b> kNN compares the query to every vector and is always right but slow. <b>Approximate</b> nearest-neighbor (<b>ANN</b>) visits only a clever subset and returns <i>almost</i> the true nearest, far faster. Vector databases are ANN engines.</li>
+  <li><b>Recall</b> — the quality measure for ANN: of the true top-<code>k</code> nearest neighbors, what fraction did we actually return? <b>Recall@10 = 0.97</b> means we returned, on average, 9.7 of the true 10. It is the dial we trade against speed.</li>
+  <li><b>HNSW / IVF</b> — the two dominant ANN index structures. <b>HNSW</b> is a navigable graph you walk toward the query. <b>IVF</b> clusters the vectors and searches only the nearest clusters. We'll build both and name their trade.</li>
+  <li><b>Quantization</b> — compressing each vector (e.g. 3,072 bytes → 96 bytes) so the index fits in less memory, at some cost to recall. <b>Product quantization (PQ)</b> is the common scheme.</li>
+</ul>
+
+<h2>Move 1 — Estimate: the index, and why the exact answer is hopeless</h2>
+<p>Two numbers decide the shape of everything: how big is the index, and what does the <i>honest</i> (exact) query cost? The second number is the shock that forces approximation.</p>
+
+<table>
+  <tr><th>Piece</th><th>Value</th><th>Where it comes from</th></tr>
+  <tr><td>Catalog size</td><td><code>10,000,000</code></td><td>products (reuse L48's catalog)</td></tr>
+  <tr><td>Embedding dimension</td><td><code>768</code></td><td>a common text-embedding size</td></tr>
+  <tr><td>Bytes per vector</td><td><code>3,072 B ≈ 3 KB</code></td><td><code>768 × 4 B</code> (float32 per number)</td></tr>
+  <tr><td>Raw vector index</td><td><code>~30 GB</code></td><td><code>10M × 3,072 B = 30.72 GB</code></td></tr>
+  <tr><td>Exact query = read the index</td><td><code>~30 GB / query</code></td><td>compare <code>q</code> to all 10M vectors</td></tr>
+  <tr><td>Memory bandwidth</td><td><code>~30 GB/s</code></td><td>one server's RAM read speed</td></tr>
+  <tr><td>Exact query latency</td><td><code>~1 s</code></td><td><code>30.72 GB ÷ 30 GB/s</code> → ~1 QPS/box</td></tr>
+  <tr><td>Target</td><td><code>p99 &lt; 20 ms, thousands QPS</code></td><td>a search box a human waits on</td></tr>
+</table>
+
+<div class="card calc">
+  <p><b>The number that forces the whole design: the exact answer reads the entire 30 GB index on every query.</b> Nearest-neighbor has no key to look up — to be <i>sure</i> you found the closest point, you must measure the distance to <i>every</i> point. That's 10 million dot products of 768 numbers each per query, and the real cost isn't the arithmetic — it's that you must <b>stream all 30 GB of vectors through the CPU</b>. At ~30 GB/s memory bandwidth that's <code>30.72 ÷ 30 ≈ 1.02 s</code> per query, so <span class="key">one query saturates one machine for a second — about 1 query per second per box.</span> Our target is thousands of queries per second at 20 ms each. The gap is roughly <b>a thousandfold in latency and a thousandfold in throughput at once.</b> No amount of sharding closes a 1,000× per-query cost cheaply; we have to stop looking at almost all the vectors.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Why can't we just index it like Lesson 12?</b> A B-tree makes <code>id = 8842</code> fast by sorting on one dimension and bisecting. A vector has 768 dimensions and no single one to sort by. You might think "build a tree that splits space" (a k-d tree) — and in 2 or 3 dimensions that works. But in high dimensions it collapses, for a reason worth naming: the <b>curse of dimensionality.</b> As dimensions grow, points spread out until <i>almost every pair is roughly the same distance apart</i> — the gap between the nearest and farthest point shrinks toward nothing. A space-splitting tree prunes by saying "everything on the far side of this split is too far to matter," but when far and near are nearly equal, no branch can be pruned, and the tree ends up visiting almost every point anyway. <span class="key">Past ~10–20 dimensions, exact tree indexes degrade to brute force.</span> That is why nearest-neighbor at 768 dimensions is a genuinely different problem — and why the answer is to give up on <i>exact</i> and search <i>approximately</i>.</p>
+</div>
+
+<h2>Move 2 — Model: meaning as geometry, and two ways to search it fast</h2>
+
+<h3>The embedding: how meaning becomes distance</h3>
+<div class="card calc">
+  <p>An <b>embedding model</b> is a trained function from content to a vector. You feed it "cushioned long-distance running sneaker" and it returns 768 numbers; you feed it "comfortable shoes for marathon training" and it returns 768 different numbers — but because the model was trained so that similar meanings map to nearby points, <span class="key">those two vectors point in almost the same direction,</span> while "stainless steel blender" points somewhere else entirely. Similarity is measured by <b>cosine</b>: the cosine of the angle between two vectors, ranging from <code>1</code> (identical direction) to <code>0</code> (unrelated) to <code>-1</code> (opposite). The magic is entirely in the model's training; our job as system designers starts <i>after</i> the vectors exist — <b>store 10M of them and answer "nearest to <code>q</code>" in milliseconds.</b> One rule we must never break: the query must be embedded by the <i>exact same model</i> that embedded the catalog, or the two live in incompatible coordinate systems and "nearness" is meaningless.</p>
+</div>
+
+<h3>The escape from brute force: don't visit almost all the vectors</h3>
+<p>Every ANN index is one idea in two disguises: <i>organize the 30 GB so a query can reach the neighborhood of the answer while touching a tiny fraction of the points.</i> Two structures dominate.</p>
+
+<div class="card calc">
+  <p><b>HNSW — a navigable graph you walk toward the query.</b> HNSW (Hierarchical Navigable Small World) builds a graph where each vector is a node linked to a few dozen of its nearest neighbors, plus a few long-range links, arranged in layers like a skip-list (Lesson 12): sparse express lanes on top, dense local roads at the bottom. To search, you start at an entry node and <b>greedily hop to whichever neighbor is closer to <code>q</code></b>, dropping down layers as you home in, until no neighbor is closer — you've arrived. Because the graph is "small-world" (any point is a few hops from any other), a query reaches the answer's neighborhood in about <code>log(N)</code> hops — <code>log₂(10M) ≈ 23</code> — visiting <span class="key">on the order of a couple thousand vectors instead of 10 million.</span> A tunable knob, <code>efSearch</code>, controls how wide a frontier you keep as you walk: bigger = more candidates examined = higher recall and higher latency.</p>
+  <div class="diagram"><pre>
+  HNSW greedy walk (one layer shown). Start far, hop closer, stop
+  when no neighbor beats where you stand.
+
+    entry --> n1 (closer) --> n2 (closer) --> n3 (closer) --> ANSWER
+                 \              \                 |
+                  (skip nodes    (each hop        no neighbor of the
+                   that are       measures        answer is closer to q
+                   farther)       distance to q)  -> stop, return top-K
+
+    Visited ~2,000 nodes of 10,000,000  = 0.02% of the catalog.
+    ~23 hops (log2 of 10M) to cross the graph, times the frontier
+    width efSearch. Read ~2,000 x 3 KB = ~6 MB, not 30 GB
+    -> ~5,000x less data moved -> single-digit milliseconds.
+</pre></div>
+  <p><span class="key">The price of HNSW is memory and update cost.</span> On top of the 30 GB of vectors it stores the graph — a few dozen neighbor links per node — which typically adds <b>15–30% more memory</b> (a few GB of link ids). And inserting or deleting a vector means editing the graph's links, which is far more expensive than appending a row; high-churn catalogs pay for that (we'll hit it as the bottleneck).</p>
+</div>
+
+<div class="card calc">
+  <p><b>IVF — cluster the space, search only the nearest clusters.</b> IVF (Inverted File) borrows Lesson 16's idea. First, offline, run k-means to group the 10M vectors into <code>nlist</code> clusters — a good rule of thumb is <code>√N ≈ √10,000,000 ≈ 3,162</code> clusters, each holding <code>10M / 3,162 ≈ 3,163</code> vectors, each cluster represented by its <b>centroid</b> (average point). To search, compare <code>q</code> to the 3,162 centroids (cheap), pick the nearest <code>nprobe</code> clusters, and search <i>only those</i> exhaustively. With <code>nprobe = 16</code> you scan <code>16 × 3,163 ≈ 50,600</code> vectors — <span class="key">0.5% of the catalog</span> — reading ~150 MB instead of 30 GB. <code>nprobe</code> is IVF's recall knob: probe more clusters → catch more true neighbors that fell just over a cluster boundary → higher recall, higher latency.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Quantization — shrink each vector so the index fits.</b> 30 GB fits in RAM on a big box, but replicate it across a fleet (Lesson 2/48) and memory becomes the bill. <b>Product quantization (PQ)</b> chops each 768-dim vector into, say, 96 short sub-vectors and replaces each with a 1-byte code from a learned codebook — turning a <code>3,072 B</code> vector into <code>96 B</code>, a <span class="key">32× compression: 30 GB → under 1 GB.</span> Distances are then computed on the compact codes. The cost is recall — the codes are lossy, so the neighbors come back slightly wrong. The standard fix is a two-stage search: use the tiny quantized index to fetch, say, the top 200 candidates fast, then <b>re-rank</b> those 200 with their full-precision vectors. You pay compression's recall loss only on the coarse pass and recover accuracy on a cheap re-score. That is the memory-vs-recall dial.</p>
+</div>
+
+<h3>Neither engine alone is enough: hybrid keyword + vector</h3>
+<div class="card calc">
+  <p>Vector search understands meaning but is <i>bad at exactness.</i> Search for the SKU "AJ1-2024" or the brand "Salomon" and the embedding may drift to "similar sneakers," burying the exact item. Keyword search (Lesson 16) is the mirror image: perfect on exact tokens, blind to synonyms. So production search runs <b>both</b> and fuses the results. A common fuser is <b>reciprocal rank fusion</b>: score each result by <code>1/(rank + k)</code> in each list and add — an item ranked high by <i>either</i> engine floats up, without having to calibrate two different score scales. <span class="key">Keyword catches the exact brand and model number; vector catches "marathon" ≈ "long-distance running"; the fusion catches both.</span> Naming the trade: hybrid buys quality across query types at the cost of running and maintaining two indexes.</p>
+</div>
+
+<p class="note why"><b>The model in one line:</b> embed every product with <i>one</i> model into a 768-dim vector; store the 10M vectors in an <b>ANN index</b> — a navigable <b>HNSW</b> graph you walk toward the query, or an <b>IVF</b> cluster-and-probe — so a query touches a fraction of a percent of the vectors; optionally <b>quantize</b> to fit memory and <b>re-rank</b> the survivors at full precision; and <b>fuse</b> with a keyword index so exact tokens and semantic meaning both win.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Three scenarios: a query flowing end to end, the HNSW graph walk up close, and the recall knob being turned so you can see recall and latency move together.</p>
+
+<h3>Path A — one query, end to end</h3>
+<div class="diagram"><pre>
+  Shopper types "comfortable shoes for marathon training".
+
+    t=0 ms   embed the QUERY with the same model as the catalog
+             -> q = [768 numbers]              (~5-15 ms model call)
+    t=12 ms  HNSW search, efSearch=200
+             -> greedy-walk the graph, visit ~2,000 vectors
+             -> top-200 candidate product ids   (~3 ms)
+    t=15 ms  (if quantized) RE-RANK the 200 with full-precision
+             vectors -> tighter top-50          (~1 ms)
+    t=16 ms  HYBRID: also run L16 keyword search for the exact
+             tokens ("marathon","shoes"); fuse by reciprocal rank
+    t=17 ms  apply business FILTERS (in stock, price < $200,
+             ships to AU) and return top-10
+    ----
+    total ~17 ms, p99 well under 20 ms. The exact-search version
+    would have spent ~1 s just on the distance scan.
+
+  Note: the "cushioned long-distance running sneaker" that shares
+  ZERO words with the query ranks #2 -- found by MEANING, invisible
+  to the keyword engine of Lesson 16.
+</pre></div>
+
+<h3>Path B — the HNSW walk vs the brute-force scan, on the same query</h3>
+<div class="diagram"><pre>
+  Find the nearest neighbors of q among 10,000,000 vectors.
+
+  BRUTE FORCE (exact):
+     compute distance(q, v) for ALL 10,000,000 v
+     read 30 GB, ~7.7 billion multiply-adds
+     -> ~1 s, recall = 100% (by definition)
+
+  HNSW (approximate):
+     start at entry node on the top (sparse) layer
+     hop to the closest neighbor, descend layers, widen by efSearch
+     visited ~2,000 nodes  (0.02% of the catalog)
+     read ~6 MB, ~1.5 million multiply-adds
+     -> ~3 ms, recall@10 ~= 0.97  (9.7 of the true 10)
+
+  Same answer to 97%, ~300x faster, ~5,000x less data moved.
+  The 3% you miss are far-out ties the greedy walk stepped past --
+  usually indistinguishable to a human scanning results.
+</pre></div>
+
+<h3>Path C — turning the recall knob (efSearch / nprobe)</h3>
+<div class="diagram"><pre>
+  One query, the SAME index, different frontier widths.
+  (illustrative shape -- exact numbers depend on data + build.)
+
+    efSearch    visited      recall@10     latency
+    --------    --------     ---------     -------
+       50        ~600          0.90         ~1.2 ms
+      100       ~1,100         0.95         ~2.0 ms
+      200       ~2,000         0.97         ~3.3 ms
+      400       ~3,900         0.985        ~6.5 ms
+      800       ~7,600         0.992        ~13 ms
+     (exact)   10,000,000      1.000        ~1,000 ms
+
+  Recall climbs toward 1.0 but with cruel diminishing returns:
+  0.90 -> 0.97 is cheap; 0.97 -> 0.99 costs ~4x the work;
+  0.99 -> 1.00 costs the whole 30 GB scan back. The last few
+  percent of recall is where all the latency hides.
+</pre></div>
+
+<p>Path A shows the payoff and the shape of a real query: <span class="key">the winning result shared no words with the query and was found purely by meaning</span> — exactly what the keyword engine could never do — in 17 ms instead of a second. Path B makes the ANN bargain concrete: HNSW returned 97% of the true answer while reading 6 MB instead of 30 GB, a five-thousandfold cut in data moved for a 3% quality loss no shopper would notice. Path C is the one to remember: <span class="key">recall and latency are the same knob viewed from two ends,</span> and the curve bends viciously near the top — buying the last few percent of recall drags you back toward the 1-second brute-force scan. That curve <i>is</i> the lesson's trade, drawn as a graph.</p>
+
+<h2>Move 4 — Find the first bottleneck: the recall–latency–memory triangle, and the day the model changes</h2>
+<p>Storage isn't the wall (30 GB is small), and neither is throughput once ANN cuts each query 1,000×. The wall is that <b>ANN is only cheap because it is approximate</b> — and the three things you want (high recall, low latency, low memory) pull against each other so that improving any one costs you another.</p>
+
+<div class="card calc">
+  <p><b>The bottleneck — you can pick any two of {recall, latency, memory}, and the third pays.</b> Want higher recall? Turn <code>efSearch</code>/<code>nprobe</code> up → visit more vectors → higher latency (Path C). Want lower latency at the same recall? Keep more of the index in fast memory and use a richer graph → more memory. Want lower memory? Quantize → recall drops, or add a re-rank stage → more latency. <span class="key">There is no setting that is best at all three; every deployment picks a point on this triangle and names what it gave up.</span> This is the concrete face of the whole lesson's trade: recall &amp; quality vs query latency &amp; index cost. The dangerous move is chasing 99.9% recall because "missing results looks broken" — that pushes you up the vicious end of Path C's curve, toward brute-force cost, for neighbors a human would never notice were missing. Decide the recall you actually need (often 95–98% is invisible to users) and stop.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — updates and freshness.</b> Our earlier indexes append cheaply; an ANN graph does not. Inserting a vector into HNSW means finding its neighbors and rewiring links; deleting one means the graph now points at a tombstone that still costs a hop. A catalog with heavy churn — prices, new products, deletions — slowly degrades an HNSW index's recall and speed as tombstones accumulate and links go stale. <span class="key">The usual answer is the same as Lesson 12's B-tree fragmentation and Lesson 47's LSM compaction: don't mutate forever — periodically rebuild.</span> Serve reads from the current index while building a fresh one offline from the latest catalog, then swap atomically (Lesson 31's blue-green, Lesson 24/57's shadow-build-then-cutover). Fresh writes land in a small, cheap "delta" index searched alongside the big one until the next rebuild folds them in — the same hot-delta-plus-cold-base shape as an LSM memtable.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — reindexing when the embedding model changes, and it will.</b> Here is the cost unique to vector systems, and the one teams underestimate. An embedding is only meaningful <i>relative to the model that produced it.</i> Upgrade from model v1 to a better v2 and <span class="key">every existing vector is now written in a language the new query vectors don't speak — v1 and v2 coordinates are not comparable, and you <b>cannot mix them in one index.</b></span> A model upgrade is therefore not a config change; it is a <b>full re-embedding of all 10M products and a full index rebuild</b> — run every product back through the new model (a large batch/backfill job, Lesson 57), build a brand-new index, and cut over atomically, embedding queries with v2 only after the switch. During the migration you either run both indexes in parallel (double the memory) or accept a maintenance window. Plan for this from day one: version your vectors by model, keep the raw text so you can always re-embed, and treat "which model version is this index?" as a first-class piece of metadata (Lesson 24's schema-version discipline, applied to vectors).</p>
+</div>
+
+<p>So the honest design for our semantic search is: embed all 10M products with <b>one versioned model</b> into 768-dim vectors; store them in an <b>HNSW</b> index (choose HNSW over IVF when you want the lowest latency at a given recall and can afford the graph memory; choose IVF when memory is tight and build/update cost matters more); pick a recall target you can actually justify — <code>~97%</code>, high on Path C but before the vicious tail — and set <code>efSearch</code> to hit it; <b>quantize</b> with PQ plus a full-precision <b>re-rank</b> if the index must fit a smaller memory budget; run a <b>keyword index</b> alongside and <b>fuse</b> so exact brands/SKUs and semantic meaning both win; absorb writes in a small <b>delta index</b> and <b>rebuild-and-swap</b> periodically so churn can't rot the graph; and treat an <b>embedding-model upgrade</b> as a planned full re-embed and rebuild, never an in-place change. Every choice names its price: ANN buys 1,000× speed at the cost of ~3% recall; a higher recall target buys quality at the cost of latency; quantization buys memory at the cost of recall (bought back by a re-rank); hybrid buys robustness at the cost of a second index; and the whole thing buys "search by meaning" at the cost of an index that must be rebuilt whenever the meaning-maker changes.</p>
+
+<p><span class="key">The deepest point: a vector database is the first index in this course that answers "what is <i>similar</i>?" instead of "what is <i>equal</i>?"</span> — and similarity in high dimensions is expensive to compute exactly, so the entire discipline is the art of being <i>approximately</i> right cheaply. Embeddings turn meaning into geometry; ANN indexes turn "compare to everything" into "walk to the neighborhood"; recall is the dial that says how approximate you're willing to be; and the model version is the hidden coordinate system that, when it changes, invalidates everything at once. Get those four right and "find things like this one" stops being magic and becomes a point you choose on a triangle you can see. The standing tension, from Lesson 16's exact-but-literal keyword index to here: recall &amp; quality vs query latency &amp; index cost.</p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>Match by meaning, not words</td><td>Embeddings: meaning → a vector</td><td>semantic recall / quality is the model's, not yours</td></tr>
+  <tr><td>"How similar are two items?"</td><td>Cosine distance in 768-D</td><td>a single closeness number / no exact key to index on</td></tr>
+  <tr><td>Why B-trees/k-d trees fail</td><td>Curse of dimensionality (L12)</td><td>explains the whole problem / forces approximation</td></tr>
+  <tr><td>Avoid scanning all 10M</td><td>HNSW graph walk</td><td>ms latency, high recall / +15–30% memory, costly updates</td></tr>
+  <tr><td>Avoid scanning all 10M (cheap RAM)</td><td>IVF cluster-and-probe (L16)</td><td>tunable via nprobe, low overhead / recall dips at boundaries</td></tr>
+  <tr><td>Fit the index in less memory</td><td>Product quantization + re-rank</td><td>32× smaller / recall loss, a re-rank pass</td></tr>
+  <tr><td>Exact tokens (brand, SKU)</td><td>Hybrid keyword + vector (L16)</td><td>both query types win / two indexes to run</td></tr>
+  <tr><td>Absorb writes / churn</td><td>Delta index + rebuild-and-swap (L31/47)</td><td>fresh results, no graph rot / periodic full rebuild</td></tr>
+  <tr><td>The model improves</td><td>Full re-embed + versioned rebuild (L24/57)</td><td>better meaning / re-embed all 10M, can't mix versions</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — expecting an exact index (B-tree / k-d tree) to do nearest-neighbor.</b> At 768 dimensions the curse of dimensionality makes near and far nearly equal, so space-splitting trees prune nothing and degrade to brute force. Use an approximate (ANN) index built for high dimensions.</li>
+  <li><b>Trap 2 — chasing 99.9% recall.</b> Path C's curve bends viciously near the top: the last few percent of recall costs most of the latency and drags you back toward the 1-second exact scan, for neighbors no user would miss. Pick the recall you actually need (often 95–98%) and stop.</li>
+  <li><b>Trap 3 — embedding the query with a different model (or version) than the index.</b> Vectors from two models live in incompatible coordinate systems; "nearness" between them is noise. The query model must exactly match the index model, and a model upgrade means re-embedding <i>everything.</i></li>
+  <li><b>Trap 4 — relying on vector search alone for exact tokens.</b> Brands, SKUs, model numbers, and rare terms embed poorly and get buried under "similar" items. Run a keyword index (Lesson 16) alongside and fuse the results so exactness and meaning both survive.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We built a semantic search over a 10-million-product catalog — one that finds "cushioned long-distance running sneaker" for the query "comfortable shoes for marathon training" though they share no words, the thing Lesson 16's keyword index could never do. <b>Estimate</b> exposed the shock: nearest-neighbor has no key, so the exact answer reads the whole ~30 GB index every query — ~1 s, ~1 QPS/box — a thousandfold short of the target, which is why we <i>must</i> approximate. <b>Model</b> turned meaning into geometry via embeddings and cosine distance, explained why high-dimensional space breaks ordinary tree indexes (the curse of dimensionality), and built the two ANN families — <b>HNSW</b>, a graph you greedily walk toward the query in ~23 hops, and <b>IVF</b>, cluster-and-probe — plus <b>quantization</b> (32× smaller, recall bought back by a re-rank) and a <b>hybrid</b> keyword fuse for exact tokens. <b>Tracing</b> ran a query end to end in 17 ms, showed HNSW returning 97% of the true answer while reading 6 MB instead of 30 GB, and drew the recall knob's cruel curve. The <b>first bottleneck</b> was the <b>recall–latency–memory triangle</b> — pick two, the third pays — sharpened by two operational walls: churn rots an ANN graph, so you rebuild-and-swap; and an embedding-model upgrade invalidates every vector at once, forcing a full re-embed. Every dial named its trade. The standing tension, straight from Lesson 16: <span class="key">recall &amp; quality vs query latency &amp; index cost.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we can retrieve by meaning at one site. Now coordinate a shared limit across many.</b></p>
+  <p style="margin:.2rem 0">• <b>Global rate limiting &amp; quota (Lesson 66):</b> Lesson 8 sized a rate limit on one node. But a real limit — "60 requests per minute per API key," "$500 of spend per tenant per day" — must hold across many servers in many regions at once. Coordinate a shared counter and you add latency to every request; let each node count locally and the global limit leaks. We'll build approximate global counters (Lesson 21), local buckets with reconciliation, per-tenant quotas (Lesson 40), and face the CAP tension (Lesson 11) of one shared limit under a partition. Trade: limit accuracy vs coordination latency &amp; cost.</p>
+  <p style="margin:.2rem 0">• Then further out: <b>data lakes &amp; the lakehouse</b> (open table formats over object storage), and <b>delivery guarantees &amp; the dead-letter lifecycle.</b> Say <b>next</b> to build the global rate limiter.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">embedding</span>
+    <span class="pill">vector / dimension</span>
+    <span class="pill">cosine similarity</span>
+    <span class="pill">nearest-neighbor (kNN)</span>
+    <span class="pill">approximate NN (ANN)</span>
+    <span class="pill">recall@k</span>
+    <span class="pill">curse of dimensionality</span>
+    <span class="pill">HNSW</span>
+    <span class="pill">IVF</span>
+    <span class="pill">centroid</span>
+    <span class="pill">efSearch / nprobe</span>
+    <span class="pill">product quantization</span>
+    <span class="pill">re-ranking</span>
+    <span class="pill">hybrid search</span>
+    <span class="pill">reciprocal rank fusion</span>
+    <span class="pill">reindexing / model version</span>
+  </p>
+  <p>That's Lesson 65. It answers the question Lesson 16's keyword index couldn't — search by meaning — and threads: Lesson 16 (the inverted index it complements, and the fusion of the two), Lesson 12 (why B-trees and the curse of dimensionality make exact NN hopeless; the skip-list shape HNSW borrows), Lesson 48/2 (the 10M-product catalog and caching the index across a fleet), Lesson 47 (LSM compaction as the model for rebuild-and-swap), Lesson 31 (blue-green cutover for a fresh index), Lesson 24/57 (schema/model versioning and the backfill to re-embed everything), and Lesson 21 (an aggregate/summary trading exactness for compactness, echoed in quantization). <b>Ask me follow-ups</b> — e.g. "walk the HNSW insert that builds the graph, not just the search," "how does reciprocal rank fusion beat just adding two scores?", "when is IVF-PQ the right call over HNSW?", "how do I A/B test a new embedding model before the full re-embed?", or "how do metadata filters (in-stock, price) interact with the ANN walk without wrecking recall?" When you're ready, say <b>next</b> and we'll build the global rate limiter — <i>a shared limit across regions, and the CAP tension underneath it.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "A shopper searches 'comfortable shoes for marathon training' over 10 million products. Each product is a 768-dimension vector (~3 KB), so the whole index is ~30 GB. Why is computing the EXACT ten nearest neighbors impractical for a live search box, and what fixes it?",
+    options: [
+      {t:"Nearest-neighbor has no key to look up, so the exact answer must measure the distance from the query to every one of the 10M vectors — reading all ~30 GB per query, roughly 1 second on one machine (~1 QPS/box). The fix is an approximate (ANN) index like HNSW or IVF that visits a tiny fraction of the vectors and returns ~97% of the true neighbors in milliseconds.",
+       ok:true,
+       fb:"Right. Unlike id=8842 (a B-tree lookup) or a keyword token (an inverted-index lookup), 'nearest' has no exact key, so exactness means scanning the entire index — ~30 GB at ~30 GB/s ≈ 1 s, about 1 query per second per box. ANN trades a few percent of recall for a ~1,000× speedup by touching ~0.02–0.5% of the vectors."},
+      {t:"30 GB is too large to store, so the index won't fit on any server and you must shard it across hundreds of machines before you can query it at all.",
+       ok:false,
+       fb:"30 GB is small — it fits in RAM on a single large box. Storage isn't the wall; the per-query cost is. Even sharded, each shard would still have to scan its slice exactly, and you'd fan out to all shards, so exact search stays ~1 s-class work. The fix is approximation (ANN), not more machines."},
+      {t:"Cosine distance is too slow to compute; switching to Euclidean distance makes the exact scan fast enough for a live query.",
+       ok:false,
+       fb:"The metric isn't the bottleneck — cosine and Euclidean cost about the same, a dot product over 768 numbers. The problem is doing that 10 million times per query and streaming all 30 GB through the CPU. Changing the metric doesn't reduce how many vectors you must visit; an ANN index does."}
+    ]
+  },
+  {
+    stem: "You want to speed up the search with an index. A colleague suggests building a k-d tree (a space-splitting tree) so you can prune branches that are 'too far away,' just like a B-tree prunes on one sorted column. Why doesn't that work at 768 dimensions?",
+    options: [
+      {t:"The curse of dimensionality: as dimensions grow, points spread out until almost every pair is nearly the same distance apart, so the gap between nearest and farthest shrinks toward nothing. A tree prunes by declaring one side 'too far to matter,' but when far and near are nearly equal, no branch can be pruned and the tree degrades to visiting almost every point — brute force again. Use an ANN index (HNSW/IVF) built for high dimensions.",
+       ok:true,
+       fb:"Exactly. Past ~10–20 dimensions, space-splitting trees stop being able to prune because distances concentrate — the whole basis for pruning ('everything past this split is farther than my current best') fails. That's why high-dimensional nearest-neighbor is a genuinely different problem and why we approximate with graphs (HNSW) or clustering (IVF)."},
+      {t:"k-d trees only support Euclidean distance, but text embeddings require cosine, so the tree simply can't represent the queries.",
+       ok:false,
+       fb:"Cosine similarity is closely related to Euclidean distance on normalized vectors, so 'wrong metric' isn't the real problem — you could normalize and use either. The actual failure is structural: in high dimensions the tree can't prune, so it visits nearly everything regardless of metric. The curse of dimensionality is the reason."},
+      {t:"k-d trees can't be updated once built, so they're unusable for a catalog that changes; that's why they fail here.",
+       ok:false,
+       fb:"Update cost is a real concern for some indexes (HNSW graphs are costly to mutate), but it isn't why a k-d tree fails at 768 dimensions. Even a perfectly static catalog would defeat a k-d tree here, because high-dimensional distance concentration destroys pruning. The failure is about dimensionality, not mutability."}
+    ]
+  },
+  {
+    stem: "Your HNSW index returns recall@10 of 0.97 at efSearch=200 with ~3 ms latency. Product management asks for 'basically perfect' results and wants recall pushed to 99.9%. What should you tell them?",
+    options: [
+      {t:"Recall and latency are the same knob from two ends, and the curve bends viciously near the top: going 0.97 → 0.99 already costs several times the work, and 0.99 → ~1.0 costs the whole 30 GB brute-force scan (~1 s). The last fractions of recall are missing far-out neighbors a shopper would never notice, so we should confirm 97–98% is actually indistinguishable to users rather than pay ~1,000× latency for invisible results.",
+       ok:true,
+       fb:"Right. Chasing 99.9% recall pushes you up the vicious end of the recall/latency curve toward exact-search cost. The neighbors you're missing at 97% are typically ties a human can't tell apart. The engineering answer is to pin the recall users can actually perceive and stop — not to spend a thousandfold latency on invisible gains."},
+      {t:"Increase efSearch until recall hits 99.9% — recall is free to raise; it only affects index build time, not query latency, so there's no downside.",
+       ok:false,
+       fb:"efSearch is exactly the query-time knob: raising it makes the search visit more vectors on every query, so latency goes up with recall. It's not a build-time-only setting and it's not free. Pushing to 99.9% would drag latency toward the ~1 s exact scan. The trade is real and it's paid per query."},
+      {t:"Switch from HNSW to IVF; IVF always gives higher recall at the same latency, so it makes 99.9% cheap.",
+       ok:false,
+       fb:"IVF isn't strictly better — it's a different point on the same triangle (lower memory and cheaper updates, but recall dips for neighbors near cluster boundaries, tuned by nprobe). Neither engine escapes the recall/latency/memory tension; both pay more latency for the last few percent of recall. The right move is choosing a justified recall target, not swapping engines to dodge physics."}
+    ]
+  },
+  {
+    stem: "Six months in, the ML team ships a much better embedding model (v2). Someone proposes: 'Just embed all NEW products with v2 going forward and leave the existing v1 vectors in place — the index keeps growing normally.' Why is this wrong, and what's the real cost of adopting v2?",
+    options: [
+      {t:"An embedding is only meaningful relative to the model that made it — v1 and v2 vectors live in incompatible coordinate systems, so 'distance' between a v2 query and a v1 product is noise. You cannot mix versions in one index. Adopting v2 means re-embedding ALL 10M products through v2 and building a fresh index, then cutting over atomically (querying with v2 only after the switch). It's a full backfill and rebuild, not an incremental change.",
+       ok:true,
+       fb:"Exactly. Embeddings from different models aren't comparable — nearness across versions is meaningless — so a mixed index silently returns garbage for cross-version comparisons. A model upgrade is a planned full re-embed (a large backfill, Lesson 57) plus a versioned rebuild and atomic cutover (Lessons 31/24). That's why you version vectors by model and keep the raw text to re-embed."},
+      {t:"It's fine as long as v1 and v2 produce the same number of dimensions (768); matching dimensionality is all that's required for vectors to be comparable.",
+       ok:false,
+       fb:"Same dimension count is necessary but nowhere near sufficient. Two 768-dim models still place meaning in completely different coordinate systems — dimension 5 means something different to each. Matching lengths lets you store them in one array; it does not make their distances comparable. You still must re-embed everything with one model."},
+      {t:"It's wrong only because v2 vectors might be a different size; convert the old v1 vectors to v2's dimension with padding or truncation and the index stays valid.",
+       ok:false,
+       fb:"Padding or truncating vectors doesn't translate meaning between models — it just mangles v1 vectors into the wrong shape while leaving them in the wrong coordinate system. There is no cheap conversion between embedding spaces; the only correct path is to run every product back through v2. Treat a model change as a full re-embed and rebuild."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

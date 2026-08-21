@@ -1298,9 +1298,27 @@
     transactional sink, L47 LSM state backend, L21 aggregate-collapse, L03/04 consistent hashing (key groups),
     L24/02 interval dial, L20/39 lifecycle. Trade: latency & correctness of windowed results vs state size &
     recovery cost. (Lesson 0064)
-65. Vector databases & semantic search — where L16's keyword inverted index can't reach: embeddings + approximate
-    nearest-neighbor (HNSW / IVF), recall vs latency, hybrid keyword+vector retrieval, and reindexing as the model
-    changes. Trade: recall/quality vs query latency & index cost.
+65. ✅ **Vector databases & semantic search** — a semantic search over L48's 10M-product catalog that finds items by
+    MEANING where L16's keyword inverted index can't (the query "comfortable shoes for marathon training" must match
+    "cushioned long-distance running sneaker", zero shared words). Turn each product+query into a 768-dim vector
+    (meaning as geometry, closeness = similarity); "find like this" = nearest-neighbor. Estimate the shock: NN has no
+    key, so the EXACT answer reads the whole ~30 GB index (10M × 3 KB) every query → ~1 s at ~30 GB/s ≈ 1 QPS/box,
+    ~1000× short → must approximate. Model: embeddings + cosine; why B-trees/k-d trees die past ~10-20 dims (curse of
+    dimensionality — near≈far, nothing prunes, L12); two ANN engines — HNSW (navigable small-world graph, greedy walk
+    ~log₂(10M)≈23 hops, visits ~2,000/10M = 0.02%, +15-30% graph memory, costly updates) and IVF (k-means into
+    √N≈3,162 clusters, probe nearest nprobe=16 → ~50k = 0.5% scanned, L16-flavored) — plus product quantization (3,072 B
+    → 96 B, 32× smaller, recall bought back by full-precision re-rank, L21 summary-vs-exact) and HYBRID keyword+vector
+    fused by reciprocal rank (exact SKU/brand + semantic meaning, L16). Trace: query end-to-end ~17 ms (embed → ANN →
+    re-rank → fuse → filter); HNSW 97% recall reading 6 MB not 30 GB (~5,000× less); the recall knob (efSearch/nprobe)
+    curve bends viciously — 0.97→0.99 ~4× work, 0.99→1.0 = the whole 30 GB scan back. First bottleneck = the
+    recall–latency–memory TRIANGLE (pick two, third pays) + churn rots an ANN graph → delta index + rebuild-and-swap
+    (L31/47) + a model upgrade invalidates EVERY vector at once (v1/v2 coordinate systems not comparable, can't mix) →
+    full re-embed of 10M + versioned rebuild + atomic cutover (L24/57), query model must match index model. Four traps:
+    exact trees for high-D NN; chasing 99.9% recall; mismatched query/index model; vector-only for exact tokens.
+    Reuses L16 (inverted index it complements + fusion), L12 (curse of dimensionality, skip-list shape HNSW borrows),
+    L48/2 (10M catalog, index across a fleet), L47 (LSM compaction ≈ rebuild-and-swap), L31 (blue-green cutover),
+    L24/57 (model versioning + backfill re-embed), L21 (quantization = summary-vs-exact). Trade: recall/quality vs
+    query latency & index cost. (Lesson 0065)
 66. Global rate limiting & quota — L08's single-node limiter coordinated across regions and a fleet: sloppy/
     approximate counters (L21), token sync vs local buckets + reconciliation, per-tenant global quotas (L40), and
     the CAP tension of a shared limit under partition (L11). Trade: limit accuracy vs coordination latency & cost.
