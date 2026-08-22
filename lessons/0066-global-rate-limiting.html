@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 66 — Global Rate Limiting &amp; Quota: One Shared Limit Across a Fleet</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 66 · Worked Example</div>
+  <h1>Global Rate Limiting &amp; Quota: One Shared Limit Across a Fleet</h1>
+  <p class="lead">Lesson 8 built a rate limiter on <i>one</i> machine: a token bucket that says "this API key gets 60 requests per minute," and enforces it perfectly because one process sees every request. But a real API platform isn't one machine — it's <b>30 servers across 3 regions</b>, and a single API key's requests scatter across all of them. Now the limit "60 requests per minute per key" is a promise no single server can keep, because no single server sees all 60. <span class="key">This lesson builds the limiter that holds a <b>shared</b> limit across a whole fleet: one budget, many enforcers, and a network in between.</span> The instant you make the counter shared, a tension opens that Lesson 8 never had to face: check one central counter on <i>every</i> request and you bolt a network round trip — sometimes a cross-region one — onto every call; let each server count on its own and the global limit silently leaks by the number of servers. We'll <b>estimate</b> that cost and see a coordination round trip dwarf the actual work of a request; <b>model</b> the three designs (central counter, static division, and the local-bucket-plus-reconcile that wins) and name the idea that rescues us — rate limiting <i>tolerates being approximately right</i> (Lesson 21); <b>trace</b> a well-behaved key served with zero coordination, an abusive key and exactly how far it overshoots, and a network partition that forces a CAP choice (Lesson 11); and find <span class="key">the first bottleneck, which is not CPU or storage but that a shared limit is a single logical counter every request wants to touch — and you cannot make it globally exact, cheap, and partition-proof at once.</span> The trade under every knob: <b>limit accuracy vs coordination latency &amp; cost.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0066-global-rate-limiting.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>An <b>API platform</b>. Clients call it with an API key, and each key has a limit: the free tier is <b>60 requests per minute per key</b>. We run <b>30 API servers, 10 in each of 3 regions</b> (us-east, eu-west, ap-south), behind the load balancers of Lesson 42, taking <b>40,000 requests/second</b> in total. A single popular key's traffic does not politely land on one server — the load balancer spreads it, and a client in Europe hits the eu-west servers while the same account's mobile app hits ap-south. We must enforce "60/min for this key" as <span class="key">one global number, honored no matter which of the 30 servers each request happens to reach.</span> That single requirement — <b>one shared limit across many independent enforcers</b> — is the whole problem, and it is a problem Lesson 8 never had, because on one machine the counter and the enforcer were the same thing.</p>
+
+<div class="diagram"><pre>
+  One key, one limit (60/min), thirty enforcers, three regions.
+
+     client's requests for key K  (scattered by the load balancer)
+        |            |                         |
+        v            v                         v
+   [us-east]     [eu-west]                 [ap-south]
+    10 servers    10 servers                10 servers
+        \            |                         /
+         \           |                        /
+          \          v                       /
+           `--> who owns the count "how many of K's 60
+                have been used this minute?" -------------.
+                                                          |
+              THREE ANSWERS, three trade-offs:            |
+                                                          v
+   (A) CENTRAL counter: every request asks one shared store.
+       exact, but +1 network round trip per request (cross-
+       region = ~70 ms) and one hot key at the store.
+
+   (B) STATIC split: give each server 60/30 = 2/min, no talking.
+       zero coordination, but skewed traffic throttles the key
+       far below 60 -- or, if each gets the full 60, the real
+       limit becomes 30 x 60 = 1,800/min (30x too loose).
+
+   (C) LOCAL bucket + RECONCILE: each server counts locally and
+       syncs usage every T seconds to a coordinator that hands
+       busy servers the idle servers' unused budget.
+       approximate, bounded overshoot, cheap. <-- the answer.
+</pre></div>
+
+<p class="note"><span class="key">Rate limiting is the first problem in this course where being slightly wrong is not just acceptable but the whole point.</span> If we admit 63 requests against a 60/min limit, nobody is harmed — the client barely notices, and the abuse we care about (someone sending 10,000/min) is still crushed. That tolerance is the lever. It means we do <i>not</i> need the exact, expensive coordination a bank balance would demand (Lesson 11's account balance had to be exact); we need a limit that is <b>approximately</b> right and <b>cheap</b>. Everything below is the art of spending as little coordination as possible while keeping the error bounded.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Rate limit</b> — a cap on requests per unit time (e.g. 60/minute). Enforced with a <b>token bucket</b> (Lesson 8): the bucket refills at the limit rate, each request spends one token, an empty bucket means "rejected — try later" (HTTP 429).</li>
+  <li><b>Quota</b> — a cap over a long window on a consumable resource: "1,000,000 API calls per month," "$500 of spend per day." Same machinery as a rate limit, but the window is hours or days, not seconds, and overshooting can cost real money.</li>
+  <li><b>Local counting</b> — each server keeps its own count of a key's usage, seen only by itself. Fast (no network) but blind to what the other 29 servers are doing.</li>
+  <li><b>Central counter</b> — one shared store (e.g. a Redis) that holds the authoritative global count; every server reads/writes it. Exact but adds a network round trip and concentrates load on one key.</li>
+  <li><b>Coordination</b> — any network talk between servers (or to a shared store) to agree on the shared count. Coordination buys accuracy and costs latency.</li>
+  <li><b>Reconciliation</b> — periodically (every <code>T</code> seconds) syncing each server's local count to a coordinator that sums them and redistributes the remaining budget. The middle path between "coordinate on every request" and "never coordinate."</li>
+  <li><b>Overshoot</b> — how many requests slip through <i>above</i> the limit before the distributed system notices and clamps down. The error we bound instead of eliminate.</li>
+  <li><b>Fail-open / fail-closed</b> — when the coordinator is unreachable (a partition, Lesson 11), do we keep serving (fail-open, risk leaking the limit) or start rejecting (fail-closed, risk blocking good traffic)? A CAP choice.</li>
+</ul>
+
+<h2>Move 1 — Estimate: what coordination actually costs</h2>
+<p>The whole design is decided by one comparison: the cost of the <i>work a request does</i> versus the cost of <i>coordinating to count it</i>. If coordination is cheap relative to the work, just coordinate on every request. Let's price it.</p>
+
+<table>
+  <tr><th>Piece</th><th>Value</th><th>Where it comes from</th></tr>
+  <tr><td>Fleet</td><td><code>30 servers</code></td><td>10 in each of 3 regions</td></tr>
+  <tr><td>Total traffic</td><td><code>40,000 req/s</code></td><td>the platform's front door (L27/49)</td></tr>
+  <tr><td>Free-tier limit</td><td><code>60 / min per key</code></td><td>= 1 request/second per key</td></tr>
+  <tr><td>Same-region round trip</td><td><code>~0.5 ms</code></td><td>server → counter store in the same DC</td></tr>
+  <tr><td>Cross-region round trip</td><td><code>~70 ms</code></td><td>eu-west → a counter in us-east</td></tr>
+  <tr><td>Work of a typical request</td><td><code>~5 ms</code></td><td>the actual API call it protects</td></tr>
+  <tr><td>A viral key's rate</td><td><code>~10,000 req/s</code></td><td>one key, one logical counter</td></tr>
+</table>
+
+<div class="card calc">
+  <p><b>The number that kills "just check a central counter on every request": the coordination can cost more than the request.</b> If every server consults one shared counter before admitting a request, a call landing in eu-west while the counter lives in us-east pays a <code>~70 ms</code> round trip to count a request whose real work is <code>~5 ms</code>. <span class="key">You would spend 70 ms of network latency to protect 5 ms of work — a 14× tax, paid on every single request, before the request even runs.</span> Same-region it's only ~0.5 ms, tolerable — but a global fleet has no "same region" for everyone; someone always pays the cross-region trip. And there is a second wall: the counter for one popular key is <b>a single hot key.</b> A viral key doing 10,000 req/s means 10,000 increments per second aimed at <i>one</i> counter entry, which hashing cannot spread (Lesson 3/48's hot-key problem — every request wants the exact same key). Exact global counting runs straight into both walls at once.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Now price the opposite extreme — never coordinate.</b> Give each of the 30 servers its own local bucket and split the limit: <code>60 ÷ 30 = 2</code> requests/min per server. Zero network, zero latency tax. But traffic is never evenly spread. Suppose a client sits in Europe, so ~90% of the key's requests hit the 10 eu-west servers and the rest scatter. Even spread across those 10, the key can use at most <code>10 × 2 = 20/min</code> before being throttled — <span class="key">the paying client is cut off at 1/3 of the 60 they were promised, while 40 of their 60 requests/min of budget sit unused on idle servers in other regions.</span> The obvious "fix" — give every server the full 60 — is worse: 30 servers each independently allowing 60 means the true global limit becomes <code>30 × 60 = 1,800/min</code>, <b>30× too loose</b>, which is no limit at all. Static division forces you to choose between strangling honest clients and leaking the limit by a factor of N.</p>
+</div>
+
+<h2>Move 2 — Model: count locally, reconcile globally, and stay approximately right</h2>
+
+<h3>The three designs on one axis</h3>
+<p>Every global-limit design is a point on a single axis: <i>how often do the enforcers talk?</i> At one end, talk on every request (exact, expensive). At the other, never talk (cheap, wrong under skew). The winner sits in the middle and leans on rate limiting's tolerance for small error.</p>
+
+<div class="card calc">
+  <p><b>Design C — local buckets + periodic reconciliation.</b> Each server keeps a <b>local</b> token bucket for the key and admits requests against it with zero network cost. Every <code>T</code> seconds (say <code>T = 1 s</code>), each server that has served the key reports its recent usage to a <b>coordinator</b> (one shared service, or a designated owner per key). The coordinator sums the reports — that's the true global count — and hands each server a fresh <b>share</b> of the <i>remaining</i> budget, giving more to busy servers and less to idle ones. <span class="key">Busy eu-west servers borrow the idle ap-south servers' unused budget, so the key can use its full 60/min even under total geographic skew</span> — the thing static division couldn't do — while the coordination cost is a handful of small messages per second, not one per request. The catch, and it's the honest one: between syncs, servers act on a slightly stale picture, so the limit can <b>overshoot</b>. We don't eliminate that error; we bound it (Move 3) and turn <code>T</code> into a dial.</p>
+</div>
+
+<p class="note why"><b>Why coordination is cheap here even for a hot key:</b> reconciliation cost is <i>per active server per interval</i> — with the key live on, say, 6 servers and <code>T = 1 s</code>, that's ~6 sync messages/second — <b>regardless of the request rate.</b> For a viral key doing 10,000 req/s, 6 messages/s of coordination is a rounding error; for a cold key hit once a minute, servers back off and barely sync at all. Coordination stays flat while traffic scales — the opposite of the central counter, whose cost grew one-for-one with requests.</p>
+
+<h3>The idea that makes it safe: bounded approximation (Lesson 21)</h3>
+<div class="card calc">
+  <p>Lesson 21 counted a billion events approximately because <i>exact</i> was too expensive and <i>close enough</i> was all anyone needed. A rate limit is the same bargain. The purpose of "60/min" is to stop abuse and protect capacity, not to be a precise meter — nobody's SLA says "exactly 60, never 61." So we deliberately accept a small, <b>bounded</b> overshoot in exchange for dropping per-request coordination. The design's honesty is in the word <i>bounded</i>: we will show the worst case is at most (the key's arrival rate) × (the sync interval), a number we can make as small as we like by syncing more often — and we pick the point where the overshoot is invisible and the coordination is cheap. <span class="key">Exactness is a cost we choose not to pay because the problem doesn't require it.</span></p>
+</div>
+
+<h3>One warning: rate limits forgive overshoot; hard quotas may not</h3>
+<div class="card calc">
+  <p>The reconcile design admits a little <i>over</i> the limit and corrects afterward. For a <b>rate limit</b> (60 req/min) that's harmless — three extra requests cost nothing. But for a <b>hard quota</b> that maps to money or a finite resource — "$500 of spend per day," "1,000 seats" — overshooting means billing a customer past their cap or overselling something you can't deliver. There the tolerance flips, and you switch machinery: instead of <i>count locally, reconcile after</i> (which can overshoot), you <b>pre-authorize</b> — a server must pull a lease of budget from the coordinator <i>before</i> spending it, so the coordinator, as the sole issuer, can never hand out more than the cap. That trades the overshoot away for a little latency and some "trapped" budget (tokens leased to a server that goes idle sit unused until returned). <span class="key">Name the fork: rate limits lean toward count-and-reconcile (cheap, may overshoot); hard money/resource quotas lean toward pull-a-lease (never overshoots, costs coordination up front).</span> Both are the same axis; the acceptable direction of error decides which end you pick — and per-tenant quotas (Lesson 40) are exactly where this bites.</p>
+</div>
+
+<p class="note why"><b>The model in one line:</b> keep a <b>local token bucket</b> on every server for zero-latency admission; every <code>T</code> seconds <b>reconcile</b> local counts to a coordinator that reallocates the unused budget from idle servers to busy ones; accept a <b>bounded overshoot</b> of at most <code>arrival-rate × T</code> because rate limiting tolerates approximation (Lesson 21); and for <b>hard quotas</b> that can't overshoot, switch to <b>pre-authorized leases</b> so the coordinator never over-issues.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Three scenarios: a well-behaved key served with no coordination at all, an abusive key and exactly how far it slips past the limit, and a network partition that forces the CAP choice.</p>
+
+<h3>Path A — a well-behaved key: zero coordination on the hot path</h3>
+<div class="diagram"><pre>
+  Key K, limit 60/min. The client sends ~1 request/second,
+  right at its budget, landing mostly on 2 eu-west servers.
+
+    request arrives at eu-west server #3
+      -> check LOCAL bucket for K: has tokens?  YES
+      -> spend 1 token, admit the request        (~0 ms added)
+      -> run the API call                         (~5 ms)
+    ...repeat, all served from the local bucket...
+
+    every T = 1 s, in the BACKGROUND (off the request path):
+      server #3 reports "served 4 of K's requests" to coordinator
+      coordinator sums all servers: 58/60 used this minute
+      -> reallocates: busy eu servers keep their share,
+         idle ap-south share is lent to eu-west
+      -> servers get refreshed local budgets
+
+    Result: the limit is honored, and NOT ONE request paid a
+    coordination round trip. Coordination happened off to the
+    side, a few messages per second, never in the client's wait.
+</pre></div>
+
+<h3>Path B — an abusive key: how far does it overshoot?</h3>
+<div class="diagram"><pre>
+  Key K, limit 60/min. A misbehaving client blasts A = 10 req/s
+  (600/min, 10x over). Servers admit against their last-known
+  global count, refreshed every T = 1 s (so up to 1 s stale).
+
+    true global count crosses 60 at some instant t0.
+    but every server's CACHED count still reads < 60 for up to
+    T = 1 s after t0 -- they haven't synced yet.
+    during that lag they keep admitting at the arrival rate A.
+
+    worst-case overshoot  =  A x T
+                          =  10 req/s  x  1 s
+                          =  10 requests
+
+    -> client gets ~70 through before the clamp engages,
+       then is hard-blocked (429) until the window resets.
+       ~70 on a 60 budget = ~17% over, for ONE second, then 0.
+
+  The dial: halve the staleness to T = 0.5 s
+       -> overshoot <= 10 x 0.5 = 5 requests (~8% over),
+          at the cost of 2x the sync messages.
+  Sync on EVERY request (T -> 0) -> overshoot -> 0, but you are
+  back to the central-counter latency tax of Move 1.
+</pre></div>
+
+<h3>Path C — a partition: the CAP choice, made explicit</h3>
+<div class="diagram"><pre>
+  eu-west loses its link to the coordinator (in us-east).
+  The 10 eu-west servers can no longer sync K's count.
+  What do they do with the next request for K?
+
+  FAIL-OPEN  (choose Availability, Lesson 11's AP):
+    keep admitting on the last-known local share.
+    good traffic flows -- but with no global view, every
+    partitioned region can leak up to its share of the limit;
+    combined overshoot can reach ~N_regions x share.
+
+  FAIL-CLOSED (choose Consistency/accuracy, Lesson 11's CP):
+    stop admitting K (or drop to near-zero) until sync returns.
+    the limit can't leak -- but you 429 paying customers over
+    an outage that is YOUR fault, not theirs.
+
+  GRACEFUL MIDDLE (the usual default):
+    each isolated region falls back to a STATIC local share
+    (its pre-assigned slice of 60). Worst case leak is bounded
+    to about the original limit per region, service continues,
+    and full global optimization resumes when the link heals.
+
+  There is no free answer -- this is CAP (Lesson 11) wearing a
+  rate-limiter costume. You pick which way to be wrong.
+</pre></div>
+
+<p>Path A is the payoff: <span class="key">the common case — a client at or under its limit — pays no coordination at all,</span> because the local bucket admits instantly and the syncing happens in the background. Path B makes the approximation honest and measurable: the overshoot is not "some unknown fuzz," it is at most <code>arrival-rate × sync-interval</code>, a number you dial down by syncing more often and pay for in message chatter — the trade drawn as arithmetic. Path C is the one to remember: a shared counter under a partition is <b>Lesson 11's CAP theorem in a new suit</b> — you cannot have an accurate global limit <i>and</i> keep serving <i>and</i> tolerate the partition, so you choose your failure, and the sane default is to degrade to a safe static share rather than either leak wildly or reject good traffic.</p>
+
+<h2>Move 4 — Find the first bottleneck: a shared limit is one logical counter everyone contends on</h2>
+<p>CPU isn't the wall — admitting a request against a local bucket is nearly free. Storage isn't the wall — a count is a few bytes. The wall is structural: <b>a global limit is, by definition, a single logical number that every one of the key's requests must consult and update.</b> That is a point of contention, and every design is just a different way to spread the contention out in space and time.</p>
+
+<div class="card calc">
+  <p><b>The bottleneck — you cannot make the shared counter globally exact, cheap, and partition-proof at the same time.</b> Push for <i>exact</i> and you must coordinate on every request → the round-trip tax and the hot key of Move 1. Push for <i>cheap</i> and you coordinate rarely → overshoot grows with the sync interval (Path B). Push for <i>partition-proof</i> and you must decide, with no global view, whether to leak or to reject (Path C). <span class="key">These three pull against each other exactly the way recall, latency, and memory did last lesson — pick your point, name what you gave up.</span> The master dial is the reconciliation interval <code>T</code>: small <code>T</code> buys accuracy (tiny overshoot) at the cost of coordination chatter and latency sensitivity; large <code>T</code> buys cheapness at the cost of a looser limit. There is no <code>T</code> that is best at everything, and the honest engineering move is to pick the overshoot you can tolerate (for a rate limit, generously — 10–20% for a moment is nothing) and set <code>T</code> just fine enough to hit it.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — skew and the hot key don't go away, they move.</b> Consistent hashing (Lesson 4) can spread a <i>million</i> keys across the fleet, but it cannot split <i>one</i> key: a single viral key is one logical counter, and all its traffic contends on that one counter no matter how you shard (Lesson 4's own warning — hashing balances many keys, never one hot key). Reconciliation helps because the contention becomes "a few sync messages per second on the coordinator" instead of "10,000 increments per second on one store entry," but the coordinator for that key is now a hot spot of its own. The usual answers echo earlier lessons: shard the <i>coordinator</i> by key so different hot keys land on different owners (Lesson 3's write sharding), and for a single monstrously hot key, let its servers hold larger local shares and sync less often — trading a little more overshoot for far less coordination on exactly the key that would otherwise melt the coordinator.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — the window itself, and quotas that span days.</b> "60 per minute" needs a notion of "this minute." A naive <b>fixed window</b> (reset the count at the top of each minute) allows a nasty burst at the boundary: 60 in the last second of 12:00 and 60 in the first second of 12:01 is 120 requests in ~2 seconds while never breaking "60/min." The classic fixes are the <b>sliding window</b> (count the trailing 60 seconds, not the calendar minute) and the token bucket's smooth refill (Lesson 8), and they cost a little more state per key. Stretch the window to a <b>quota</b> — "$500/day," "1M calls/month" — and two things change: coordination gets <i>easier</i> (a day-long budget has enormous slack, so you can sync lazily and still be accurate to the cent by day's end), but the <i>tolerance for overshoot vanishes</i> (billing past a hard cap is a real defect), which is exactly why quotas lean to the pre-authorized-lease model from Move 2. <span class="key">The longer and more valuable the budget, the more you favor never-overshoot leasing over cheap-but-loose reconciliation.</span></p>
+</div>
+
+<p>So the honest design for our global limiter is: give every server a <b>local token bucket</b> so the common, well-behaved request pays <i>zero</i> coordination (Path A); <b>reconcile</b> usage to a per-key coordinator every <code>T</code> seconds, reallocating idle servers' budget to busy ones so a skewed key still gets its full 60 (the thing static division couldn't do); accept a <b>bounded overshoot</b> of at most <code>arrival-rate × T</code> and set <code>T</code> to make it invisibly small (Path B), because rate limiting tolerates approximation (Lesson 21); shard the <b>coordinator by key</b> and let a monstrously hot key hold a bigger local share so no single counter melts (Lesson 3/4); use a <b>sliding window or token bucket</b> so the minute boundary can't be gamed (Lesson 8); under a <b>partition</b>, degrade each isolated region to a safe <b>static share</b> rather than leak wildly or reject good traffic — the CAP choice, made on purpose (Lesson 11); and for <b>hard quotas</b> that must never overshoot, switch to <b>pre-authorized leases</b> so the coordinator, as sole issuer, can never exceed the cap (Lesson 40). Every choice names its price: coordinating on every request buys exactness at the cost of a round-trip tax and a hot key; a smaller <code>T</code> buys accuracy at the cost of chatter; a bigger local share buys cheapness on a hot key at the cost of overshoot; and fail-open vs fail-closed is availability vs accuracy, chosen with eyes open.</p>
+
+<p><span class="key">The deepest point: a global limit is a distributed agreement about a single number, and Lesson 11 already told us the truth about that — you cannot have consistency, availability, and partition-tolerance all at once.</span> Lesson 8's single-node limiter got exactness for free because there was nothing to agree with; the moment the counter is shared across a fleet, exactness costs coordination, coordination costs latency, and a partition costs a choice. The escape is that rate limiting, unlike a bank balance, <i>doesn't need</i> consistency — a bounded approximation is not a compromise, it's the correct spec — which is what lets the local-bucket-plus-reconcile design keep the hot path free of the network entirely and pay coordination only in a trickle off to the side. The standing tension, from Lesson 8's perfect single counter to here: <span class="key">limit accuracy vs coordination latency &amp; cost.</span></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>Enforce one limit per key on one box</td><td>Token bucket (L08)</td><td>exact, simple / only sees one server's traffic</td></tr>
+  <tr><td>Exact global count</td><td>Central shared counter</td><td>perfectly accurate / +1 round trip/request, hot key</td></tr>
+  <tr><td>No coordination at all</td><td>Static per-server split</td><td>zero latency / throttles under skew or leaks N×</td></tr>
+  <tr><td>Full budget under skew, cheaply</td><td>Local bucket + reconcile</td><td>hot path free, borrows idle budget / bounded overshoot</td></tr>
+  <tr><td>Keep the error small</td><td>Sync interval T as the dial (L21)</td><td>overshoot ≤ rate×T / smaller T = more chatter</td></tr>
+  <tr><td>One monstrously hot key</td><td>Bigger local share, shard coordinator (L03/04)</td><td>survives 10k req/s / more overshoot on that key</td></tr>
+  <tr><td>Don't get gamed at the boundary</td><td>Sliding window / bucket refill (L08)</td><td>no burst-at-reset / more state per key</td></tr>
+  <tr><td>A partition hits the coordinator</td><td>Degrade to static share (L11 CAP)</td><td>stays available &amp; bounded / loses global optimization</td></tr>
+  <tr><td>A hard money/resource cap</td><td>Pre-authorized leases (L40)</td><td>never overshoots / coordination up front, trapped budget</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — checking a central counter on every request.</b> It's exact, but it bolts a network round trip (cross-region, ~70 ms) onto every call and turns a popular key into one hot counter doing thousands of increments/second. Rate limiting tolerates approximation, so paying for exactness is paying for something you don't need.</li>
+  <li><b>Trap 2 — statically dividing the limit by the number of servers.</b> Traffic is never evenly spread; a skewed key gets throttled far below its real budget while idle servers hoard unused allowance. Giving each server the full limit instead makes the global limit N× too loose. Reallocate dynamically via reconciliation.</li>
+  <li><b>Trap 3 — treating the overshoot as unknowable fuzz.</b> It isn't — it's bounded by <code>arrival-rate × sync-interval</code>. If you can't state your worst-case overshoot, you haven't designed the limiter; you've hoped. Pick the tolerance, then set <code>T</code>.</li>
+  <li><b>Trap 4 — ignoring the partition case.</b> When the coordinator is unreachable, doing nothing means either leaking the limit (if you kept last state and drifted) or rejecting good traffic (if you fail closed by accident). Decide fail-open vs fail-closed on purpose; the safe default is a static per-region share.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We took Lesson 8's single-node token bucket and made its limit hold across <b>30 servers in 3 regions</b> — one shared "60/minute per key," honored no matter which server each request reaches. <b>Estimate</b> exposed the tension: coordinate on every request and a cross-region round trip (~70 ms) dwarfs the request's own work (~5 ms) while a popular key becomes one hot counter; coordinate never and a skewed key is throttled to 1/3 of its budget, or the limit leaks 30×. <b>Model</b> found the middle — <b>local buckets + periodic reconciliation</b> that lends idle servers' budget to busy ones — and named the idea that makes it safe: rate limiting <i>tolerates bounded approximation</i> (Lesson 21), so we spend almost no coordination and keep the error small; hard quotas that can't overshoot switch to pre-authorized leases instead. <b>Tracing</b> showed a well-behaved key served with zero coordination on the hot path, an abusive key overshooting by at most <code>arrival-rate × sync-interval</code> (10 requests, then hard-blocked), and a partition forcing the CAP choice with a safe static-share default. The <b>first bottleneck</b> was structural: a shared limit is one logical counter every request contends on, and you cannot make it exact, cheap, and partition-proof at once — the reconciliation interval <code>T</code> is the master dial, and the partition is Lesson 11's CAP theorem in disguise. Every dial named its trade. The standing tension, straight from Lesson 8: <span class="key">limit accuracy vs coordination latency &amp; cost.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we've coordinated a shared limit. Now make raw files on cheap storage behave like a real database.</b></p>
+  <p style="margin:.2rem 0">• <b>Data lakes &amp; the lakehouse (Lesson 67):</b> Lesson 29 built a warehouse for "revenue by region by day." But the data underneath is often just a pile of files on object storage (Lesson 20) — cheap and open, but with no transactions, no schema safety, no time-travel. We'll add an <b>open table format</b> (Iceberg / Delta / Hudi): a metadata layer over immutable Parquet files that gives you ACID snapshots, schema evolution (Lesson 24), and many compute engines reading one copy. Trade: openness &amp; cheap storage vs query performance &amp; metadata-management complexity.</p>
+  <p style="margin:.2rem 0">• Then further out: <b>delivery guarantees &amp; the dead-letter lifecycle</b> (at-least-once vs effectively-once across a whole pipeline), and <b>the hot/warm/cold path split.</b> Say <b>next</b> to build the lakehouse.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">rate limit</span>
+    <span class="pill">quota</span>
+    <span class="pill">token bucket</span>
+    <span class="pill">local counting</span>
+    <span class="pill">central counter</span>
+    <span class="pill">coordination</span>
+    <span class="pill">reconciliation</span>
+    <span class="pill">sync interval T</span>
+    <span class="pill">overshoot</span>
+    <span class="pill">bounded approximation</span>
+    <span class="pill">hot key</span>
+    <span class="pill">sliding vs fixed window</span>
+    <span class="pill">pre-authorized lease</span>
+    <span class="pill">fail-open / fail-closed</span>
+    <span class="pill">CAP under partition</span>
+  </p>
+  <p>That's Lesson 66. It takes the single-node limiter of Lesson 8 into a fleet and threads: Lesson 8 (the token bucket and window mechanics it distributes), Lesson 21 (approximate counting — why "close enough" is the correct spec, not a compromise), Lesson 11 (CAP — the partition choice under a shared counter), Lesson 40 (per-tenant quotas and the never-overshoot lease), Lesson 3/4 (the hot key one counter can't be sharded away, and sharding the coordinator), and Lesson 42/27/49 (the fleet and front door the limit sits in front of). <b>Ask me follow-ups</b> — e.g. "walk the exact math of the sliding-window log vs a fixed-window counter," "how does a coordinator reallocate budget fairly when demand shifts every second?", "when is a pre-authorized lease worth its trapped budget?", "how do I rate-limit by IP and by key and by endpoint at once without three coordinators?", or "what does the 429 response and Retry-After header owe the client?" When you're ready, say <b>next</b> and we'll build the lakehouse — <i>raw files on object storage taught to act like a transactional table.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "You run 30 API servers across 3 regions enforcing '60 requests/minute per key.' A colleague proposes: every server checks and increments one shared Redis counter before admitting each request, so the global count is always exact. What's the core problem for a global fleet?",
+    options: [
+      {t:"It bolts a network round trip onto every single request — and for servers in a different region than the counter, that's a cross-region trip (~70 ms) to protect a request whose real work is ~5 ms, a 14× latency tax paid per call. It also turns a popular key into one hot counter (thousands of increments/second on a single entry that hashing can't spread). Since rate limiting only needs to be approximately right, this pays a steep price for exactness the problem doesn't require.",
+       ok:true,
+       fb:"Right. Exact global counting means coordinating on every request, which adds a round trip (cross-region ~70 ms ≫ the ~5 ms of work) and concentrates a viral key's whole load on one counter — the hot-key problem (Lesson 3/48) that sharding can't fix for a single key. Rate limiting tolerates bounded error, so the fix is to count locally and reconcile periodically, not to coordinate per request."},
+      {t:"Redis can't store counters, so you'd need a relational database with a transaction per request, which is far too slow to keep a global count at all.",
+       ok:false,
+       fb:"Redis stores and increments counters extremely well (INCR is a core operation) — storage and speed of the store aren't the issue. The problem is the per-request network round trip and the single hot key, which exist no matter how fast the store is. The answer is to coordinate less often, not to swap the store."},
+      {t:"A shared counter can't enforce per-key limits — it can only count total traffic — so you fundamentally can't express '60 per key' this way.",
+       ok:false,
+       fb:"You can absolutely key the counter by API key (one counter entry per key), so per-key limits are expressible. The real problem is the cost of consulting that shared entry on every request: a cross-region round trip and, for a hot key, thousands of increments/second on one entry. It's a cost problem, not an expressiveness problem."}
+    ]
+  },
+  {
+    stem: "To avoid any coordination, you statically divide the limit: 60/min ÷ 30 servers = 2/min per server, each enforcing its slice locally. A paying client in Europe sends its full 60/min, but the load balancer lands ~all of it on the 10 eu-west servers. What goes wrong?",
+    options: [
+      {t:"Even spread across the 10 eu-west servers, the key can use at most 10 × 2 = 20/min before being throttled — the client is cut off at a third of the 60 they were promised, while ~40/min of budget sits unused on idle servers in other regions. Static division can't move idle budget to where the traffic is; the fix is dynamic reconciliation that reallocates unused share to busy servers.",
+       ok:true,
+       fb:"Exactly. Static division assumes even traffic, but traffic is skewed, so budget gets stranded on idle servers while busy ones throttle honest clients. Giving each server the full 60 instead would make the global limit 30 × 60 = 1,800/min (30× too loose). Reconciliation fixes both by lending the idle servers' unused budget to the busy ones."},
+      {t:"Nothing goes wrong — 2/min per server across 30 servers is 60/min total, so the client gets exactly its limit regardless of where requests land.",
+       ok:false,
+       fb:"That's only true if traffic is perfectly even across all 30 servers, which it never is. When ~all traffic hits 10 servers, the client can reach at most 10 × 2 = 20/min and is throttled far below its real budget while 20 other servers sit on unused allowance. Static division breaks precisely under the skew that real traffic always has."},
+      {t:"The client will exceed its limit, because 10 servers each allowing 2/min plus retries will drift above 60 without a shared counter to stop them.",
+       ok:false,
+       fb:"With static division the risk is the opposite — the client is throttled too early (20/min, not over 60). Each server hard-caps at its 2/min slice, so the key can't exceed 60 this way; it just can't reach 60 either. Over-shooting is the failure mode of the reconcile design, not of static division."}
+    ]
+  },
+  {
+    stem: "You switch to local buckets that reconcile every T seconds: servers admit against a cached global count refreshed each sync. A client blasts 10 requests/second (10× over its 60/min limit). Roughly how far over 60 does it get, and what does halving T to 0.5 s do?",
+    options: [
+      {t:"Worst-case overshoot ≈ arrival-rate × sync-interval = 10 req/s × 1 s = ~10 requests: once the true count crosses 60, caches stay stale for up to T, admitting ~10 more before the clamp engages (~70 total, then hard-blocked). Halving T to 0.5 s halves the worst case to ~5 requests, at the cost of roughly 2× the sync messages. T is the accuracy-vs-chatter dial.",
+       ok:true,
+       fb:"Right. The overshoot isn't mysterious fuzz — it's bounded by (arrival rate) × (staleness). Smaller T means fresher caches and less slip-through, but more coordination traffic. Driving T→0 recovers exactness and the per-request coordination cost you were trying to avoid. You pick the overshoot you can tolerate (for a rate limit, generously) and set T to hit it."},
+      {t:"There's no overshoot — local buckets each cap at 60, so the client can never exceed 60 regardless of T; halving T just wastes messages.",
+       ok:false,
+       fb:"Each server only sees its own slice of the traffic, and between syncs it acts on a stale global count, so multiple servers can collectively admit past 60 before any of them learns the budget is spent. That's the overshoot, bounded by rate × T. Halving T isn't wasted — it tightens the bound. The whole point of reconciliation is that it's approximate, not exact."},
+      {t:"Overshoot is unbounded — with local counting the client can keep getting through indefinitely, and changing T has no effect on the total that slips past.",
+       ok:false,
+       fb:"It's bounded, not unbounded: after at most T the servers sync, see the true count over 60, and clamp down. The slip-through is limited to about rate × T per window, and T directly sets that bound — halving T halves it. If overshoot were truly unbounded the design would be useless; its value is precisely that the error is bounded and tunable."}
+    ]
+  },
+  {
+    stem: "eu-west loses its network link to the coordinator (which lives in us-east). The eu-west servers can no longer sync the count for key K. What's the right way to think about — and handle — the next request for K?",
+    options: [
+      {t:"This is CAP (Lesson 11) in a rate-limiter costume: with the partition, you can't have an accurate global count AND keep serving. You choose. The safe default is to degrade each isolated region to a static local share of the limit — service continues and the worst-case leak is bounded to roughly the limit per region — then resume global reallocation when the link heals. Fail-open (keep serving on stale state) risks a larger leak; fail-closed (reject) 429s good customers over your own outage.",
+       ok:true,
+       fb:"Exactly. A shared counter under a partition is CAP: consistency (accurate limit), availability (keep serving), partition-tolerance — pick two. Pure fail-open can leak the limit; pure fail-closed rejects legitimate traffic during an outage that isn't the client's fault. Falling back to a bounded static per-region share keeps you available while capping the damage — the CAP choice made on purpose."},
+      {t:"Keep admitting everything until the link returns — a partition is rare, so any behavior is fine and there's no real decision to make.",
+       ok:false,
+       fb:"Blindly admitting everything is a specific choice (fail-open) with a specific cost: every partitioned region can leak up to its share with no global view, so a wide partition can blow well past the limit. Partitions are exactly when the design is tested; 'any behavior is fine' is how limits silently break during incidents. Decide the degraded behavior deliberately."},
+      {t:"Immediately reject all requests for K until sync is restored — that's the only correct behavior, because serving without the global count would violate the limit.",
+       ok:false,
+       fb:"Fail-closed is a legitimate option, but it's not the only correct one, and it's often the wrong default: you'd 429 paying customers over an outage on your side, not theirs. Because rate limiting tolerates bounded error, degrading to a static per-region share keeps you available while capping the leak — usually the better trade than a hard shutdown of the key."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

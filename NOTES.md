@@ -1319,9 +1319,23 @@
     L48/2 (10M catalog, index across a fleet), L47 (LSM compaction ≈ rebuild-and-swap), L31 (blue-green cutover),
     L24/57 (model versioning + backfill re-embed), L21 (quantization = summary-vs-exact). Trade: recall/quality vs
     query latency & index cost. (Lesson 0065)
-66. Global rate limiting & quota — L08's single-node limiter coordinated across regions and a fleet: sloppy/
-    approximate counters (L21), token sync vs local buckets + reconciliation, per-tenant global quotas (L40), and
-    the CAP tension of a shared limit under partition (L11). Trade: limit accuracy vs coordination latency & cost.
+66. ✅ **Global rate limiting & quota** — L08's single-node limiter coordinated across a 30-server, 3-region fleet
+    enforcing "60/min per key." Estimate: a central counter per request adds a cross-region round trip (~70 ms ≫ the
+    ~5 ms of work, a 14× tax) + one hot key (L3/48); static division throttles a skewed key to 1/3 (idle budget
+    stranded) or, at full-limit-per-node, leaks 30× (30 × 60 = 1,800/min). Model: local token buckets + periodic
+    reconciliation (busy nodes borrow idle nodes' unused budget) — safe because rate limiting tolerates bounded
+    approximation (L21), "close enough" is the spec. Coordination cost is per-active-node-per-interval, flat in
+    request rate (cheap exactly for hot keys). Trace: well-behaved key served with ZERO hot-path coordination; abusive
+    key (A=10 req/s) overshoots ≤ A×T = 10 (halve T → halve overshoot, 2× chatter); a partition = CAP (L11) —
+    fail-open leaks / fail-closed 429s good traffic / safe default = degrade to a static per-region share. First
+    bottleneck = a shared limit is ONE logical counter every request contends on; can't be exact + cheap +
+    partition-proof at once, T is the master dial; hot key one counter can't shard (L4) → bigger local share + shard
+    coordinator by key (L3); fixed vs sliding window / bucket refill so the boundary can't be gamed (L08); hard
+    money/resource quotas (L40) that can't overshoot flip to pre-authorized leases (coordinator = sole issuer, never
+    over-issues, at the cost of trapped budget). Four traps: central counter per request; static division; overshoot
+    as unknowable fuzz; ignoring the partition. Reuses L08 (token bucket/window it distributes), L21 (approximation as
+    correct spec), L11 (CAP under a shared counter), L40 (per-tenant quotas + lease), L3/4 (hot key, shard the
+    coordinator), L42/27/49 (the fleet + front door). Trade: limit accuracy vs coordination latency & cost. (Lesson 0066)
 67. Data lakes & the lakehouse (open table formats) — beyond L29's warehouse: raw files on object storage (L20)
     made queryable by an open table format (Iceberg/Delta/Hudi) — a metadata layer giving ACID snapshots, schema
     evolution (L24), time-travel, and compaction over immutable Parquet; separation of storage from many compute
