@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 67 — Data Lakes &amp; the Lakehouse: Teaching a Pile of Files to Act Like a Table</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 67 · Worked Example</div>
+  <h1>Data Lakes &amp; the Lakehouse: Teaching a Pile of Files to Act Like a Table</h1>
+  <p class="lead">Lesson 29 built a warehouse that answered "revenue by region by day" in half a second — a closed, proprietary system that owned its storage and its query engine together. But most of the world's analytics data doesn't live in a tidy warehouse; it lives as a <b>pile of files on object storage</b> (Lesson 20) — cheap, open, and readable by any engine you like: Spark, Trino, Flink, the warehouse itself. That openness is the dream. The catch is brutal and quiet: <span class="key">a directory of files is <i>not</i> a table.</span> It has no transactions, so a reader can catch a writer mid-update and get a silently wrong answer; it has no atomic way to swap one set of files for another; and just <i>finding</i> which files make up "the table right now" means listing a bucket that can hold millions of them. This lesson builds the missing layer that turns that pile of files back into a real table — an <b>open table format</b> (Iceberg, Delta, Hudi) — and the machine it produces is the <b>lakehouse</b>: warehouse guarantees on lake storage. We'll <b>estimate</b> the cost of the "directory = table" lie and watch planning a single query take <i>minutes</i>; <b>model</b> the fix — a thin <b>metadata layer</b> that names exactly which immutable files are the table, committed by swapping <i>one</i> atomic pointer; <b>trace</b> a read that sees a consistent snapshot, a write that commits atomically or safely retries, and a bad batch rolled back in an instant by pointing at yesterday's snapshot; and find <span class="key">the first bottleneck, which is that we didn't remove the hard part — we moved it into the metadata, where the commit is one serialization point and the files still need compacting.</span> The trade under every choice: <b>openness &amp; cheap shared storage vs query performance &amp; metadata-management complexity.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0067-data-lakehouse.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>Take the exact dataset from Lesson 29: the orders history — <b>11 billion rows, ~11 TB, three years deep, partitioned by day</b> (that's <code>1,095</code> daily partitions). In Lesson 29 it lived inside a closed warehouse. Now we want it stored as plain <b>Parquet files on object storage</b> (Lesson 20's <code>key→blob</code> store) for two reasons: object storage is <i>cheap</i> (a fraction of warehouse-managed storage), and it is <i>open</i> — Spark can train a model on it, Trino can run ad-hoc SQL, Flink can stream from it, and the warehouse engine can still serve dashboards, <span class="key">all reading one copy, with no vendor owning the bytes</span> (the anti-lock-in argument of Lesson 58). We keep the columnar layout, partition pruning, and star schema of Lesson 29 — nothing there changes. What changes is <i>who guarantees the table is a table</i>. In the warehouse, the engine did. On raw object storage, <b>nobody does</b> — and that is the whole problem this lesson solves.</p>
+
+<div class="diagram"><pre>
+  A directory of files is NOT a table. Add a metadata layer.
+
+  RAW LAKE (a pile of files) -- cheap & open, but no guarantees:
+     s3://orders/day=2026-08-01/  file0001.parquet
+                                  file0002.parquet   ... 1,440 of them
+     s3://orders/day=2026-08-02/  file0001.parquet   ... and so on
+        -> no atomic swap, no snapshot, must LIST to find files,
+           a reader can catch a writer half-done  (WRONG ANSWERS)
+
+  LAKEHOUSE = the same files + a thin METADATA LAYER on top:
+
+        catalog pointer  --->  "current table = metadata_042"   (ONE atomic pointer)
+                                        |
+                                        v
+                              metadata_042  (a SNAPSHOT)
+                                schema (by column-ID, L24)
+                                list of manifests
+                                        |
+                                        v
+                              manifest  (the file list + STATS)
+                                file0001.parquet  rows, day, min/max(region,amount)
+                                file0002.parquet  rows, day, min/max(region,amount)
+                                        |
+                                        v
+                              Parquet DATA FILES  (immutable, L20)
+
+  Read  = follow the pointer -> get an exact, frozen list of files.
+  Write = add new files -> write new metadata -> CAS the pointer.
+  Roll back = point the catalog at an OLDER metadata. (instant)
+</pre></div>
+
+<p class="note"><span class="key">The one idea the whole lesson turns on:</span> a change that touches <i>many</i> files (add 78 files, delete 1,440, rewrite a column) is made atomic by reducing it to a change of <i>one</i> tiny thing — the pointer that names the current metadata. Files are immutable; you never edit a table in place. You write new files, write a new metadata object that lists the new set, and then flip a single pointer from the old metadata to the new in <b>one atomic operation</b> (a compare-and-swap, Lesson 6). A reader holding the old pointer sees the old complete table; a reader who follows the new pointer sees the new complete table. Nobody ever sees a half-done mix. This is Lesson 14's "rename, don't mutate," Lesson 20's "commit the metadata last," and Lesson 33's outbox — the same move, applied to a table.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Data lake</b> — raw files (usually Parquet, Lesson 29) sitting directly on object storage (Lesson 20). Cheap and open; not a table on its own.</li>
+  <li><b>Object storage</b> — a flat <code>key→blob</code> store (Lesson 20). Immutable-friendly, durable, cheap, but its only "find things" primitive is <b>LIST</b> (enumerate keys under a prefix), which is slow and paginated (~1,000 keys per call).</li>
+  <li><b>Parquet</b> — a columnar file format (Lesson 29): stores a column together, compresses hard, and carries a <b>footer</b> with per-column min/max stats for the rows inside <i>that file</i>.</li>
+  <li><b>Open table format</b> — a specification (Iceberg / Delta Lake / Hudi) for a <b>metadata layer</b> over immutable data files that makes the pile behave like a transactional table. Open = many engines implement the same spec and read one copy.</li>
+  <li><b>Metadata layer</b> — small files that record which data files currently make up the table, plus the schema and per-file stats. The metadata is tiny compared to the data.</li>
+  <li><b>Snapshot</b> — the exact, frozen set of data files that <i>is</i> the table at one instant. Each commit produces a new snapshot; old ones are kept.</li>
+  <li><b>Commit / atomic pointer swap</b> — publishing a new snapshot by atomically changing <i>one</i> pointer (a compare-and-swap, Lesson 6) from the old metadata to the new.</li>
+  <li><b>Snapshot isolation</b> — a reader pins one snapshot for its whole query, so a concurrent writer's commit can't change the answer mid-flight (the "I" of ACID, Lesson 32).</li>
+  <li><b>Time travel</b> — querying an <i>old</i> snapshot ("the table as of last Tuesday"), free because old snapshots and data files are immutable and kept.</li>
+  <li><b>Compaction</b> — rewriting many small data files into fewer big ones as a new snapshot, to fix the small-file problem (Lesson 20/29) — now safe, because the swap is atomic.</li>
+  <li><b>Lakehouse</b> — the result: warehouse guarantees (ACID, schema, time-travel) on lake storage (cheap object files, open to many engines).</li>
+</ul>
+
+<h2>Move 1 — Estimate: what "a directory is a table" actually costs</h2>
+<p>Two numbers decide this whole lesson. First, how many files does this table become? Second, what does it cost to <i>plan</i> a query — just to figure out which files to read — when all you have is a directory.</p>
+
+<table>
+  <tr><th>Piece</th><th>Value</th><th>Where it comes from</th></tr>
+  <tr><td>Table size</td><td><code>11 TB</code>, <code>11B rows</code></td><td>L29's orders history</td></tr>
+  <tr><td>Partitions</td><td><code>1,095</code></td><td>3 years × 1 partition/day</td></tr>
+  <tr><td>Volume per day</td><td><code>~10 GB/day</code></td><td>11 TB ÷ 1,095 days</td></tr>
+  <tr><td>Streaming ingest</td><td><code>1 file/minute</code></td><td>a small file every minute (L20/29 small-file trap)</td></tr>
+  <tr><td>Files per day</td><td><code>1,440</code></td><td>60 × 24; each ~<code>7 MB</code> (10 GB ÷ 1,440)</td></tr>
+  <tr><td>Files total</td><td><code>~1.58 million</code></td><td>1,095 days × 1,440</td></tr>
+  <tr><td>Object-store LIST page</td><td><code>1,000 keys/call</code></td><td>object storage's only "find" primitive</td></tr>
+  <tr><td>Read a Parquet footer</td><td><code>~1 ms</code> (optimistic)</td><td>one small GET + parse, per file</td></tr>
+</table>
+
+<div class="card calc">
+  <p><b>The number that kills "just point a query at the directory": planning takes minutes before a single row is read.</b> Ask "revenue for one region on one day." To answer it you must find which files hold that day's rows and which of those hold that region. On a raw directory the metadata to answer <i>that</i> lives only inside each file's footer, so the engine must <b>LIST the bucket</b> (1.58M keys ÷ 1,000 per page = <code>1,580</code> paginated LIST calls) and then <b>open every file's footer</b> to read its min/max stats. Even at an optimistic <code>1 ms</code> per footer, <span class="key"><code>1,580,000 footers × 1 ms = 1,580 seconds ≈ 26 minutes</code> of planning — before the scan Lesson 29 measured at 0.5 s even begins.</span> The scan isn't the problem; <i>finding the files</i> is. And it's worse than slow: LIST on object storage has historically been eventually consistent, so a file written a moment ago might not appear — the directory doesn't even reliably tell you what it contains.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second number: there is no atomic multi-file change, so readers see half-done tables.</b> Suppose a nightly job compacts today's <code>1,440</code> small files into <code>~78</code> big ones (10 GB ÷ 128 MB). On a raw directory the only way to "replace" them is: write 78 new files, then delete 1,440 old ones — <i>two</i> steps, not one, with no atomic bracket around them. A dashboard query that runs <b>in the gap</b> sees a partition that is missing rows (old files deleted, new ones not yet counted, or counted <i>twice</i> if it saw both). <span class="key">The result isn't an error you'd catch — it's a revenue number that's silently wrong for a few seconds every night.</span> A directory has no transaction, so every operation that touches more than one file is a race. This is the same dual-write hazard as Lesson 33, and the same "no atomicity across a boundary" as Lesson 32 — here the boundary is "a set of files."</p>
+</div>
+
+<h2>Move 2 — Model: a thin metadata layer, committed by one atomic pointer</h2>
+
+<h3>The table is a pointer to an immutable list of immutable files</h3>
+<p>Every problem in Move 1 comes from the same root: on a raw directory, "what is the table right now?" has no single, atomic, precomputed answer. So we add one. We keep the data files exactly as they are — immutable Parquet on object storage — and layer small <b>metadata</b> files on top that record, explicitly, which data files make up the table and what's in each one.</p>
+
+<div class="card calc">
+  <p><b>The metadata tree (Iceberg's shape, in plain words).</b> A <b>catalog</b> holds one tiny pointer per table: "the current table is <code>metadata_042</code>." That pointer is the only thing that ever changes, and it changes atomically. <code>metadata_042</code> is a <b>snapshot</b>: it records the schema (columns tracked by a stable <b>column ID</b>, not by position — that's what makes Lesson 24's add/rename/drop safe) and a list of <b>manifest</b> files. A manifest is the file list <i>with stats</i>: for each data file it stores the row count, the partition it belongs to, and the <b>min/max of each column</b> inside it. At the bottom sit the immutable Parquet data files. <span class="key">Crucially, the stats that took 26 minutes to gather by opening 1.58M footers are now precomputed and sitting in the manifest — the engine reads a few tens of megabytes of metadata once and prunes files in memory, never touching the bucket's LIST at all.</span></p>
+</div>
+
+<p class="note why"><b>Why this instantly fixes planning:</b> the query "region X, day D" reads the current metadata, keeps only manifest entries whose partition is <code>day=D</code> (that alone drops 1.58M files to ~1,440 — partition pruning, Lesson 29), then keeps only files whose <code>min(region) ≤ X ≤ max(region)</code> (file skipping by stats, Lesson 12's index idea applied to files). Planning goes from reading 1.58M footers to filtering one manifest — <b>minutes to well under a second</b> — and the answer is a precise list of the handful of files worth scanning. No LIST, no footer stampede.</p>
+
+<h3>The commit: turn a many-file change into a one-pointer swap</h3>
+<div class="card calc">
+  <p>Writing is where the magic pays off. To append, compact, or edit, a writer (1) writes <b>new</b> immutable data files, (2) writes a <b>new</b> manifest + <b>new</b> metadata object that lists the resulting file set, and (3) performs a single <b>compare-and-swap</b> on the catalog pointer: "if the current metadata is still <code>042</code>, make it <code>043</code>." Steps 1 and 2 touch object storage but change <i>nothing visible</i> — the table is still whatever the pointer says. Only step 3 publishes, and it is <b>one atomic operation on one tiny object</b> (Lesson 6's compare-and-set, Lesson 22's fencing idea). <span class="key">A reader sees either the whole old snapshot or the whole new one; the half-done middle state is unobservable because it was never pointed to.</span> That is ACID atomicity and snapshot isolation, bought with a single CAS instead of a distributed transaction across a directory.</p>
+</div>
+
+<p class="note why"><b>What falls out for free, all from "immutable files + a swapped pointer":</b> <b>Snapshot isolation</b> — a reader pins <code>042</code> and finishes there even if a writer commits <code>043</code> mid-query. <b>Time travel &amp; rollback</b> — old snapshots are kept, so "the table as of last Tuesday" is just reading an old metadata pointer, and undoing a bad commit is pointing the catalog back one snapshot (Lesson 31's blue-green flip; the snapshot log is Lesson 38's event history for a table). <b>Safe compaction</b> — rewrite small files into big ones as a new snapshot and swap; readers never catch it mid-way, so the small-file fix that was a race in Move 1 is now routine. <b>Schema evolution</b> (Lesson 24) — the schema is metadata keyed by column ID, so adding or renaming a column is a metadata change over 11 TB, not a rewrite. <b>Concurrent writers</b> — two writers both CAS; one wins, the loser re-reads the winner's snapshot and retries its append on top (optimistic concurrency, Lesson 6). <b>Crash safety</b> — a writer that dies after step 1 leaves orphan data files that no snapshot points to: invisible, and swept later by garbage collection (Lesson 20's "unreferenced = harmless").</p>
+
+<h3>The trade you are buying into</h3>
+<div class="card calc">
+  <p>A closed warehouse (Lesson 29) owns storage and compute together, so it can co-design them — proprietary file layouts, tightly-coupled indexes, no separate metadata to manage — and squeeze out peak query speed. The lakehouse deliberately gives that up. It puts data in <b>open</b> files on <b>cheap</b> object storage so any engine can read one copy (no lock-in, Lesson 58) and storage scales independently of compute. <span class="key">You pay for that openness in metadata-management complexity: manifests to keep small, snapshots to expire, files to compact — chores the closed warehouse hid inside itself.</span> Name the trade plainly: <b>openness &amp; cheap shared storage &amp; storage/compute separation vs peak query performance &amp; the operational burden of managing metadata.</b> The lakehouse is the bet that open + cheap + good-enough-fast beats closed + fast + locked-in — a bet that pays when many teams and engines share one large dataset.</p>
+</div>
+
+<p class="note why"><b>The model in one line:</b> keep data as <b>immutable Parquet on cheap object storage</b>; layer a <b>metadata tree</b> (catalog pointer → snapshot → manifest with per-file stats) that names the table exactly and precomputes pruning; <b>commit</b> any change — append, compact, schema edit — by writing new files and new metadata, then a single <b>compare-and-swap on one pointer</b>, which buys ACID atomicity, snapshot isolation, time travel, and safe compaction all at once; and pay for the openness in <b>metadata upkeep</b>.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Three scenarios: a read that gets a consistent snapshot with fast pruning, a write that either commits atomically or safely loses a race, and a bad batch undone instantly by time travel.</p>
+
+<h3>Path A — a read: fast planning + snapshot isolation</h3>
+<div class="diagram"><pre>
+  Query: "revenue for region=EU on day=2026-08-01."
+
+    1. read catalog pointer  -> current table is metadata_042
+    2. read metadata_042     -> schema + list of manifests   (PIN this snapshot)
+    3. scan the manifest, in memory:
+         keep entries where partition == day=2026-08-01
+             1,580,000 files  ->  ~1,440 files   (partition pruning, L29)
+         keep entries where min(region) <= EU <= max(region)
+             ~1,440 files     ->  ~     60 files   (file skipping by stats, L12)
+    4. read ONLY the `region` + `amount` columns of those ~60 Parquet files
+       (columnar projection, L29), sum, done.
+
+    Meanwhile a compaction job COMMITS metadata_043 at step 3.
+       -> our query is pinned to 042 and finishes on a consistent set.
+          It never sees a half-swapped table.  (snapshot isolation)
+
+    Planning cost: read one manifest (~tens of MB) once.
+       NOT 1,580 LIST calls + 1.58M footers (~26 min).  Sub-second.
+</pre></div>
+
+<h3>Path B — a write: atomic commit, or a safe retry under a race</h3>
+<div class="diagram"><pre>
+  Nightly compaction: replace day=2026-08-01's 1,440 small files
+  (7 MB each) with ~78 big files (128 MB each).
+
+    1. write 78 new Parquet files            (nothing visible yet)
+    2. write manifest + metadata_043 listing
+       {all other days' files} + {the 78 new} - {the 1,440 old}
+    3. CAS the catalog:  if current == 042 -> set 043    ATOMIC
+         success -> table is now 78 files for that day, readers switch cleanly
+         the 1,440 old files are now unreferenced -> GC later (L20)
+
+  Concurrent append races the compaction:
+    an ingest writer also builds metadata_043' from base 042 and CASes.
+       first CAS wins (say compaction -> 043).
+       the loser's CAS fails (current is no longer 042).
+       -> loser RE-READS 043, re-applies its append on top -> 044, CAS again.
+          (optimistic concurrency, L06 -- no lock held, just retry)
+
+  Crash after step 1 (files written, pointer never swapped):
+    -> orphan files no snapshot references. Invisible. Swept by GC.
+       The table is exactly what the last successful pointer says. (L20)
+</pre></div>
+
+<h3>Path C — time travel: undo a bad batch in one move</h3>
+<div class="diagram"><pre>
+  A buggy ETL job commits metadata_045 that double-counts a region.
+  The dashboards are now wrong. In a raw directory this is a disaster
+  (which of the millions of files are the bad ones?). Here:
+
+    snapshots are immutable and kept:  ... 043  044  [045 BAD]
+    ROLLBACK = CAS the catalog pointer back to 044.   (instant, no data moved)
+       -> the table is correct again in one atomic step.
+
+    AUDIT / compare = query "AS OF snapshot 044" vs "AS OF 045"
+       to see exactly what the bad job changed. (L38 event history)
+
+    The catch (L56): time travel KEEPS old data. A user's deleted row
+    still lives in snapshot 043 until snapshots are EXPIRED and the
+    unreferenced files GC'd. "Right to be forgotten" forces expiry,
+    which is the same operation that reclaims storage.
+</pre></div>
+
+<p>Path A is the payoff for readers: <span class="key">the precomputed stats turn 26 minutes of planning into a sub-second manifest scan, and the pinned snapshot means a concurrent writer can't corrupt the answer.</span> Path B is the payoff for writers: a many-file change becomes one CAS, so compaction and appends are atomic and crash-safe, and two writers racing just means one retries — no lock, no distributed transaction. Path C is the payoff for operators: because history is immutable and kept, undoing a bad commit is instant and auditing is free — with the honest Lesson 56 caveat that "keep everything" fights "delete on request," and expiring snapshots is where those two meet.</p>
+
+<h2>Move 4 — Find the first bottleneck: we moved the hard part into the metadata</h2>
+<p>The lakehouse didn't make the difficulty vanish; it relocated it. The bottleneck is no longer "LIST the bucket" — it's the metadata layer itself, and the single point where every commit lines up.</p>
+
+<div class="card calc">
+  <p><b>The first bottleneck — metadata grows, and reading it to plan a query gets slow.</b> Before compaction, 1.58M files means a manifest with 1.58M entries. At even a few hundred bytes of stats per entry that's <b>hundreds of megabytes of metadata</b> the engine must read just to plan — you traded "26 minutes of footers" for "read a huge manifest," better but not free. And every commit writes a <i>new</i> metadata generation, so thousands of snapshots pile up too. <span class="key">The fix is the same tool that fixed the data: compaction, now applied to metadata and files together.</span> Compact the 1,440 files/day down to ~78 → the file count drops ~18× (1.58M → ~86,000), and the manifest shrinks with it (hundreds of MB → tens of MB). Expire old snapshots so the history you keep is bounded. Cache the manifest so repeat queries skip re-reading it. The metadata is a table in its own right, and it needs the same partition-and-prune, compact-and-expire hygiene as the data (Lesson 20's small-file problem, Lesson 29's over-partitioning trap, both reborn one level up).</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — the commit is one serialization point per table.</b> Every writer must CAS the <i>same</i> pointer, so all writes to a table funnel through one logical spot (Lesson 66's "one logical counter everyone contends on," wearing a table-format costume). Low write rates: fine. But point a thousand streaming tasks at one table, each committing per-second, and their CASes collide — the loser retries, the retries collide again, and you get a <b>commit-contention storm</b> (Lesson 7's retry storm at the metadata layer). The fixes echo the whole course: <b>batch writes into fewer, larger commits</b> (commit once a minute, not once a row — Lesson 9/47's "amortize the expensive operation"), which also produces bigger files and less metadata at the same time; and where truly independent, partition the write path so different partitions commit more independently. <span class="key">There is a floor, though: a single table has a single current-snapshot pointer, so a table's commit throughput is bounded by how fast you can serialize CASes on it — the same single-writer ceiling as Lesson 3's counter and Lesson 66's shared limit.</span></p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — the freshness/cost dial, exactly as in Lesson 29.</b> Commit often and you get fresh data and tiny latency, but many small files and heavy metadata churn (slow reads, contended commits). Commit rarely and you get big files and light metadata (fast reads, cheap commits), but stale data. <span class="key">This is Lesson 29's batch-vs-stream tension in a new place: the commit interval is the master dial between ingestion freshness and read/scan efficiency.</span> The lakehouse doesn't escape it — it just makes both ends <i>safe</i> (frequent commits don't corrupt readers; compaction to fix the small files doesn't either), so you can choose your point on the dial and move it later without changing the data model. And the deeper freshness limit is honest: a lakehouse commit is a <i>batch</i> publish, so end-to-end latency is one commit interval — for true sub-second streaming you still pair it with a speed layer (Lesson 29's lambda/kappa, Lesson 64's stream processor), and the lake is the durable, replayable log both read from.</p>
+</div>
+
+<p>So the honest design for our lakehouse is: store data as <b>immutable Parquet on cheap object storage</b>, keeping Lesson 29's columnar layout, partitioning, and star schema; layer an <b>open table format's metadata tree</b> (catalog pointer → snapshot → manifest with per-file stats) so planning is a sub-second manifest scan with partition pruning and file skipping (Lesson 12/29), not a LIST-and-footer stampede; <b>commit</b> every change — append, compaction, schema edit — by writing new files and new metadata then a single <b>compare-and-swap</b>, buying ACID atomicity, snapshot isolation, time travel, and safe compaction from one atomic pointer (Lesson 6/14/20); handle concurrent writers with <b>optimistic retry</b> (Lesson 6) and batch commits to tame the single serialization point (Lesson 3/66); run <b>compaction and snapshot expiry</b> as ongoing hygiene so metadata and files stay small (Lesson 20/29), remembering that expiry is also what finally deletes time-travel history (Lesson 56); and pick the <b>commit interval</b> as the freshness-vs-cost dial (Lesson 29), pairing with a speed layer (Lesson 64) when sub-second freshness is required. Every choice names its price: openness costs metadata upkeep; the atomic pointer costs a single serialization point; frequent commits cost small files and contention; kept history costs storage and a deletion headache.</p>
+
+<p><span class="key">The deepest point: the lakehouse is nothing but the "rename, don't mutate" trick (Lesson 14) scaled up to an entire table.</span> A warehouse gets its guarantees by owning everything; a lake gives up ownership for openness and cheapness and, in doing so, loses the guarantees. The open table format buys them back <i>without</i> re-closing the system, by adding one indirection — a pointer to an immutable, precomputed description of which immutable files are the table right now — and making every change a swap of that one pointer. Atomicity over N files reduced to atomicity over 1 pointer; that single reduction is the whole idea, and every feature (snapshots, time travel, safe compaction, schema evolution, optimistic concurrency) is a corollary of it. The standing tension, from Lesson 29's closed warehouse to here: <span class="key">openness &amp; cheap shared storage vs query performance &amp; metadata-management complexity.</span></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>Store 11 TB cheaply, openly</td><td>Parquet on object storage (L20/29)</td><td>cheap, many engines / a directory isn't a table</td></tr>
+  <tr><td>Find the right files fast</td><td>Manifest with per-file stats (L12/29)</td><td>sub-second pruning / metadata to maintain</td></tr>
+  <tr><td>Atomic change across many files</td><td>Compare-and-swap one pointer (L06/14/20)</td><td>ACID commit, snapshot isolation / one serialization point</td></tr>
+  <tr><td>Reader vs writer race</td><td>Pinned snapshot (L32's isolation)</td><td>consistent reads / must keep old snapshots</td></tr>
+  <tr><td>Undo a bad batch</td><td>Time travel / rollback (L31/38)</td><td>instant, no data moved / keeps history (L56)</td></tr>
+  <tr><td>Change a column over 11 TB</td><td>Schema by column-ID in metadata (L24)</td><td>metadata-only edit / discipline to track IDs</td></tr>
+  <tr><td>Fix the small-file pile safely</td><td>Compaction as a new snapshot (L20/29)</td><td>fast scans, no reader race / background compute</td></tr>
+  <tr><td>Two writers at once</td><td>Optimistic retry (L06)</td><td>no lock held / retries collide under load</td></tr>
+  <tr><td>Metadata &amp; snapshots pile up</td><td>Compact + expire snapshots (L20/29)</td><td>small metadata / expiry finally deletes history</td></tr>
+  <tr><td>High commit rate</td><td>Batch into fewer, bigger commits (L09/47)</td><td>less contention &amp; metadata / staler data</td></tr>
+  <tr><td>True sub-second freshness</td><td>Pair with a speed layer (L29/64)</td><td>fresh serving / two pipelines to keep</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — treating a directory of files as a table.</b> With no atomic multi-file swap, a reader can catch a writer mid-update and get a silently wrong answer, and just planning a query means LISTing the bucket and opening millions of footers (~26 min). You need a metadata layer that names the table exactly and commits atomically.</li>
+  <li><b>Trap 2 — committing too often (or per-row).</b> Every commit writes a new metadata generation and tiny files; per-second commits from many writers create a small-file pile and a commit-contention storm (L7/66). Batch into fewer, larger commits; compact continuously.</li>
+  <li><b>Trap 3 — never compacting or expiring.</b> Metadata and snapshots grow unbounded; planning slows (huge manifests), storage bloats, and old data lingers. Compaction and snapshot expiry are not optional chores — they're what keeps the lakehouse fast, and expiry is what actually honors a deletion request (L56).</li>
+  <li><b>Trap 4 — expecting a warehouse's peak speed and a lake's zero management.</b> The lakehouse trades some peak performance and adds metadata upkeep in exchange for openness, cheap storage, and storage/compute separation. If one engine owns the data forever and speed is everything, a closed warehouse may still win; the lakehouse's bet is that openness across many engines and teams is worth the management.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We took Lesson 29's 11 TB orders warehouse and rebuilt it on <b>open files on cheap object storage</b> — readable by any engine, owned by no vendor — then fixed the quiet catastrophe that comes with it: <b>a directory of files is not a table.</b> <b>Estimate</b> showed the cost of pretending it is: planning one query means LISTing 1.58M keys and opening every footer (~26 minutes before the scan starts), and any change across files is a race that shows readers half-done, silently-wrong answers. <b>Model</b> added the fix — a thin <b>metadata layer</b> (catalog pointer → snapshot → manifest with per-file stats) that names the table exactly and precomputes pruning, committed by a single <b>compare-and-swap</b> on one pointer — and named the one idea it all rests on: reduce an atomic change over <i>many</i> immutable files to an atomic swap of <i>one</i> tiny pointer (Lesson 14's rename-don't-mutate, scaled to a table). <b>Tracing</b> showed a read pruned to sub-second under snapshot isolation, a write committed atomically or safely retried under a race, and a bad batch undone instantly by pointing at yesterday's snapshot. The <b>first bottleneck</b> was that the hard part didn't vanish, it moved: metadata grows and needs its own compaction and expiry; the commit is one serialization point per table (Lesson 66's shared counter again); and the commit interval is Lesson 29's freshness-vs-cost dial in a new place — all now <i>safe</i> to tune because the format made every change atomic. Every dial named its trade. The standing tension, straight from Lesson 29: <span class="key">openness &amp; cheap shared storage vs query performance &amp; metadata-management complexity.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we've made a pile of files behave like one reliable table. Now make a whole pipeline of hand-offs behave reliably end to end.</b></p>
+  <p style="margin:.2rem 0">• <b>Delivery guarantees &amp; the dead-letter lifecycle (Lesson 68):</b> we've built at-least-once delivery (Lesson 9), idempotent effects (Lesson 13), and the outbox (Lesson 33) one hop at a time. This lesson threads them across a <i>whole</i> pipeline — where exactly deduplication should live, how a poison message gets quarantined instead of blocking a partition, and how a dead-letter queue's triage-and-replay tooling lets you prove a message was actually handled. Trade: delivery certainty &amp; operability vs pipeline latency &amp; the storage of in-flight state.</p>
+  <p style="margin:.2rem 0">• Then further out: <b>the hot/warm/cold path split</b> (one event feeding a serving store, a streaming speed layer, and a batch warehouse at once) and <b>idempotent, resumable data APIs.</b> Say <b>next</b> to build the delivery-guarantee pipeline.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">data lake</span>
+    <span class="pill">object storage</span>
+    <span class="pill">Parquet</span>
+    <span class="pill">open table format</span>
+    <span class="pill">metadata layer</span>
+    <span class="pill">manifest</span>
+    <span class="pill">snapshot</span>
+    <span class="pill">atomic pointer swap (CAS)</span>
+    <span class="pill">snapshot isolation</span>
+    <span class="pill">time travel</span>
+    <span class="pill">compaction</span>
+    <span class="pill">snapshot expiry</span>
+    <span class="pill">schema evolution</span>
+    <span class="pill">optimistic concurrency</span>
+    <span class="pill">lakehouse</span>
+  </p>
+  <p>That's Lesson 67. It takes Lesson 29's warehouse onto open lake storage and threads: Lesson 20 (object storage, immutable blobs, commit-metadata-last, the small-file problem), Lesson 29 (columnar Parquet, partition pruning, star schema, the freshness-vs-cost batch dial, over-partitioning), Lesson 12 (per-file stats as an index / file skipping), Lesson 6 (compare-and-swap, optimistic concurrency), Lesson 14 (rename-don't-mutate / versioned immutable data), Lesson 24 (schema evolution by column ID), Lesson 31 (rollback as a pointer flip), Lesson 32 (isolation across a boundary), Lesson 38 (the snapshot log as event history), Lesson 56 (time travel vs the right to be forgotten), Lesson 64 (pairing with a stream speed layer), and Lesson 66 (the single serialization point). <b>Ask me follow-ups</b> — e.g. "walk the exact bytes of an Iceberg commit vs Delta's transaction log," "how does file skipping by min/max fail for high-cardinality columns, and what's a Bloom-filter index (L21) doing in a manifest?", "when do two concurrent writers <i>conflict</i> rather than just retry — what's a serialization vs a write-write conflict here?", "how do row-level deletes work without rewriting a whole file (merge-on-read vs copy-on-write)?", or "when is a closed warehouse still the right call over a lakehouse?" When you're ready, say <b>next</b> and we'll build the delivery-guarantee pipeline — <i>at-least-once and effectively-once across a whole chain of hand-offs, with a dead-letter lifecycle.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your 11 TB orders history lives as ~1.58 million small Parquet files in an object-storage bucket, partitioned by day. A teammate points a query engine straight at the directory and asks 'revenue for one region on one day.' Why is planning that query — just deciding which files to read — a disaster before a single row is scanned?",
+    options: [
+      {t:"With only a directory, the engine must LIST the bucket (1.58M keys ÷ 1,000 per page ≈ 1,580 paginated calls) and then open each file's footer to read its min/max stats — ~1.58M footers × ~1 ms ≈ 26 minutes just to find the relevant files. There's no precomputed, single answer to 'which files are the table and what's in them,' so the stats have to be gathered the hard way, per file, every query.",
+       ok:true,
+       fb:"Right. The scan itself is fast (Lesson 29 measured ~0.5 s); the cost is finding the files. A raw directory has no metadata layer, so the engine LISTs the bucket and reads every footer to learn each file's partition and column ranges. A manifest with precomputed per-file stats collapses that to a sub-second in-memory filter."},
+      {t:"Parquet can't store column statistics, so the engine has no way to skip files and must read all 11 TB of data for every query regardless of the filter.",
+       ok:false,
+       fb:"Parquet footers do carry per-column min/max stats — that's exactly what lets an engine skip files. The problem isn't missing stats; it's that on a raw directory the only place those stats live is inside 1.58M individual footers, so gathering them means opening every file. The table format's manifest precomputes and centralizes them."},
+      {t:"Object storage is too slow to read 11 TB at all, so the query is doomed no matter how the files are organized; you'd need to load everything into RAM first.",
+       ok:false,
+       fb:"Object storage streams data fine — Lesson 29 scanned the pruned columns in ~0.5 s across nodes, and you never load 11 TB into RAM. The 26-minute cost is planning (LIST + 1.58M footers), not the scan. Fix planning with a metadata layer and the scan is unchanged and fast."}
+    ]
+  },
+  {
+    stem: "A nightly job compacts one day's 1,440 tiny files into ~78 big ones. On a raw directory it writes the 78 new files and deletes the 1,440 old ones. A dashboard query runs during that window. What's the core failure, and how does an open table format fix it?",
+    options: [
+      {t:"On a raw directory 'replace these files' is two steps with no atomic bracket, so a query in the gap sees a partition with rows missing (or double-counted) — a silently wrong revenue number, not an error. The table format fixes it by making the data files immutable and committing the whole swap as a single compare-and-swap on one pointer: readers see either the entire old snapshot or the entire new one, never a half-done mix.",
+       ok:true,
+       fb:"Exactly. A directory has no transaction, so any change touching more than one file is a race that readers can observe half-done. Reducing the many-file change to one atomic pointer swap (Lesson 6/14/20) gives ACID atomicity and snapshot isolation: the intermediate state is never pointed to, so it's unobservable."},
+      {t:"The failure is that compaction is slow, so the query times out waiting for it; the fix is to run compaction on a faster machine so the window is too short to matter.",
+       ok:false,
+       fb:"Shrinking the window doesn't remove the race — a reader can still land in it and get a wrong answer, and 'usually fine' is how silent corruption ships. The fix isn't speed, it's atomicity: commit the swap as one CAS so there is no observable in-between state at all, however long the rewrite took."},
+      {t:"The failure is that the new files have a different schema than the old ones, so the query can't parse them; the fix is to forbid schema changes during compaction.",
+       ok:false,
+       fb:"Compaction rewrites the same rows into fewer files with the same schema — schema isn't the issue. The issue is that deleting old files and adding new ones is a non-atomic multi-file change a reader can catch mid-way. The table format's atomic pointer swap is what makes the substitution invisible to readers."}
+    ]
+  },
+  {
+    stem: "In the lakehouse, committing any change means writing new files and new metadata, then doing a compare-and-swap on the catalog pointer (\"if current is snapshot 042, set it to 043\"). Two writers try to commit at the same time. What happens, and why is it usually fine?",
+    options: [
+      {t:"Both build their new snapshot from base 042 and CAS; the first CAS wins (say → 043), and the loser's CAS fails because the current pointer is no longer 042. The loser re-reads 043 and re-applies its change on top → 044, then CASes again. It's optimistic concurrency (Lesson 6): no lock is held, conflicts are detected at commit and resolved by retry — cheap as long as commits are infrequent.",
+       ok:true,
+       fb:"Right. The single pointer is the serialization point: exactly one CAS from a given base can win, so there's never a lost update, and losers just retry against the winner's snapshot. No distributed lock, no held transaction. The catch (the next question's territory) is that under very high commit rates the retries themselves start colliding."},
+      {t:"Both writes succeed independently because each writes its own separate files, so there's no conflict to resolve and no retry is ever needed.",
+       ok:false,
+       fb:"They do write separate data files, but they both must publish by updating the same catalog pointer — and only one CAS from base 042 can succeed. Without that check you'd get a lost update (one writer's snapshot silently overwriting the other's). The retry on the loser is precisely what preserves both changes."},
+      {t:"The second writer blocks on a lock held by the first until it finishes, exactly like a row lock in a relational database, so writes are serialized by waiting.",
+       ok:false,
+       fb:"This is optimistic, not lock-based: nobody holds a lock while building their commit. Writers work in parallel and the conflict is detected only at the CAS. That's cheaper than a held lock under low contention (no waiting), but it means the loser must redo work and retry — the trade optimistic concurrency makes."}
+    ]
+  },
+  {
+    stem: "The lakehouse fixed 'LIST the bucket to find files.' Your architect warns the hard part didn't vanish, it moved. Where is the new first bottleneck, and what's the master dial that controls it?",
+    options: [
+      {t:"The metadata layer itself: 1.58M files means a huge manifest to read for planning, and every commit adds a new snapshot, so metadata and history pile up; meanwhile every writer funnels through one pointer (Lesson 66's single serialization point). The commit interval is the master dial — commit often for freshness but get small files, heavy metadata, and CAS contention; commit rarely for big files and cheap commits but staler data — and compaction + snapshot expiry keep it healthy (Lesson 29's freshness-vs-cost dial).",
+       ok:true,
+       fb:"Exactly. You traded 'LIST + footers' for 'read a large manifest' and 'contend on one pointer' — better, but now metadata needs its own compaction/expiry and the commit is a single serialization point. The commit interval trades ingestion freshness against read/scan efficiency and contention; for true sub-second freshness you pair the lake with a speed layer (Lesson 64)."},
+      {t:"The bottleneck is object-storage durability — with millions of files, some will be silently lost, so the master dial is how many replicas of each file you keep.",
+       ok:false,
+       fb:"Object storage already handles durability (Lesson 20's erasure coding/replication) and the format's immutability plus snapshots make loss detectable and recoverable. The new bottleneck is the metadata and the single commit pointer, tuned by the commit interval and kept small by compaction and snapshot expiry — not by adding file replicas."},
+      {t:"There is no remaining bottleneck — once you add the metadata layer, planning is sub-second and commits are atomic, so the lakehouse scales without any further tuning or maintenance.",
+       ok:false,
+       fb:"The metadata layer is itself a table that grows: manifests bloat with file count, snapshots accumulate, and all writes serialize on one pointer. Without ongoing compaction, snapshot expiry, and batched commits, planning slows and commits contend. The difficulty moved into the metadata; it didn't disappear."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

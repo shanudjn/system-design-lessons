@@ -1336,10 +1336,24 @@
     as unknowable fuzz; ignoring the partition. Reuses L08 (token bucket/window it distributes), L21 (approximation as
     correct spec), L11 (CAP under a shared counter), L40 (per-tenant quotas + lease), L3/4 (hot key, shard the
     coordinator), L42/27/49 (the fleet + front door). Trade: limit accuracy vs coordination latency & cost. (Lesson 0066)
-67. Data lakes & the lakehouse (open table formats) — beyond L29's warehouse: raw files on object storage (L20)
-    made queryable by an open table format (Iceberg/Delta/Hudi) — a metadata layer giving ACID snapshots, schema
-    evolution (L24), time-travel, and compaction over immutable Parquet; separation of storage from many compute
-    engines. Trade: openness/flexibility & cheap storage vs query performance & metadata-management complexity.
+67. ✅ **Data lakes & the lakehouse (open table formats)** — L29's 11 TB / 11B-row / 3-year orders history stored as
+    ~1.58M small Parquet files on object storage (L20), cheap & open to many engines but a *directory is NOT a table*.
+    Estimate the "directory = table" lie: planning one query = LIST 1.58M keys (~1,580 paginated calls) + open every
+    footer for stats ≈ 1.58M × 1 ms ≈ **26 min** before the scan; and any multi-file change (compact 1,440 × 7 MB files
+    → 78 × 128 MB) is a **race** a reader catches half-done → silently wrong revenue. Fix = a thin **metadata layer**
+    (catalog pointer → snapshot → manifest w/ per-file min/max stats) that names the table exactly & precomputes pruning
+    → planning drops to a sub-second manifest scan (partition pruning + file skipping, L12/29), no LIST. THE idea: reduce
+    an atomic change over MANY immutable files to a single **compare-and-swap of ONE tiny pointer** (L06/14 rename-don't-
+    mutate/20 commit-last) → ACID atomicity, snapshot isolation (L32), time travel + instant rollback (L31/38), safe
+    compaction (L20/29 small-file fix), schema evolution by column-ID (L24), optimistic-retry concurrent writers (L06),
+    all corollaries of the one swap. Trace: read pruned sub-second on a pinned snapshot; write committed atomically or
+    loser re-reads winner's snapshot & retries; bad batch rolled back by pointing catalog at older metadata (L56 caveat:
+    time travel keeps deleted data → snapshot expiry is what finally deletes it + reclaims storage). First bottleneck =
+    the hard part MOVED into the metadata: manifests bloat (1.58M entries → hundreds of MB) & need their own compaction +
+    snapshot expiry; the commit is **one serialization point per table** (L66's shared counter → batch commits, L09/47);
+    commit interval = L29's freshness-vs-cost dial reborn (pair w/ a speed layer L64 for sub-second). Four traps:
+    directory-as-table; per-row commits; never compact/expire; expecting warehouse speed + zero management. Trade:
+    openness & cheap shared storage vs query performance & metadata-management complexity. (Lesson 0067)
 68. Delivery guarantees & the dead-letter lifecycle — end-to-end at-least-once vs effectively-once across a whole
     pipeline (L09/13/33/64): where dedup lives, poison-message quarantine, DLQ triage/replay tooling, and proving a
     message was handled. Trade: delivery certainty & operability vs pipeline latency & storage of in-flight state.
