@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 68 — Delivery Guarantees &amp; the Dead-Letter Lifecycle: Making a Whole Pipeline Reliable End to End</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 68 · Worked Example</div>
+  <h1>Delivery Guarantees &amp; the Dead-Letter Lifecycle: Making a Whole Pipeline Reliable End to End</h1>
+  <p class="lead">We have been building reliability one hop at a time. Lesson 9 gave a message log that never loses an event but may hand it over more than once. Lesson 13 made a single <code>POST /charge</code> safe to retry. Lesson 33 got a database write and a published event to agree. Each was one link in a chain. This lesson threads them into <b>one pipeline</b> — an order event flowing through four services — and asks the question a real system lives or dies by: <span class="key">what does it actually mean for that message to be "delivered," across the whole chain, when any hop can crash, retry, or choke on a bad message?</span> We'll meet the three delivery semantics — <b>at-most-once</b>, <b>at-least-once</b>, <b>exactly-once</b> — and the hard truth that exactly-once <i>delivery</i> is a myth while exactly-once <i>effect</i> is routine. We'll <b>estimate</b> how many duplicates a busy pipeline actually produces (spoiler: tens of thousands of double-charges a day if you do nothing); <b>model</b> the fix — at-least-once transport plus idempotent consumers, with a clear answer to <i>where deduplication lives</i>; <b>trace</b> a happy message, a duplicate that gets absorbed, a <b>poison message</b> that fails forever and must be quarantined, and its <b>dead-letter</b> triage-and-replay; and find <span class="key">the first bottleneck, which is that "never lose it" has a storage bill — the in-flight state (dedup keys, the DLQ, the un-acked backlog) is the price of certainty.</span> The trade under every choice: <b>delivery certainty &amp; operability vs pipeline latency &amp; the storage of in-flight state.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0068-delivery-guarantees.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>One <code>order.placed</code> event, born when a shopper taps "Buy," must travel through a pipeline of four services, each a separate process on a separate machine that can fail on its own: <b>ingest</b> (write the order down), <b>payment</b> (charge the card), <b>fulfillment</b> (reserve stock, tell the warehouse), and <b>notify</b> (email the receipt). Between each pair sits a durable log (Lesson 9's append-only, partitioned message queue). The pipeline runs at <b>2,000 orders/sec on an average day</b> and peaks near <b>10,000/sec</b>; each event is about <b>1 KB</b>. Our job is to define — and then guarantee — what "this order was processed" means from end to end, so the shopper is charged <i>once</i>, shipped <i>once</i>, and emailed <i>once</i>, even though somewhere in those four hops something is always failing.</p>
+
+<div class="diagram"><pre>
+  ONE order event, FOUR hops. Each hop can crash / retry / choke.
+
+   producer                                                consumer
+   (checkout)                                              (warehouse+inbox)
+      |                                                          ^
+      v      [log 1]        [log 2]        [log 3]      [log 4]  |
+   +--------+  =>  +---------+  =>  +-------------+  =>  +--------+
+   | INGEST |      | PAYMENT |      | FULFILLMENT |      | NOTIFY |
+   +--------+      +---------+      +-------------+      +--------+
+       |  \ retry      |  \ retry        |  \ retry         |
+    ack|   \ (dup!)    |   \ (dup!)      |   \ (dup!)       |ack
+       v    \          v    \            v    \             v
+   [dedup store]   [dedup store]     [dedup store]     [dedup store]
+   "have I seen msg-id X?  yes -> skip effect, just ack."
+
+   Some messages NEVER succeed (malformed / deleted entity):
+       retried N times -> QUARANTINE -> [ DEAD-LETTER QUEUE ]
+                                          triage -> fix -> REPLAY
+
+   Guarantee to build:  at-least-once transport (never lose)
+                      +  idempotent consumers (never double-count)
+                      =  EFFECTIVELY-ONCE effect, end to end.
+</pre></div>
+
+<p class="note"><span class="key">The one idea the whole lesson turns on:</span> you cannot stop a duplicate from <i>arriving</i> — the network guarantees that (see Move 1). So you stop it from <i>counting</i>. Ship every message with a stable <b>idempotency key</b> (Lesson 13), and make every consumer check "have I already done this key?" before it acts. At-least-once delivery says the message is never lost; idempotent processing says it's never applied twice. Bolt them together and you get the only "exactly-once" that is real: the <i>effect</i> happens once, even though the <i>message</i> may show up many times. Everything else in this lesson — poison messages, dead-letter queues, replay — is about the messages that don't fit that clean story.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Delivery semantics</b> — the promise a transport makes about how many times a message is handed to the consumer: <i>at-most-once</i>, <i>at-least-once</i>, or <i>exactly-once</i>.</li>
+  <li><b>At-most-once</b> — send and forget; no retry. A message is delivered zero or one time. Never duplicates, but <b>can lose</b> data on any failure.</li>
+  <li><b>At-least-once</b> — retry until the consumer <b>acknowledges</b> (acks). A message is delivered one or more times. Never loses, but <b>can duplicate</b>.</li>
+  <li><b>Exactly-once</b> — delivered exactly one time. As a pure transport promise across an unreliable network it is <b>impossible</b> (Move 1). As an observable <i>effect</i> it is achievable — we call that <b>effectively-once</b>.</li>
+  <li><b>Ack</b> — the consumer's signal "I've durably handled this; stop redelivering." No ack (crash, timeout) ⇒ the broker redelivers.</li>
+  <li><b>Idempotency key</b> — a stable ID the producer stamps on the message (Lesson 13) so every retry carries the <i>same</i> key, letting a consumer recognize a repeat.</li>
+  <li><b>Deduplication (dedup)</b> — a consumer remembering which keys it has already applied, so a repeat is skipped (acked without re-doing the effect).</li>
+  <li><b>Effectively-once</b> — at-least-once delivery + idempotent consumers. Duplicates arrive but change nothing; the net effect is one-time.</li>
+  <li><b>Poison message</b> — a message that fails <i>every</i> time it's processed (malformed, or references a row that no longer exists). Retrying it forever is pointless and, in an ordered partition, harmful.</li>
+  <li><b>Head-of-line blocking</b> — in an ordered partition (Lesson 9), a stuck message at the front holds up every message behind it.</li>
+  <li><b>Dead-letter queue (DLQ)</b> — a side channel where a message is parked after it exhausts its retries, so the main pipeline can move on. It is quarantine, not a trash can.</li>
+  <li><b>Replay</b> — re-injecting a DLQ'd (or historical) message back into the pipeline after the cause is fixed.</li>
+  <li><b>In-flight state</b> — everything the pipeline must remember to keep its promise: dedup keys, un-acked messages, and the DLQ's contents.</li>
+</ul>
+
+<h2>Move 1 — Estimate: exactly-once is a myth, and duplicates are not rare</h2>
+<p>Two facts decide the whole design. First: why can't the transport just deliver each message once? Second: if we accept duplicates, how many actually happen — is this a real problem or a rounding error?</p>
+
+<div class="card calc">
+  <p><b>Why exactly-once <i>delivery</i> is impossible (the two generals, in one paragraph).</b> A consumer finishes the work and must tell the broker "done" so it stops redelivering. That ack travels the network — and the network can lose it. Now the broker faces a choice with no safe answer. If it <b>redelivers</b> when an ack is missing, a consumer that did the work but whose ack was lost gets the message <i>again</i> → a duplicate (that's at-least-once). If it <b>doesn't</b> redeliver, a consumer that crashed <i>before</i> doing the work never gets a second chance → a loss (that's at-most-once). <span class="key">No amount of extra messages closes the gap: whatever the last message is, it too can be lost, so someone must act without knowing it arrived.</span> You must pick which failure you can tolerate — lose, or duplicate. There is no third door at the transport layer. (This is Lesson 7's "a timeout tells you nothing" made formal.)</p>
+</div>
+
+<table>
+  <tr><th>Piece</th><th>Value</th><th>Where it comes from</th></tr>
+  <tr><td>Throughput (avg)</td><td><code>2,000 orders/s</code></td><td>the pipeline's steady load</td></tr>
+  <tr><td>Throughput (peak)</td><td><code>~10,000 orders/s</code></td><td>flash-sale spikes (L27/28)</td></tr>
+  <tr><td>Pipeline hops</td><td><code>4</code></td><td>ingest → payment → fulfillment → notify</td></tr>
+  <tr><td>Crash-after-effect-before-ack</td><td><code>~0.05%</code> of deliveries</td><td>deploys, OOMs, timeouts, lost acks</td></tr>
+  <tr><td>Poison-message rate</td><td><code>~0.01%</code> of messages</td><td>malformed / references a deleted row</td></tr>
+  <tr><td>Dedup key size</td><td><code>~50 bytes</code></td><td>a UUID + a little bookkeeping</td></tr>
+  <tr><td>Partitions per log</td><td><code>4</code></td><td>2,000/s ÷ 4 ≈ 500 msg/s each (L9)</td></tr>
+</table>
+
+<div class="card calc">
+  <p><b>The number that forces dedup: without it, ~86,400 double-charges a day at the payment hop alone.</b> A duplicate happens whenever a consumer does the work and then dies before its ack lands (or the ack is lost). Put that at a modest <code>0.05%</code> of deliveries. At the payment hop's <code>2,000/s</code>, that's <code>2,000 × 0.0005 = 1 duplicate delivery per second</code> — <span class="key"><code>1 × 86,400 = 86,400 duplicate charge attempts every day</code> at just one hop.</span> Across all four hops it's <code>~4 duplicate deliveries/second ≈ 345,600/day</code> of double-fulfilled, double-emailed, double-charged effects. That is not a rounding error; it is a customer-trust catastrophe. Exactly-once delivery being impossible, our only move is to make the <i>effect</i> immune to the duplicate: dedup on the idempotency key. The scan itself was never the danger — <i>duplicates at scale</i> are.</p>
+</div>
+
+<p class="note why"><b>Why at-most-once is off the table here:</b> we could avoid every duplicate by never retrying — send once, and if the ack is missing, shrug. But at <code>0.05%</code> loss that's the same <code>~1 lost order/second</code> per hop: orders that vanish silently, money the shopper spent with nothing shipped. For an order pipeline, <b>losing</b> is far worse than <b>duplicating</b>, because a duplicate can be neutralized (dedup) but a loss is gone. So we choose at-least-once and pay for it with dedup. (For a fire-hose of low-value telemetry, the opposite choice — at-most-once, drop on failure — is often right. Name the trade: tolerable loss vs tolerable duplication.)</p>
+
+<h2>Move 2 — Model: at-least-once + idempotency = effectively-once, and where dedup lives</h2>
+
+<h3>The recipe, and the one subtle part everyone gets wrong</h3>
+<p>The shape is simple: the transport promises at-least-once (retry until acked), and each consumer is idempotent (skip a key it has already applied). Duplicates still arrive; they just do nothing. The subtle part is <i>making the skip reliable</i> — and it's the same trap as Lesson 33's dual write.</p>
+
+<div class="card calc">
+  <p><b>The dedup check and the effect must commit together, or you've fixed nothing.</b> Naïvely: "check the dedup store; if new, do the effect; then record the key; then ack." But look at the gaps. If you record the key <i>before</i> the effect and crash between them, the retry sees "already done" and <b>skips a charge that never happened</b> — a silent loss. If you do the effect <i>before</i> recording the key and crash between them, the retry re-does the effect — <b>the very duplicate we're trying to kill.</b> <span class="key">The fix: the effect and the "I did this key" record must land in <i>one</i> atomic commit.</span> For a database effect, write the row <i>and</i> the dedup key in the <b>same transaction</b> (Lesson 33's outbox move: the marker rides with the work). For a truly external effect (charge a card), delegate the atomicity to the downstream by passing <i>your</i> idempotency key through to it (Lesson 13), so the payment provider itself dedups. Ack only after that commit. Now a crash at any point is safe: either the whole thing happened (retry skips) or none of it did (retry re-does).</p>
+</div>
+
+<p class="note why"><b>Where does dedup live? At every hop, keyed by that hop's input.</b> A tempting wrong answer is "dedup once, at the front door." But each of the four hops retries <i>independently</i> — a lost ack between fulfillment and its log has nothing to do with the front door — so a duplicate can be born at <i>any</i> hop, not just ingest. Dedup must therefore sit at the boundary of <b>every</b> consumer, each remembering the keys <i>it</i> has applied. The idempotency key is stamped once by the original producer and <b>carried unchanged through all four hops</b> (it rides in the message, alongside the trace ID of Lesson 17), so each hop dedups the <i>same</i> logical order even as the message is transformed along the way. Dedup is a property of the consumer, not of the channel.</p>
+
+<h3>Poison messages: retrying forever is a bug, not a virtue</h3>
+<div class="card calc">
+  <p>At-least-once says "retry until success." But some messages <b>never</b> succeed: a malformed event that fails to parse, or one that references an order row a bug already deleted. Retry it and it fails again, identically, forever — burning CPU and, worse, <b>if the log is ordered</b> (Lesson 9 keeps a partition in order), the poison message sits at the head and <b>blocks every good message behind it.</b> <span class="key">Estimate the damage: a partition doing <code>500 msg/s</code>, retried 5 times with exponential backoff (<code>1+2+4+8+16 = 31 s</code>) before giving up, delays <code>500 × 31 ≈ 15,500</code> perfectly good orders stuck behind one bad one.</span> The fix is <b>quarantine</b>: after a bounded number of attempts, move the poison message <i>out</i> of the main flow into a <b>dead-letter queue</b> and let the partition proceed. We trade the strict ordering promise for that one message (it's now handled out of band) in exchange for the throughput of every message behind it — usually a trade worth making, and one you must make <i>consciously</i>.</p>
+</div>
+
+<p class="note why"><b>The DLQ is quarantine, not a landfill.</b> A message lands in the DLQ carrying <i>why</i> it failed (the exception, the stack, the hop, the attempt count, the trace ID). That turns a silent black hole into an operable queue: engineers <b>triage</b> it (is this a bad message, or a bug in our code that failed a <i>good</i> message?), <b>fix the cause</b> (patch the parser, restore the row, deploy), and then <b>replay</b> — re-inject the DLQ'd messages back into the pipeline. Because every consumer is idempotent, replay is <b>safe</b>: any message that had partially succeeded before dying is skipped on the way through. The DLQ is where "never lose it" and "don't block on it" are reconciled — the message is neither dropped nor blocking; it's parked, visible, and recoverable.</p>
+
+<h3>The trade you are buying into</h3>
+<div class="card calc">
+  <p>Certainty is not free; it is <b>state you must store and manage</b>. At-most-once is cheap and simple — no retries, no dedup store, no DLQ — and it loses data. Effectively-once buys correctness with three standing costs: a <b>dedup store</b> at every hop (remembering keys), an <b>un-acked backlog</b> (messages held until acked, so a slow consumer grows the queue — Lesson 28's backpressure), and a <b>DLQ</b> (quarantined messages plus tooling to triage and replay them). Every one of those is <i>in-flight state</i> — memory of work not yet provably finished — and it costs storage, adds a lookup to the hot path (latency), and needs its own lifecycle (TTLs, expiry, monitoring). <span class="key">Name the trade plainly: delivery certainty &amp; operability vs pipeline latency &amp; the storage of in-flight state.</span> You are paying, in bytes and milliseconds, for the guarantee that nothing is lost and nothing counts twice.</p>
+</div>
+
+<p class="note why"><b>The model in one line:</b> choose <b>at-least-once</b> transport (never lose) and make every consumer <b>idempotent</b> by committing its effect and its dedup key in <i>one</i> atomic step keyed by a producer-stamped <b>idempotency key</b> carried through all hops (never double-count) — that is <b>effectively-once</b>; <b>quarantine</b> poison messages to a <b>dead-letter queue</b> after bounded retries so one bad message can't block a partition; and <b>triage + replay</b> the DLQ (safe because consumers are idempotent) — paying for all of it in the storage of in-flight state.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Four scenarios: a clean message, a duplicate that gets absorbed, a poison message that gets quarantined, and a DLQ message that gets replayed.</p>
+
+<h3>Path A — the happy path: delivered once, effect once</h3>
+<div class="diagram"><pre>
+  Order O-77 placed. Producer stamps idempotency key = O-77.
+
+    ingest:   see O-77 (new) -> write order row + key O-77  (ONE txn)
+              -> ack log-1. Publish to log-2 with key O-77.
+    payment:  see O-77 (new) -> charge card, passing key O-77 to provider
+              -> record key O-77 with the charge (ONE txn) -> ack.
+    fulfill:  see O-77 (new) -> reserve stock + key O-77 (ONE txn) -> ack.
+    notify:   see O-77 (new) -> send email + key O-77 -> ack.
+
+    Result: charged once, shipped once, emailed once. Key O-77 now
+    recorded at all four hops. Any later re-arrival is a no-op.
+</pre></div>
+
+<h3>Path B — a duplicate: absorbed, not applied</h3>
+<div class="diagram"><pre>
+  At the payment hop, the charge succeeds but the consumer crashes
+  BEFORE its ack reaches log-2. (0.05% of deliveries -> ~1/s here.)
+
+    broker: no ack for O-77 -> REDELIVER O-77  (this is at-least-once)
+    payment (on restart): see O-77
+        -> dedup check: key O-77 already recorded WITH the charge?  YES
+        -> skip the charge entirely, just ack.            (idempotent)
+
+    The card is charged ONCE. The duplicate delivery changed nothing.
+    Why it's safe: the charge and the key were ONE atomic commit, so
+    "key present" is proof the effect already happened. (L13/L33)
+</pre></div>
+
+<h3>Path C — a poison message: quarantined so it can't block</h3>
+<div class="diagram"><pre>
+  O-99's payload references a deleted product row. It fails EVERY time.
+
+    attempt 1 fail -> backoff 1s -> attempt 2 fail -> 2s -> ... -> attempt 5 fail
+        (meanwhile, if the partition is ordered, ~500 msg/s pile up behind it:
+         500 x (1+2+4+8+16 = 31s) ~= 15,500 good orders delayed.)
+
+    attempts exhausted -> MOVE O-99 to the DEAD-LETTER QUEUE with:
+        { key: O-99, hop: fulfillment, error: "product 4412 not found",
+          stack, attempts: 5, trace-id: ... }
+    -> the partition advances. Good orders behind O-99 flow again.
+
+    Trade made consciously: O-99 loses its in-order place (handled out of
+    band) so the 15,500 behind it aren't held hostage. (L09 ordering vs L28 flow)
+</pre></div>
+
+<h3>Path D — replay: fix the cause, re-inject, dedup protects you</h3>
+<div class="diagram"><pre>
+  Triage the DLQ: O-99 failed because a bug deleted product 4412.
+  Root cause is a BUG in us, not a bad message -> the order is valid.
+
+    1. fix: restore product 4412, deploy the patched fulfillment code.
+    2. replay: re-inject O-99 (and its DLQ cohort) into log-3.
+    3. fulfillment sees O-99: dedup check -> key O-99 NOT yet recorded
+       (it never succeeded) -> reserve stock + key O-99 (ONE txn) -> ack.
+       downstream notify sees O-99 (new) -> emails the receipt.
+
+    If O-99 had PARTIALLY succeeded before dying, the recorded key would
+    make the replay a no-op at that hop. Idempotency makes replay SAFE
+    to run even in bulk, even more than once.
+</pre></div>
+
+<p>Path A is the boring 99.9% we design around. Path B is the payoff of idempotency: <span class="key">the duplicate that at-least-once <i>guarantees</i> will happen is turned into a harmless no-op, because the effect and its key committed together.</span> Path C is the payoff of quarantine: one unfixable message is pulled aside instead of poisoning a whole partition — the conscious trade of one message's ordering for thousands of messages' throughput. Path D is the payoff of the whole design: because every hop is idempotent, recovery is not a delicate hand-surgery of "which files are corrupt" — it's "fix the cause, replay the queue, let dedup sort out what already happened." Losing is impossible, double-counting is impossible, and stuck is temporary.</p>
+
+<h2>Move 4 — Find the first bottleneck: certainty is stored state, and it has a bill</h2>
+<p>The guarantee works. What it costs is memory — of every key seen, every message not yet acked, every message quarantined — and each of those piles up.</p>
+
+<div class="card calc">
+  <p><b>The first bottleneck — the dedup store grows without bound unless you bound the window.</b> Every hop must remember every key it has applied, or a late duplicate slips through. Count it: <code>2,000/s × 4 hops × 86,400 s = 691.2 million</code> keys applied per day; at <code>~50 bytes</code> each that's <code>~35 GB/day</code> of dedup state, and it grows every day forever. <span class="key">You cannot remember every key for all time, so you remember them for a <b>window</b> — a TTL long enough to outlive the longest possible retry.</span> If a duplicate can only re-arrive within, say, 24 hours (the broker's max redelivery horizon plus a safety margin), keep keys 24 h and expire the rest → the store holds a rolling <code>~35 GB</code> instead of an ever-growing mountain. The dial is exactly Lesson 8/48's cache-window tension reborn: <b>a longer dedup window catches later duplicates but costs more storage; a shorter one is cheaper but risks a very-late duplicate sneaking past.</b> (When even that is too much, a bounded-memory approximate filter — Lesson 21's Bloom filter — trades a tiny false-positive rate for constant memory: it may occasionally skip a <i>new</i> message it wrongly thinks it saw, so you use it only where a rare miss is acceptable.)</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — the dedup check is a lookup on the hot path, and the un-acked backlog is backpressure.</b> Every message now pays for a dedup lookup <i>before</i> it can act — a read against the key store on the critical path of every hop (Lesson 48's "a cache check in front of every request"). Keep that store fast (in-memory / co-located) or the guarantee taxes latency. Meanwhile, at-least-once means a message stays <b>un-acked</b> — held, redeliverable — until the consumer provably finishes, so a slow or stuck consumer doesn't drop messages; it <b>accumulates</b> them. <span class="key">That backlog is Lesson 28's backpressure with a new name: the queue depth is the visible measure of "work promised but not yet provably done."</span> It's a feature (nothing is lost while you're behind) and a hazard (unbounded backlog eventually exhausts the broker), so it needs the same watching, autoscaling (Lesson 27), and flow control as any queue.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — "prove it was handled," and the effectively-once boundary.</b> The pipeline's real promise is auditable: for any order, can you <i>prove</i> it was charged once and shipped once? That proof <b>is</b> the in-flight state — the recorded idempotency keys and the DLQ are the ledger of what happened and what didn't (pair them with Lesson 17's trace IDs to follow one order across all four hops). <span class="key">But be honest about the boundary of "exactly-once": it holds only for effects you can make idempotent.</span> A database write, yes (dedup key in the same transaction). A charge through a provider that honors your idempotency key, yes. But a <b>non-idempotent side effect with no dedup hook</b> — firing a physical relay, sending an SMS through a gateway that ignores keys — can still happen twice, because there's no atomic "effect + key" to lean on. The rule the whole lesson rests on has an edge: effectively-once reaches exactly as far as your effects can be made to dedup, and no further. Push dedup as close to the irreversible action as you can, and where you can't, prefer an effect that's <i>safe to repeat</i> (send the same receipt email twice ≈ annoying; charge twice ≈ a refund).</p>
+</div>
+
+<p>So the honest design for our pipeline is: choose <b>at-least-once</b> transport on every hop (Lesson 9's durable log) so nothing is ever lost; make every consumer <b>idempotent</b> by committing its effect and a producer-stamped <b>idempotency key</b> in <i>one</i> atomic step (Lesson 13/33), so the duplicates at-least-once guarantees are absorbed and the net effect is <b>effectively-once</b>; carry that key (and a trace ID, Lesson 17) unchanged through all four hops so each dedups the same logical order; <b>quarantine</b> poison messages to a <b>dead-letter queue</b> after bounded retries so one bad message can't head-of-line-block a partition (Lesson 9 ordering traded for Lesson 28 throughput), and give the DLQ real <b>triage + replay</b> tooling (safe because consumers are idempotent); bound the <b>dedup window</b> with a TTL so the key store is rolling, not infinite (Lesson 8/48's window dial, Lesson 21's filter when memory is tight); watch the <b>un-acked backlog</b> as backpressure (Lesson 28) and autoscale consumers (Lesson 27); and remember the <b>effectively-once boundary</b> — it holds only as far as your effects can be made to dedup. Every choice names its price: never-lose costs retries and backlog; never-double costs a dedup store and a hot-path lookup; never-block costs a DLQ and lost strict ordering for the quarantined few; prove-it-was-handled costs the storage of the whole ledger.</p>
+
+<p><span class="key">The deepest point: "exactly-once" was never a property of the wire — it's a property of the effect.</span> The transport can only ever promise at-most-once (may lose) or at-least-once (may duplicate); the network's two-generals problem forbids more. Everything reliable is built by picking at-least-once and then <i>designing the duplicate out of the effect</i> — a stable key, an atomic effect-plus-key commit, and dedup at every consumer. The dead-letter lifecycle is the same philosophy applied to the messages that don't fit: don't drop them (that would lose), don't retry them forever (that would block), <b>park them where they're visible and replayable</b>. The standing tension, from Lesson 9's log to here: <span class="key">delivery certainty &amp; operability vs pipeline latency &amp; the storage of in-flight state.</span></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>Never lose a message</td><td>At-least-once + retry-until-ack (L09)</td><td>zero loss / duplicates arrive</td></tr>
+  <tr><td>Duplicate arrives (~1/s/hop)</td><td>Idempotent consumer, dedup on key (L13)</td><td>effect once / a dedup store to keep</td></tr>
+  <tr><td>Skip must be reliable across a crash</td><td>Effect + key in one atomic commit (L33)</td><td>no lost-or-double / effect must be transactional</td></tr>
+  <tr><td>Same order across 4 hops</td><td>Producer-stamped key carried through (L13/17)</td><td>each hop dedups the same order / discipline to propagate</td></tr>
+  <tr><td>A message that fails forever</td><td>Bounded retries → dead-letter queue</td><td>partition unblocked / lost strict order for that one</td></tr>
+  <tr><td>One bad msg blocks a partition</td><td>Quarantine, don't retry in place (L09/28)</td><td>throughput for the rest / out-of-band handling</td></tr>
+  <tr><td>Recover after fixing the cause</td><td>Triage + replay the DLQ</td><td>nothing lost / replay needs idempotency to be safe</td></tr>
+  <tr><td>Dedup store grows forever</td><td>Bound the window with a TTL (L08/48)</td><td>rolling storage / a very-late dup could slip past</td></tr>
+  <tr><td>Dedup memory too big</td><td>Approximate filter (Bloom, L21)</td><td>constant memory / tiny false-positive (may skip a new msg)</td></tr>
+  <tr><td>Slow consumer / backlog</td><td>Watch un-acked depth = backpressure (L27/28)</td><td>nothing dropped while behind / unbounded backlog is a hazard</td></tr>
+  <tr><td>Prove a message was handled</td><td>Keys + DLQ as a ledger + trace IDs (L17)</td><td>auditable pipeline / storage of the whole record</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — chasing exactly-once <i>delivery</i>.</b> The network's two-generals problem forbids it: you must tolerate either loss (at-most-once) or duplication (at-least-once). Stop trying to prevent duplicates on the wire; prevent them in the <i>effect</i>, with idempotency. Exactly-once is a property of what you do, not of how it arrives.</li>
+  <li><b>Trap 2 — dedup that isn't atomic with the effect.</b> Recording the key before the effect can silently <i>lose</i> a charge on a crash; doing the effect before recording the key <i>re-does</i> it. The check, the effect, and the key must land in one commit (L13/33), or you've built the illusion of idempotency without the substance.</li>
+  <li><b>Trap 3 — retrying a poison message forever.</b> A message that fails every time will fail every retry, burning CPU and — in an ordered partition — blocking thousands of good messages behind it (~15,500 in our estimate). Bound the retries and quarantine to a DLQ so the pipeline flows; retrying harder never fixes a bad message.</li>
+  <li><b>Trap 4 — a DLQ with no tooling (a black hole).</b> A dead-letter queue nobody triages or replays is just silent data loss with extra steps. It must carry the failure reason, be monitored/alerted on, and have a safe replay path (safe precisely because consumers are idempotent). Quarantine without recovery isn't reliability.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We took the reliability tricks we'd built one hop at a time — the durable log (Lesson 9), the retry-safe charge (Lesson 13), the transactional outbox (Lesson 33) — and threaded them into <b>one four-hop order pipeline</b>, then defined and guaranteed what "delivered" means end to end. <b>Estimate</b> proved exactly-once <i>delivery</i> is impossible (the two-generals gap: you must tolerate loss or duplication) and that duplicates are not rare — at <code>0.05%</code> crash-before-ack, a busy pipeline manufactures <b>~86,400 double-charges/day</b> at one hop if you do nothing. <b>Model</b> chose the only real answer: <b>at-least-once transport + idempotent consumers = effectively-once</b>, with dedup living at <i>every</i> hop keyed by a producer-stamped idempotency key, and the effect committed <i>atomically with</i> its dedup key so a crash can neither lose nor double it. <b>Tracing</b> showed a clean order, a duplicate absorbed into a no-op, a poison message quarantined to a <b>dead-letter queue</b> before it could head-of-line-block <b>~15,500</b> good orders, and a DLQ message safely <b>replayed</b> after the cause was fixed. The <b>first bottleneck</b> was that certainty is <i>stored state</i>: the dedup store grows <code>~35 GB/day</code> and needs a bounded TTL window (Lesson 8/48/21); the dedup lookup taxes the hot path and the un-acked backlog is backpressure (Lesson 27/28); and "exactly-once" reaches only as far as your effects can be made idempotent. Every dial named its trade. The standing tension, straight from Lesson 9's log: <span class="key">delivery certainty &amp; operability vs pipeline latency &amp; the storage of in-flight state.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we've made one event flow reliably through a chain. Now let one event feed three different destinations at once, each with its own freshness need.</b></p>
+  <p style="margin:.2rem 0">• <b>Hot / warm / cold path &amp; the serving-vs-analytics split (Lesson 69):</b> one <code>order.placed</code> event must simultaneously update a low-latency <i>serving</i> store (answer "where's my order?" in milliseconds), flow through a streaming <i>speed</i> layer (Lesson 64's live leaderboards), and land in a batch <i>warehouse</i> (Lesson 29's revenue-by-region) — kept consistent <i>enough</i> — with a read-path router that picks the right path per query (Lesson 37's CQRS). Trade: freshness &amp; per-query latency vs duplicated pipelines &amp; cost.</p>
+  <p style="margin:.2rem 0">• Then further out: <b>idempotent, resumable data APIs</b> (resumable uploads and long-job status over flaky mobile networks). Say <b>next</b> to build the hot/warm/cold split.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">delivery semantics</span>
+    <span class="pill">at-most-once</span>
+    <span class="pill">at-least-once</span>
+    <span class="pill">exactly-once (myth)</span>
+    <span class="pill">effectively-once</span>
+    <span class="pill">ack</span>
+    <span class="pill">idempotency key</span>
+    <span class="pill">deduplication</span>
+    <span class="pill">poison message</span>
+    <span class="pill">head-of-line blocking</span>
+    <span class="pill">dead-letter queue</span>
+    <span class="pill">replay</span>
+    <span class="pill">in-flight state</span>
+    <span class="pill">dedup window / TTL</span>
+    <span class="pill">two generals problem</span>
+  </p>
+  <p>That's Lesson 68. It threads the pipeline together from: Lesson 9 (the durable, partitioned log; at-least-once; ordering per partition), Lesson 13 (idempotency keys, retry-safe effects), Lesson 33 (the outbox / effect-and-marker in one transaction), Lesson 7 (a timeout tells you nothing; retry storms), Lesson 17 (trace IDs to follow one order across hops), Lesson 28 (backpressure = the un-acked backlog), Lesson 27 (autoscaling consumers to the backlog), Lesson 8/48 (the window/TTL dial, hot-path lookups), Lesson 21 (the Bloom filter for bounded-memory dedup), and Lesson 64 (the speed layer we'll feed next). <b>Ask me follow-ups</b> — e.g. "how does Kafka's 'exactly-once semantics' (idempotent producer + transactions) actually work, and is it really exactly-once?", "when should dedup live in the broker vs in each consumer?", "how do you size the dedup TTL against the broker's max redelivery time?", "what's the difference between a retry topic and a dead-letter queue?", or "how do you replay a DLQ without re-triggering downstream side effects that <i>aren't</i> idempotent?" When you're ready, say <b>next</b> and we'll build the hot/warm/cold path split — <i>one event feeding a serving store, a speed layer, and a warehouse at once.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "A teammate insists your order pipeline should be 'exactly-once delivery' end to end — each message handed to each consumer exactly one time, guaranteed by the transport. Why is that promise impossible, and what do you build instead?",
+    options: [
+      {t:"A consumer must ack after doing the work, and that ack can be lost on the network. The broker then either redelivers (duplicate) or doesn't (loss) — there's no way to know the work happened without a message that could itself be lost. So the transport can only promise at-most-once (may lose) or at-least-once (may duplicate); you get exactly-once as an *effect* by choosing at-least-once and making consumers idempotent (dedup on a stable key).",
+       ok:true,
+       fb:"Right. This is the two-generals problem: whatever the last message is, it too can be lost, so someone must act without confirmation. Exactly-once delivery is impossible on an unreliable network; effectively-once is at-least-once transport + idempotent processing, where duplicates arrive but change nothing."},
+      {t:"It's impossible because networks are too slow; if you buy faster links and co-locate the services, exactly-once delivery becomes achievable and no dedup is needed.",
+       ok:false,
+       fb:"Speed isn't the issue — the gap is fundamental, not latency. Even on the fastest network an ack can be lost, and then the broker must guess redeliver-or-not with no safe answer. Faster links shrink the odds of a duplicate but never reach zero, so you still need idempotent consumers."},
+      {t:"It's impossible only if you use a message queue; a direct synchronous call from producer to consumer gives you true exactly-once with no duplicates or loss.",
+       ok:false,
+       fb:"A synchronous call has the exact same problem: the response (the ack) can be lost, leaving the caller unsure whether the callee acted. It just moves the two-generals gap into the request/response instead of the broker. The answer is idempotency regardless of sync vs async."}
+    ]
+  },
+  {
+    stem: "You make the payment consumer idempotent: 'check the dedup store for the key; if new, charge the card; then record the key; then ack.' A reviewer says this can still corrupt data. Where's the flaw?",
+    options: [
+      {t:"The effect (charge) and the key-record aren't one atomic commit. If it crashes after charging but before recording the key, the retry re-charges (the duplicate you're trying to kill); if you flipped the order and recorded the key first, a crash before charging makes the retry skip a charge that never happened (a silent loss). The fix: commit the effect and the dedup key together — in one DB transaction, or by passing the key to a provider that dedups.",
+       ok:true,
+       fb:"Exactly. Idempotency is only real if 'the effect happened' and 'I recorded the key' are inseparable. Any gap between them, in either order, reintroduces a double or a loss on a crash. This is Lesson 33's dual-write hazard: the marker must ride with the work."},
+      {t:"The flaw is that the dedup store should be checked after the charge, not before, so you never waste a lookup on a new message.",
+       ok:false,
+       fb:"Reordering the check doesn't fix the crash window and would waste work (you'd charge before knowing it's a duplicate). The real flaw is atomicity between the effect and the key record, not the position of the read. The check-then-act still needs the act and the record to commit together."},
+      {t:"The flaw is that you should retry the charge more times before acking, so a transient failure doesn't leave the message un-acked.",
+       ok:false,
+       fb:"More retries don't address the corruption — they just change how often you crash mid-sequence. Whether you retry once or ten times, a crash between 'charged' and 'key recorded' still doubles or loses. The fix is a single atomic commit of effect + key, not a bigger retry count."}
+    ]
+  },
+  {
+    stem: "One malformed message (references a product row a bug deleted) fails on every attempt, and it's at the head of an *ordered* partition doing 500 msg/s. Retrying it 5 times with 1+2+4+8+16s backoff. What's the damage, and the right fix?",
+    options: [
+      {t:"It's a poison message: retrying never helps, and while it sits at the head of the ordered partition it blocks everything behind it — ~500 msg/s × 31s ≈ 15,500 good orders delayed. After bounded retries, move it to a dead-letter queue (with the error, hop, and trace ID) so the partition advances; triage the cause and replay later, which is safe because consumers are idempotent.",
+       ok:true,
+       fb:"Right. Retrying a message that fails deterministically just wastes attempts, and in an ordered partition it's head-of-line blocking. Quarantine trades that one message's in-order place for the throughput of the thousands behind it — a conscious trade — and the DLQ makes it recoverable rather than lost."},
+      {t:"Increase the retry count to 50 with longer backoff so the message eventually succeeds once the system recovers; poison messages are usually just transient failures in disguise.",
+       ok:false,
+       fb:"A poison message fails *deterministically* — the product row is gone, so attempt 50 fails exactly like attempt 1, and meanwhile you've blocked the partition far longer. Distinguish transient (retry helps) from poison (retry never helps); the latter must be quarantined, not retried harder."},
+      {t:"Drop the message silently after the first failure so the partition isn't blocked; one lost order out of thousands is an acceptable rounding error.",
+       ok:false,
+       fb:"Silently dropping is exactly the loss we chose at-least-once to avoid, and it might be a *valid* order failing on a bug in *your* code, not a bad message. The DLQ is the middle path: don't block, but don't lose either — park it visibly so it can be triaged and replayed."}
+    ]
+  },
+  {
+    stem: "Your effectively-once pipeline works. Your architect warns the guarantee 'isn't free — it's stored state.' Where's the first bottleneck, and what's the master dial that controls it?",
+    options: [
+      {t:"The dedup store: every hop must remember every key it applied (~2,000/s × 4 hops × 86,400s ≈ 691M keys/day ≈ ~35 GB/day) or a late duplicate slips through, and it grows forever. The master dial is the dedup *window* (TTL): keep keys long enough to outlive the longest possible redelivery, then expire them — a longer window catches later duplicates but costs more storage; a shorter one is cheaper but risks a very-late duplicate sneaking past.",
+       ok:true,
+       fb:"Exactly. Certainty is memory of work, and the dedup store is the biggest chunk of it. You can't keep every key forever, so you bound the window to the broker's max redelivery horizon plus a margin — the same window-vs-storage dial as caching (L8/48), with a Bloom filter (L21) as the bounded-memory escape hatch when even that is too big."},
+      {t:"The bottleneck is CPU in the consumers — deduplication is computationally expensive — so the master dial is how many CPU cores you allocate per consumer.",
+       ok:false,
+       fb:"A dedup check is a cheap key lookup, not a CPU-heavy computation; the cost is *storage* of the keys and the *latency* of the lookup on the hot path, not compute. The dial that matters is the retention window (how long you store keys), not core count."},
+      {t:"There is no real bottleneck once you add idempotency — dedup makes the pipeline correct, so it scales indefinitely with no ongoing cost or tuning.",
+       ok:false,
+       fb:"The dedup store grows ~35 GB/day, the un-acked backlog is backpressure to watch (L28), and the DLQ needs triage/replay tooling — all ongoing in-flight state with real cost. Correctness bought you a storage and operability bill; the window TTL, backlog monitoring, and DLQ hygiene are the tuning it requires."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

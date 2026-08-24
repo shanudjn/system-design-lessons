@@ -1354,9 +1354,18 @@
     commit interval = L29's freshness-vs-cost dial reborn (pair w/ a speed layer L64 for sub-second). Four traps:
     directory-as-table; per-row commits; never compact/expire; expecting warehouse speed + zero management. Trade:
     openness & cheap shared storage vs query performance & metadata-management complexity. (Lesson 0067)
-68. Delivery guarantees & the dead-letter lifecycle — end-to-end at-least-once vs effectively-once across a whole
-    pipeline (L09/13/33/64): where dedup lives, poison-message quarantine, DLQ triage/replay tooling, and proving a
-    message was handled. Trade: delivery certainty & operability vs pipeline latency & storage of in-flight state.
+68. ✅ **Delivery guarantees & the dead-letter lifecycle** — one order event through a 4-hop pipeline (ingest →
+    payment → fulfillment → notify, 2,000/s): end-to-end at-least-once vs effectively-once (L09/13/33). Estimate the
+    two-generals gap (exactly-once *delivery* impossible; an ack can always be lost) and the duplicate cost (0.05%
+    crash-before-ack → ~86,400 double-charges/day at one hop, ~345,600/day across four). Model = at-least-once + idempotent
+    consumers, dedup living at EVERY hop keyed by a producer-stamped idempotency key carried through, effect+key in ONE
+    atomic commit (L13/33 — else a crash silently loses or doubles). Trace: clean order; duplicate absorbed to a no-op;
+    poison message head-of-line-blocking ~15,500 good orders (500/s × 31 s retry ladder) until quarantined to a DLQ;
+    DLQ triage + replay (safe because idempotent). First bottleneck = certainty is STORED STATE: dedup store ~35 GB/day
+    (691M keys) needs a bounded TTL window (L8/48/21); dedup lookup taxes the hot path & the un-acked backlog is
+    backpressure (L27/28); effectively-once reaches only as far as effects can be made idempotent. Four traps:
+    chasing exactly-once delivery; dedup not atomic with the effect; retrying a poison message forever; a DLQ with no
+    tooling. Trade: delivery certainty & operability vs pipeline latency & storage of in-flight state. (Lesson 0068)
 69. Hot/warm/cold path & the serving vs analytics split — one event feeding a low-latency serving store, a
     streaming speed layer (L64), and a batch warehouse (L29) at once, kept consistent enough; the read-path router
     that picks a path per query (L37 CQRS). Trade: freshness & query latency per path vs duplicated pipelines & cost.
@@ -1364,6 +1373,23 @@
     status endpoints (L05), and safely retryable mutations (L13/18) over flaky mobile networks: chunk + checksum +
     commit-last (L20/25), resume tokens, and progress polling. Trade: robustness on bad networks vs protocol &
     server-state complexity.
+
+### Advanced topics (next batch — queued so the course never runs dry)
+71. Quorum reads/writes & tunable consistency — the R + W > N dial from the inside (L06/11/63): pick R, W, N per call
+    to slide between fast-but-stale and slow-but-fresh, read-repair and hinted handoff on the read path, why W=N kills
+    availability. Trade: per-request consistency vs latency & availability.
+72. Bulk & batch APIs (the N+1 and fan-out problem) — one screen needing 200 records: why 200 round trips (L18) is the
+    silent killer, batch endpoints, request coalescing/dataloader, GraphQL-style field selection, and the over-fetch vs
+    under-fetch tension. Trade: fewer round trips & payload control vs API & caching complexity.
+73. Deduplication & entity resolution at scale — "are these two records the same customer?" across 500M rows: blocking
+    keys to avoid N² comparisons, similarity scoring, MinHash/LSH (L65 neighbors), and the merge/survivorship decision.
+    Trade: match recall vs precision & compute cost.
+74. Config & feature-flag delivery at scale — push a config/flag change to 40k servers (L27) in seconds without a
+    deploy: a versioned config plane, pull-with-long-poll vs push, staged rollout & instant kill-switch (L31/51),
+    consistency of "everyone on the same flag." Trade: change speed & safety vs a new always-on dependency.
+75. Append-only audit logs & tamper evidence — an immutable, verifiable record of "who did what when" (L38/56):
+    hash-chaining each entry to the last (a mini-blockchain), Merkle proofs a single entry is present & unaltered, and
+    write-once storage. Trade: verifiability & compliance vs write cost & the impossibility of edits.
 
 ## Lesson format conventions
 - Four reusable "moves" framing introduced in Lesson 01: estimate → model →
