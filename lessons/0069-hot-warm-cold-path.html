@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 69 — Hot / Warm / Cold Path: One Event, Three Destinations, and the Serving-vs-Analytics Split</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 69 · Worked Example</div>
+  <h1>Hot / Warm / Cold Path: One Event, Three Destinations, and the Serving-vs-Analytics Split</h1>
+  <p class="lead">Lesson 68 got a single <code>order.placed</code> event to flow <i>reliably</i> through one chain of services. This lesson asks a different question about the very same event: once it's safely captured, <span class="key">who reads it, and how differently?</span> Three questions land on that one order, and they could not be more unalike. A shopper refreshing a page asks <b>"where's my order?"</b> — a point lookup that must answer in milliseconds and be almost perfectly fresh. An ops dashboard asks <b>"revenue in the last minute, per product?"</b> — a live aggregate that must be fresh to within seconds. A finance analyst asks <b>"revenue by region by day, last quarter?"</b> — a huge historical scan that can be minutes stale but must be cheap over years of data. We'll show the mistake that ruins systems — trying to answer all three from one store — and the fix: fan the one event out into <b>three read models</b>, a <b>hot</b> serving path, a <b>warm</b> speed path, and a <b>cold</b> batch path, then put a <b>router</b> in front that sends each query to the shape that fits it. We'll <b>estimate</b> why the three questions demand three different physical shapes; <b>model</b> the one-write-many-reads fan-out (Lesson 37's CQRS taken to its conclusion) and what "consistent <i>enough</i>" means when the three views disagree; <b>trace</b> each query to its path and watch the three views drift and reconcile; and find <span class="key">the first bottleneck, which is that you are now maintaining the <i>same</i> logic in three pipelines that can silently disagree.</span> The trade under every choice: <b>freshness &amp; per-query latency vs duplicated pipelines &amp; cost.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0069-hot-warm-cold-path.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>One <code>order.placed</code> event — the reliable, effectively-once event Lesson 68 just delivered — arrives on a durable log (Lesson 9) at <b>2,000 orders/sec</b> (peak ~10,000/s), each ~1 KB. Downstream, three <i>completely different</i> readers want that data. Our job is to serve all three well at once, without any of them getting in the others' way. The naïve instinct — "put every order in one big database and let everyone query it" — is exactly the instinct this lesson kills, because <span class="key">the three queries don't just want different <i>answers</i>; they want different <i>machines</i>.</span> So we build one write that fans out into three purpose-built read models, and a read-path router that knows which one to ask.</p>
+
+<div class="diagram"><pre>
+  ONE order event, written once. THREE read paths, each a different shape.
+
+                         +--------------------+
+   order.placed  ---->   |  durable log (L9)  |   the single source of truth
+   (2,000/s, 1 KB)       +---------+----------+
+                                   | fan-out (L33 outbox / L37 CQRS)
+             +---------------------+---------------------+
+             v                     v                     v
+      [ HOT / serving ]     [ WARM / speed ]     [ COLD / batch ]
+      KV / document store   stream processor     columnar warehouse
+      point-indexed (L48)   windowed state (L64) partitioned (L29/67)
+             |                     |                     |
+   "where's my order?"   "revenue last minute?"  "revenue by region,
+     ~2 ms, ~1 s fresh     ~10 ms, ~2 s fresh      last quarter?"
+     30 days (~5.2 TB)     ~50 MB state, minutes   ~seconds, ~15 min stale
+                                                    3 years (~189 TB raw)
+             ^                     ^                     ^
+             +----------+----------+----------+----------+
+                        |   READ-PATH ROUTER (L37)   |
+                        | classify query -> pick path |
+                        +----------------------------+
+
+   Rule: no single store is fast for point reads AND fresh for live
+   aggregates AND cheap for petabyte history. So materialize 3 shapes.
+</pre></div>
+
+<p class="note"><span class="key">The one idea the whole lesson turns on:</span> there is no single store that is at once <i>low-latency for point reads</i>, <i>fresh for streaming aggregates</i>, and <i>cheap for scans over years of data</i>. Those are three different physical shapes with three different, often <i>opposite</i>, failure modes (Lesson 29 proved a big analytics scan will evict a serving store's hot cache and trip its latency knee). So you stop looking for the one perfect store. You take the one event you already captured, and you write it down <b>three times</b>, once in each shape — a serving store for "where's my order," a speed layer for "what's happening right now," a warehouse for "what happened over the last three years" — and you put a small <b>router</b> in front that reads the shape each query needs. Everything else in this lesson — the fan-out, "consistent enough," the drift between views, the duplicated-logic tax — falls out of that one move.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Serving store (hot path)</b> — an online database tuned for fast <i>point</i> reads/writes of current state ("give me order O-77"). Low latency, fresh, expensive per byte, short retention. A key-value or document store (Lesson 48).</li>
+  <li><b>Speed layer (warm path)</b> — a stream processor (Lesson 64) keeping <i>live</i> aggregates over recent events ("revenue in the last minute"). Fresh within seconds, bounded state, medium retention.</li>
+  <li><b>Batch / analytics warehouse (cold path)</b> — a columnar store (Lesson 29/67) holding the full history for deep, flexible queries. Cheap per byte, huge retention, but higher latency and stale by a <i>batch interval</i>.</li>
+  <li><b>Read model / materialized view</b> — a copy of the data pre-shaped for one kind of query. Each of the three paths above is a read model built from the same event.</li>
+  <li><b>CQRS</b> (Command Query Responsibility Segregation, Lesson 37) — separating the <i>write</i> path (one source of truth) from the <i>read</i> paths (many purpose-built views). This lesson is CQRS with three read models instead of one.</li>
+  <li><b>Fan-out</b> — one written event feeding many independent consumers, each building its own view (Lesson 15/33).</li>
+  <li><b>Freshness / staleness</b> — how far behind the source a view is. The serving view lags ~1 s; the warehouse lags a whole batch interval.</li>
+  <li><b>Batch interval</b> — how often the cold path re-loads new data (e.g. every 15 min). It sets the warehouse's staleness floor.</li>
+  <li><b>Read-path router</b> — the piece that <i>classifies</i> an incoming query (point? live aggregate? historical scan?) and sends it to the right path.</li>
+  <li><b>Lambda architecture</b> — run a batch layer and a speed layer in parallel, merge them at read time. Fresh <i>and</i> complete, but the <i>same logic lives in two codebases</i>.</li>
+  <li><b>Kappa architecture</b> — one streaming pipeline; rebuild history by <b>replaying</b> the log (Lesson 9/29/64). One codebase, paid for in expensive replay.</li>
+  <li><b>Consumer lag</b> — how far behind the log a consumer is (Lesson 9). Each path has its own lag.</li>
+  <li><b>Read-your-writes</b> — a reader seeing its own just-made change (Lesson 15). Some queries need it; most historical ones don't.</li>
+</ul>
+
+<h2>Move 1 — Estimate: three questions, three physical shapes</h2>
+<p>Before choosing any technology, put the three questions side by side and read what each one <i>demands</i>. The demands, not the data, are what force three separate stores.</p>
+
+<table>
+  <tr><th>Question</th><th>Path</th><th>Access shape</th><th>Latency need</th><th>Freshness need</th><th>Data it touches</th></tr>
+  <tr><td>"Where's my order O-77?"</td><td><b>HOT</b> / serving</td><td>point lookup by id</td><td><code>~2 ms</code></td><td>~1 s (near read-your-writes)</td><td>1 row, recent</td></tr>
+  <tr><td>"Revenue last minute, product P-42?"</td><td><b>WARM</b> / speed</td><td>live windowed aggregate</td><td><code>~10 ms</code></td><td>~2 s</td><td>1 running counter</td></tr>
+  <tr><td>"Revenue by region by day, last quarter?"</td><td><b>COLD</b> / batch</td><td>large historical scan</td><td>seconds OK</td><td>~15 min stale OK</td><td>billions of rows</td></tr>
+</table>
+
+<div class="card calc">
+  <p><b>Why one store can't do all three (the numbers that split them apart).</b> Suppose you serve everything from the warehouse. The columnar engine (Lesson 29) is built to <i>scan</i>: a point lookup "order O-77" has no fast key, so it reads far more than one row — <span class="key">seconds, not the <code>~2 ms</code> the shopper needs (this is Lesson 12's selectivity trap in reverse).</span> Now suppose you serve everything from the serving store — an OLTP row store. The "revenue by region, last quarter" query must read <code>90 days × 172.8M orders/day ≈ 15.5 billion rows</code>; at ~1 KB/row that's a <code>~15 TB</code> row-wise scan that (a) takes minutes on a store built for point reads, and (b) <span class="key">evicts the hot cache and pins the CPU, tripping Lesson 27's latency knee → the shopper's <code>~2 ms</code> lookup becomes a timeout → Lesson 7's retry storm.</span> The two workloads don't just prefer different stores; run together, the big one <i>destroys</i> the small one. Opposite shapes, opposite failure modes — exactly Lesson 29's "never share serving and analytics," now generalized to three.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Sizing each shape (they're wildly different, which is the point).</b> <b>HOT:</b> keep only <i>recent</i> orders online — say 30 days: <code>172.8M/day × 30 = 5.18 billion rows ≈ 5.2 TB</code> in a key-value/document store, indexed by <code>order_id</code> and by <code>user_id</code> so "my orders" is one fast lookup. <b>WARM:</b> the speed layer's state scales with <i>keys × windows</i>, not the firehose (Lesson 64): <code>~100k products × a rolling-minute of buckets ≈ tens of MB</code> — call it <code>~50 MB</code>, held in memory / on RocksDB, fresh within ~2 s. <b>COLD:</b> the full history — <code>2,000/s × 86,400 × 365 × 3 ≈ 189 billion rows ≈ 189 TB raw</code>, compressed columnar ~3.6× to <code>~52 TB</code> on cheap object storage (Lesson 20/67). <span class="key">Three stores whose sizes span <code>50 MB → 5.2 TB → 189 TB</code> — a million-fold range — because each keeps exactly what its question needs and nothing more.</span> The cold path is huge and cheap; the warm path is tiny and fast; the hot path is medium and fresh.</p>
+</div>
+
+<p class="note why"><b>Why "keep everything hot" is the tempting wrong answer:</b> it feels simplest to leave all 189 TB in the fast serving store so any query is instant. But fast storage is the <i>expensive</i> storage (Lesson 39's temperature tiers): keeping 189 TB in an in-memory-cached OLTP store costs orders of magnitude more than object storage, to serve queries that don't even need low latency. And it re-creates the failure above — the quarterly scan trampling the shopper's lookup. The right instinct is the opposite: <b>keep only what each question needs, in the cheapest shape that meets its latency and freshness bar.</b> Name the trade: uniform simplicity vs cost-and-isolation.</p>
+
+<h2>Move 2 — Model: one write, three read models, and "consistent enough"</h2>
+
+<h3>The fan-out: CQRS with three read models</h3>
+<p>The write path is unchanged from Lesson 68: the order is captured once, durably, on the log — the <b>single source of truth</b>. From there, three independent consumers each build their <i>own</i> view. This is Lesson 37's CQRS (separate the write model from the read models), but instead of one read model we have three, each a different physical shape.</p>
+
+<div class="card calc">
+  <p><b>Three consumers, each idempotent, each with its own lag.</b> (1) A <b>serving materializer</b> reads the log and <code>upsert</code>s each order into the hot KV/document store, keyed for point reads. (2) A <b>stream processor</b> (Lesson 64) reads the same log and folds each order into windowed running totals in the speed layer. (3) A <b>batch/ELT loader</b> (Lesson 29/67) reads the log and appends orders into the cold warehouse, compacting them into columnar partitions on a schedule. All three are <b>idempotent</b>, keyed by the event's <code>event_id</code> (Lesson 13/68), so a duplicate delivery changes nothing and — crucially — <span class="key">replaying the log rebuilds any view from scratch.</span> That replayability is the quiet superpower of this design: tomorrow you can add a <i>fourth</i> read model (a fraud feature store, Lesson 53) just by pointing a new consumer at the log's history — no change to the write path, no migration (Lesson 24). One source of truth, many derived views, each disposable and rebuildable.</p>
+</div>
+
+<h3>The router: pick the path per query</h3>
+<p class="note why"><b>The read-path router is where the design earns its keep.</b> A query arrives; the router <i>classifies</i> it and routes it: a point read by id or "my recent orders" → the <b>hot</b> serving store; a live "what's happening now" aggregate → the <b>warm</b> speed layer; a large historical or ad-hoc analytical query → the <b>cold</b> warehouse. Sometimes the router is literal (an API gateway inspecting the query, Lesson 49); often it's just discipline in the application — the "my orders" page code calls the serving store, the ops dashboard calls the speed layer, the finance tool calls the warehouse. Either way, <span class="key">the routing rule <i>is</i> the architecture</span>, and getting it wrong reintroduces Move 1's disaster: a point lookup sent to the warehouse is slow; a giant scan sent to the serving store is a self-inflicted outage.</p>
+
+<h3>"Consistent enough": the views will disagree, on purpose</h3>
+<div class="card calc">
+  <p>Because the three views are built by three independent consumers, they are <b>eventually consistent</b> (Lesson 6/11) with each other and each lags the source by a different amount. At the instant an order is placed: the serving store shows it ~1 s later; the speed layer counts it ~2 s later; the warehouse includes it only at the <i>next batch</i> — up to <b>15 minutes</b> later. <span class="key">So "today's revenue" read from the speed layer and read from the warehouse will legitimately differ by up to a batch interval.</span> This is not a bug to be fixed; it is the deal you struck. The skill is defining <b>how fresh each question actually needs to be</b>: "where's my order?" needs near-read-your-writes (Lesson 15) — route it to the fresh hot path, and special-case the "I just ordered" moment. "Revenue by quarter?" tolerates hours of lag — the cold path is fine. Matching each query's freshness <i>need</i> to a path's freshness <i>offer</i> is the whole game; paying for more freshness than a question needs is wasted money, and offering less than it needs is a wrong answer.</p>
+</div>
+
+<p class="note why"><b>Which view is "the truth" when they disagree? The one with the completeness the question demands.</b> For a live dashboard, the speed layer is authoritative <i>for the recent window</i> — it's the only path fresh enough. For an audited quarterly report, the warehouse is authoritative — it's the only path complete and stable enough (the speed layer's approximate, short-window numbers get <i>superseded</i> by the batch layer's exact ones). The log itself is the ultimate source of truth; every view is a lens on it, correct within its own freshness and completeness bounds. Don't ask "which number is right?" — ask "which view is authoritative <i>for this question</i>?"</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Four scenarios: each of the three questions to its correct path, then the drift-and-reconcile that ties them together.</p>
+
+<h3>Path A — "Where's my order?" → the hot serving path</h3>
+<div class="diagram"><pre>
+  Shopper opens "My Orders." Router sees: point read, recent, by user.
+
+    query: get orders where user = U-42, status current
+      -> ROUTER: point lookup of current state -> HOT serving store
+      -> KV/document get on user_id index -> a handful of rows
+      -> ~2 ms, data ~1 s fresh (serving materializer's lag)
+
+    Why here: point reads on an indexed KV store are O(1)-ish (L48).
+    Freshness ~1 s is close enough to read-your-writes (L15); the
+    "I just tapped Buy" instant is special-cased to read the log tail.
+</pre></div>
+
+<h3>Path B — "Revenue in the last minute?" → the warm speed path</h3>
+<div class="diagram"><pre>
+  Ops dashboard, refreshing every 2 s. Router sees: live aggregate.
+
+    query: revenue in the last 60 s, per product
+      -> ROUTER: live windowed aggregate -> WARM speed layer
+      -> read the running per-product sums (L64 tumbling/sliding window)
+      -> ~10 ms, data ~2 s fresh
+
+    Why here: the warehouse can't answer "last minute" fresh (its batch
+    is 15 min stale), and the serving store has no windowed aggregate.
+    The speed layer keeps exactly this running total in ~50 MB of state.
+</pre></div>
+
+<h3>Path C — "Revenue by region by day, last quarter?" → the cold batch path</h3>
+<div class="diagram"><pre>
+  Finance analyst, ad-hoc. Router sees: large historical aggregate.
+
+    query: SUM(amount) by region, by day, last 90 days
+      -> ROUTER: historical scan / aggregate -> COLD warehouse
+      -> partition-prune to 90 of ~1,095 days, project 3 of 50 cols,
+         scan columnar + aggregate + merge partials (L29/21)
+      -> ~seconds, data stale by <= one batch interval (~15 min)
+
+    Why here: 15.5B rows is a scan, not a lookup. Cheap columnar
+    storage + pruning makes it fast ENOUGH and cheap; staleness of a
+    batch interval is invisible to a quarterly question.
+    (For a fixed dashboard, pre-aggregate into a daily rollup -> ms, L15.)
+</pre></div>
+
+<h3>Path D — the drift, and how it reconciles</h3>
+<div class="diagram"><pre>
+  ONE order O-77 placed at t=0. Watch it appear in each view:
+
+    t + ~1 s :  HOT serving store shows O-77  ("order received")
+    t + ~2 s :  WARM speed layer's last-minute revenue includes O-77
+    t + <=15 min: COLD warehouse's daily total includes O-77 (next batch)
+
+  So between t+2s and the next batch, "today's revenue":
+    - from the SPEED layer  = fresh, but only covers the recent window
+    - from the WAREHOUSE    = complete history, but missing the last <=15 min
+
+  Reconcile: the batch layer is the eventual, exact system of record;
+  the speed layer is the fast, approximate front that gets SUPERSEDED.
+  Merge at read (lambda) OR run one pipeline + replay to correct (kappa).
+</pre></div>
+
+<p>Paths A, B, and C are the payoff of the split: <span class="key">each question is answered by a store built for its exact shape</span> — the point read is milliseconds and fresh, the live aggregate is milliseconds and seconds-fresh, the deep scan is cheap and complete. None of them can trample the others, because they run on separate machinery (Lesson 29's isolation). Path D is the price: the three views drift, and you must decide — per question — which view is authoritative and how the fast-but-approximate speed layer gets reconciled against the slow-but-exact batch layer. That reconciliation choice is the fork we hit next.</p>
+
+<h2>Move 4 — Find the first bottleneck: the same logic in three pipelines</h2>
+<p>The split works. Its deepest cost is not storage or latency — it's that you now compute "revenue" in more than one place, and those places can silently disagree.</p>
+
+<div class="card calc">
+  <p><b>The first bottleneck — the duplicated-logic tax (lambda's core problem).</b> To be both fresh and complete, the classic move is <b>lambda architecture</b>: the speed layer answers "the last few minutes," the batch layer answers "everything up to the last batch," and you merge them at read time. But now the definition of "revenue" — which refunds count, how currency converts (Lesson 25), which test orders to exclude — lives in <i>two</i> codebases: the streaming job and the batch job. <span class="key">Keep them in sync forever, or they drift: a fix applied to the batch SQL but not the stream operator makes the dashboard and the report show two different revenue numbers for the same day — a trust-destroying, hard-to-debug divergence.</span> Two fixes, each a named trade: <b>kappa architecture</b> collapses to <i>one</i> streaming pipeline and rebuilds history by <b>replaying the log</b> (Lesson 9/29/64) — one codebase, one definition, paid for in the cost and time of replaying billions of events to backfill or correct. Or keep lambda but <b>share the aggregation logic</b> as one library both layers call, so there is one definition with two runners. The tension is permanent: one pipeline (simple, but replay is expensive) vs two pipelines (fresh + cheap history, but the same logic maintained twice).</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — every view is another consumer with its own lag, backfill, and failure mode.</b> Fan-out multiplies work: one event now drives three writes (serving upsert + speed update + warehouse append) = <code>~6,000 writes/s</code> of derived work, three pipelines to run, three to monitor. Each has its own <b>consumer lag</b> (Lesson 9) — if the batch loader falls behind, the warehouse silently gets staler; if the serving materializer stalls, "where's my order?" goes stale while the customer is watching. Each new view you add is another <b>backfill</b> when you launch it (replay 3 years of history = Lesson 57's bulk-pipeline problem) and another thing that can break independently. <span class="key">The bill for "each question gets its perfect store" is paid in N pipelines to keep healthy, not one.</span> Watch each path's lag as its own SLO; alarm when any view drifts past its freshness promise.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — the router is a real decision, and a mis-route is an outage.</b> Classifying "is this a point read, a live aggregate, or a historical scan?" is easy at the extremes and genuinely hard in the middle ("last 7 days per product" — warm or cold?). Get it wrong and Move 1's disaster returns: a point lookup sent to the warehouse is seconds slow, and a giant ad-hoc scan sent to the serving store evicts its cache and takes the shopper's page down with it (Lesson 29's two traps, reborn as routing bugs). <span class="key">The router must also encode "consistent enough" per query</span> — routing a read-your-writes-sensitive query (the customer's own just-placed order) to a stale path is a correctness bug, not a performance one. So the routing rules deserve the same care as any hot-path code: default ambiguous large queries to the isolated cold path (never the shared serving store), and route freshness-critical reads to the freshest path even when it's more expensive.</p>
+</div>
+
+<p>So the honest design for our one order event is: capture it <b>once</b> on the durable log (Lesson 9/68) as the single source of truth; fan it out to <b>three idempotent read models</b> (Lesson 13/37) — a <b>hot</b> serving store for millisecond point reads of recent state (Lesson 48), a <b>warm</b> speed layer for seconds-fresh live aggregates (Lesson 64), and a <b>cold</b> columnar warehouse for cheap deep history (Lesson 29/67) — sized to a millionfold range because each keeps only what its question needs (Lesson 39); front them with a <b>read-path router</b> that matches each query's latency-and-freshness <i>need</i> to a path's <i>offer</i>; accept that the views are <b>eventually consistent</b> with each other (Lesson 6/11) and define "consistent enough" per question (read-your-writes for "my order," hours-stale for "last quarter"); and reconcile the fast-approximate speed layer against the slow-exact batch layer with <b>lambda</b> (two pipelines, merge at read — beware two copies of one definition) or <b>kappa</b> (one pipeline, replay to correct — beware expensive replay). Every choice names its price: three shapes cost three pipelines; freshness costs money; one definition costs replay; a router that mis-classifies costs an outage.</p>
+
+<p><span class="key">The deepest point: freshness, query latency, and cost-per-byte form a triangle no single store can win.</span> A store fast for point reads is expensive to fill with history; a store cheap for history is slow and stale for point reads; a store fresh for live aggregates holds only a tiny recent window. You don't beat the triangle by finding a magic store — you beat it by <b>writing the same event down in three shapes</b> and routing each question to the corner it lives in. This is the same instinct as CQRS (Lesson 37: one write, many read models), tiered storage (Lesson 39: match data temperature to storage cost), and lambda/kappa (Lesson 29/64: batch for complete, stream for fresh) — all three are one pattern seen from different angles. The standing tension, from the very first cache in Lesson 2 to here: <span class="key">freshness &amp; per-query latency vs duplicated pipelines &amp; cost.</span></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>"Where's my order?" in ms</td><td>Hot serving store, point-indexed (L48)</td><td>fresh millisecond reads / expensive per byte, short retention</td></tr>
+  <tr><td>"Revenue right now?" fresh</td><td>Warm speed layer, windowed state (L64)</td><td>seconds-fresh aggregates / tiny recent window only</td></tr>
+  <tr><td>"Revenue last quarter?" cheap</td><td>Cold columnar warehouse (L29/67)</td><td>cheap deep scans / stale by a batch interval, higher latency</td></tr>
+  <tr><td>One source, three views</td><td>Fan-out + CQRS (L37/33)</td><td>each query gets its shape / N pipelines to run</td></tr>
+  <tr><td>Rebuild / add a 4th view</td><td>Idempotent consumers + log replay (L9/13/64)</td><td>views are disposable &amp; rebuildable / replay is expensive</td></tr>
+  <tr><td>Send each query to its store</td><td>Read-path router / classify (L37/49)</td><td>right store per query / a mis-route is an outage</td></tr>
+  <tr><td>Views disagree in time</td><td>"Consistent enough" per query (L6/11/15)</td><td>match need to offer / must define freshness per question</td></tr>
+  <tr><td>Fresh AND complete</td><td>Lambda (batch + speed, merge at read)</td><td>both at once / same logic in two codebases</td></tr>
+  <tr><td>One definition of the metric</td><td>Kappa (one pipeline + replay) or shared lib</td><td>no drift / replay cost or a shared dependency</td></tr>
+  <tr><td>A view falling behind</td><td>Per-path consumer-lag SLO (L9/27)</td><td>catch staleness early / another thing to monitor</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — one store for everything.</b> Serving one database to shoppers, dashboards, <i>and</i> analysts feels simple until the quarterly scan evicts the serving cache and takes down "where's my order" (Lesson 29's failure, now at three-way scale). Serving and analytics have opposite shapes and opposite failure modes; isolate them onto separate machinery.</li>
+  <li><b>Trap 2 — mis-routing the query.</b> A point lookup sent to the warehouse is seconds slow; a giant scan sent to the serving store is a self-inflicted outage. The router's classification rules are hot-path code — default ambiguous heavy queries to the isolated cold path, and freshness-critical reads to the freshest path.</li>
+  <li><b>Trap 3 — two copies of one definition (lambda drift).</b> Coding "revenue" in both the stream job and the batch job invites them to diverge, so the live dashboard and the finance report show different numbers for the same day. Share the logic, or collapse to one pipeline (kappa) and replay to correct.</li>
+  <li><b>Trap 4 — ignoring "consistent enough."</b> Treating all three views as interchangeable leads to reading a customer's just-placed order from a 15-minute-stale warehouse (a wrong answer) or paying serving-store prices to keep three years hot (wasted money). Define, per question, exactly how fresh it must be and route accordingly.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We took the one reliable <code>order.placed</code> event from Lesson 68 and asked who reads it — and found <b>three questions that demand three different machines</b>. <b>Estimate</b> showed why: a point lookup wants milliseconds and freshness, a live aggregate wants seconds-freshness over a tiny window, and a quarterly scan wants cheap storage over billions of rows — and run together on one store, the big query destroys the small one (Lesson 29's serving-vs-analytics split, generalized). <b>Model</b> chose one write and three idempotent read models (Lesson 37's CQRS to its conclusion): a <b>hot</b> serving store (~5.2 TB, ~2 ms, ~1 s fresh), a <b>warm</b> speed layer (~50 MB state, ~10 ms, ~2 s fresh), and a <b>cold</b> warehouse (~189 TB raw, seconds, ~15 min stale) — sized across a millionfold range — with a <b>router</b> matching each query's freshness need to a path's offer, and "consistent <i>enough</i>" defined per question. <b>Tracing</b> sent each question to its path and watched one order appear at t+1 s, t+2 s, and t+15 min across the three views, then reconcile (batch supersedes speed). The <b>first bottleneck</b> was the duplicated-logic tax — the same "revenue" definition living in the stream job and the batch job (lambda's drift), fixed by kappa's one-pipeline-plus-replay or a shared library — plus N pipelines to keep healthy (each with its own lag and backfill) and a router whose mis-classification is an outage. Every dial named its trade. The standing tension, unbroken since Lesson 2's first cache: <span class="key">freshness &amp; per-query latency vs duplicated pipelines &amp; cost.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we've split reads by their shape. Now make the writes themselves survive a flaky network and long-running work.</b></p>
+  <p style="margin:.2rem 0">• <b>Idempotent, resumable data APIs — uploads &amp; long jobs (Lesson 70):</b> a customer on a spotty mobile connection uploads a 2 GB video and kicks off a long-running export. How do you make a huge upload <i>resumable</i> (chunk + checksum + commit-last, Lesson 20/25), a long job's status safely <i>pollable</i> (Lesson 5), and every mutation safely <i>retryable</i> (Lesson 13/18) — so a dropped connection costs a resume, not a restart? Trade: robustness on bad networks vs protocol &amp; server-state complexity.</p>
+  <p style="margin:.2rem 0">• Then further out: <b>quorum reads/writes &amp; tunable consistency</b> — the <code>R + W &gt; N</code> dial from the inside. Say <b>next</b> to build resumable data APIs.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">hot / warm / cold path</span>
+    <span class="pill">serving store</span>
+    <span class="pill">speed layer</span>
+    <span class="pill">batch warehouse</span>
+    <span class="pill">read model / materialized view</span>
+    <span class="pill">CQRS</span>
+    <span class="pill">fan-out</span>
+    <span class="pill">read-path router</span>
+    <span class="pill">freshness / staleness</span>
+    <span class="pill">batch interval</span>
+    <span class="pill">lambda architecture</span>
+    <span class="pill">kappa architecture</span>
+    <span class="pill">consumer lag</span>
+    <span class="pill">read-your-writes</span>
+    <span class="pill">eventual consistency</span>
+    <span class="pill">freshness–latency–cost triangle</span>
+  </p>
+  <p>That's Lesson 69. It builds on: Lesson 68 (the one reliable event we now read three ways), Lesson 37 (CQRS — one write, many read models), Lesson 29 (columnar warehouse; serving-vs-analytics split; lambda vs kappa), Lesson 64 (the streaming speed layer and windowing), Lesson 9 (the durable log as source of truth; consumer lag; replay), Lesson 13/33 (idempotent consumers so views are rebuildable), Lesson 39 (data temperature vs storage cost), Lesson 48 (the fast point-read serving store), Lesson 15 (read-your-writes; precompute the read), Lesson 6/11 (eventual consistency between views), Lesson 27 (the latency knee a rogue scan trips), and Lesson 57 (backfilling a new view). <b>Ask me follow-ups</b> — e.g. "how do I decide the batch interval for the cold path?", "when is lambda worth the double codebase vs going kappa?", "how does the router special-case read-your-writes for a just-placed order?", "what's the cleanest way to fan one log out to three sinks without three separate consumers drifting?", or "how does this relate to a 'medallion' (bronze/silver/gold) lakehouse layout from Lesson 67?" When you're ready, say <b>next</b> and we'll build idempotent, resumable data APIs — <i>a 2 GB upload and a long job over a flaky mobile network.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your team stores every order in one big database and lets the shopper's 'where's my order?' page, the ops dashboard, and the finance team all query it. During a monthly report the shopper pages start timing out. What's the root cause, and the fix?",
+    options: [
+      {t:"Serving and analytics have opposite shapes AND opposite failure modes: the finance query scans billions of rows, which evicts the serving store's hot cache and pins its CPU, tripping its latency knee so the shopper's point lookup times out and retries pile on. Split the one event into purpose-built read models — a hot serving store for point reads, a cold warehouse for the big scans — so the heavy query runs on separate machinery and can't trample the light one.",
+       ok:true,
+       fb:"Right. A big analytical scan and a small point read don't just prefer different stores — run together, the scan destroys the reads (Lesson 29's split, Lesson 27's knee, Lesson 7's retry storm). The fix is isolation via separate materialized views, not a bigger shared box."},
+      {t:"The database just needs more memory and CPU; scale it up vertically and one store will comfortably serve all three query types at once.",
+       ok:false,
+       fb:"A bigger box delays the collision but doesn't resolve it — the quarterly scan still reads billions of rows and still evicts the serving cache. The problem is mixing opposite workloads on one machine, which no amount of vertical scaling cures; you need to isolate them onto stores shaped for each."},
+      {t:"The finance query should just be rewritten to be more efficient; with the right indexes a single OLTP store answers 'revenue by quarter' as fast as a point lookup with no impact on other queries.",
+       ok:false,
+       fb:"An index helps a selective query, but 'revenue by region, last quarter' touches ~15.5 billion rows — that's a scan by nature, not a lookup (Lesson 12's selectivity trap). No index makes a billions-row aggregate cheap on a row store, and running it still competes for the same cache and CPU as the shopper reads."}
+    ]
+  },
+  {
+    stem: "You fan the order event into three read models. A teammate worries: 'The live dashboard says today's revenue is $2.10M but the warehouse report says $2.05M — one of them is buggy!' Is it a bug?",
+    options: [
+      {t:"Not necessarily — the three views are eventually consistent and each lags the source by a different amount. The speed layer includes orders up to ~2 s ago; the warehouse only includes up to its last batch (~15 min stale), so it's legitimately missing the most recent orders. Neither is 'wrong'; you ask which view is authoritative for the question — the speed layer for 'right now,' the warehouse for a stable audited report — and reconcile by having the batch layer eventually supersede the speed layer's approximate numbers.",
+       ok:true,
+       fb:"Exactly. The views drift by design (Lesson 6/11), and the gap here is just the batch interval's worth of recent orders. The skill is defining which view is authoritative per question and reconciling speed against batch (lambda merge, or kappa replay) — not forcing all three to agree instantly."},
+      {t:"Yes — any disagreement between two views is a correctness bug, and the fix is to make all three views strongly consistent so every store always shows the identical number.",
+       ok:false,
+       fb:"Forcing strong consistency across a serving store, a stream processor, and a petabyte warehouse would mean synchronous cross-store writes — killing the latency and cost benefits that made you split them in the first place. Transient divergence is the accepted price; you manage it with per-query freshness rules, not by eliminating it."},
+      {t:"Yes — the warehouse is always the source of truth, so the dashboard is simply wrong and should be pointed at the warehouse instead.",
+       ok:false,
+       fb:"Point the live dashboard at the 15-minute-stale warehouse and it's no longer live — it'll miss exactly the recent activity a dashboard exists to show. The warehouse is authoritative for complete history; the speed layer is authoritative for the recent window. Each is the truth for its own question."}
+    ]
+  },
+  {
+    stem: "To get numbers that are both fresh and complete, you run a speed layer for the last few minutes and a batch layer for everything older, merging at read (lambda architecture). Six months in, the dashboard and the monthly report disagree on how refunds affect revenue. What happened, and what are your options?",
+    options: [
+      {t:"The definition of 'revenue' lives in two codebases — the streaming job and the batch job — and a refund-handling fix was applied to one but not the other, so they drifted. Options: collapse to one streaming pipeline and rebuild history by replaying the log (kappa — one definition, paid for in expensive replay), or keep lambda but extract the aggregation logic into one shared library both layers call so there's a single definition with two runners.",
+       ok:true,
+       fb:"Right — this is lambda's core tax: maintaining the same logic twice invites drift. Kappa removes the second codebase at the cost of replay; a shared library keeps both runners but with one source of the logic. Either way, the goal is one definition of the metric."},
+      {t:"The batch layer is corrupted; restore it from a backup and the two numbers will match again.",
+       ok:false,
+       fb:"Nothing is corrupted — both layers are faithfully running their own (now-divergent) code. Restoring a backup doesn't touch the real problem, which is two independent implementations of one metric. You need one definition, via kappa or a shared library, or the drift returns."},
+      {t:"You should drop the batch layer entirely and serve every query, including three-year historical scans, from the speed layer so there's only one code path.",
+       ok:false,
+       fb:"The speed layer holds only a tiny recent window (~50 MB of running state) — it can't answer a three-year historical scan at all, and keeping years of data in stream state would be enormously expensive. The fix for logic drift is one definition (kappa/replay or a shared library), not deleting the layer that makes deep history cheap."}
+    ]
+  },
+  {
+    stem: "Your hot/warm/cold split works and each store is well-tuned. Your architect says 'the split isn't free — name the ongoing cost and the master dial.' What's the honest answer?",
+    options: [
+      {t:"The cost is that you now maintain N pipelines materializing the same event, each with its own consumer lag, backfill, and failure mode — and, if you use lambda, the same metric logic in two codebases that can silently diverge. The master dial is one-pipeline vs two: kappa (one streaming pipeline, rebuild history by replaying the log) is simplest and drift-free but pays in expensive replay; lambda (separate batch + speed) is fresh and cheap over history but pays in maintaining the same logic twice.",
+       ok:true,
+       fb:"Exactly. The split buys each question its perfect store at the cost of running and reconciling several derived pipelines. The pipelines-vs-replay choice (lambda vs kappa) is the standing dial, alongside per-path lag SLOs and a router whose mis-classification is an outage."},
+      {t:"The only real cost is disk space for three copies of the data, and the master dial is which compression codec you pick for the warehouse.",
+       ok:false,
+       fb:"Storage is a minor line item (the cold path is cheap object storage by design). The dominant, ongoing cost is operational — N pipelines to run, monitor, and keep in sync, plus the risk of logic drift — not bytes on disk. The dial that matters is how you reconcile fresh vs complete (lambda vs kappa), not a codec."},
+      {t:"There's no ongoing cost once it's built — the three views are independent, so the system is strictly simpler and needs no further tuning.",
+       ok:false,
+       fb:"Independence is exactly what creates the cost: three consumers each have their own lag to watch, their own backfill when launched, and their own way to break; a stalled materializer silently staleifies a view while a customer is looking at it. Plus lambda's two-codebase drift. It's more operable surface, not less."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

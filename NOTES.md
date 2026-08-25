@@ -1366,9 +1366,24 @@
     backpressure (L27/28); effectively-once reaches only as far as effects can be made idempotent. Four traps:
     chasing exactly-once delivery; dedup not atomic with the effect; retrying a poison message forever; a DLQ with no
     tooling. Trade: delivery certainty & operability vs pipeline latency & storage of in-flight state. (Lesson 0068)
-69. Hot/warm/cold path & the serving vs analytics split — one event feeding a low-latency serving store, a
-    streaming speed layer (L64), and a batch warehouse (L29) at once, kept consistent enough; the read-path router
-    that picks a path per query (L37 CQRS). Trade: freshness & query latency per path vs duplicated pipelines & cost.
+69. ✅ **Hot/warm/cold path & the serving-vs-analytics split** — one `order.placed` event (L68, 2,000/s) read by
+    three questions that demand three DIFFERENT machines: "where's my order?" (point lookup, ~2 ms, ~1 s fresh),
+    "revenue last minute?" (live aggregate, ~10 ms, ~2 s fresh), "revenue by region/day last quarter?" (billions-row
+    scan, seconds, ~15 min stale OK). Estimate why one store can't: the quarterly scan (~15.5B rows) on a shared store
+    evicts the serving cache + trips L27's knee → "where's my order" times out (L29 serving-vs-analytics, L07 retry
+    storm); L12 selectivity trap REVERSED (point read on a scan engine = slow). Model = one write, THREE read models
+    (L37 CQRS to its conclusion) fanned from the durable log (L09/33): HOT serving store (~5.2 TB @ 30d, L48), WARM
+    speed layer (~50 MB state, L64), COLD columnar warehouse (~189 TB raw → ~52 TB, L29/67) — sizes span a MILLIONFOLD
+    range because each keeps only what its question needs (L39 temperature). Read-path ROUTER (L37/49) matches each
+    query's freshness NEED to a path's OFFER; views are eventually consistent w/ each other (L06/11) so "consistent
+    enough" is defined per query (read-your-writes for "my order" L15, hours-stale for "last quarter"). Trace one order
+    at t+1s (hot) / t+2s (warm) / t+15min (cold), then reconcile (batch supersedes speed). First wall = the DUPLICATED-
+    LOGIC tax: lambda runs the same "revenue" definition in the stream job AND batch job → silent drift → kappa (one
+    pipeline + replay the log, L09/29/64) or a shared library; plus N pipelines each w/ its own consumer lag (L09) +
+    backfill (L57), and a router whose mis-classification is an outage. Deepest point: freshness / latency / cost-per-byte
+    is a TRIANGLE no single store wins → write the event in 3 shapes, route each question to its corner (= CQRS + tiered
+    storage + lambda/kappa as one pattern). Four traps: one store for everything; mis-routing a query; two copies of one
+    metric; ignoring "consistent enough." Trade: freshness & per-query latency vs duplicated pipelines & cost. (Lesson 0069)
 70. Idempotent, resumable data APIs (uploads & long jobs) — resumable multipart uploads (L20), long-running job
     status endpoints (L05), and safely retryable mutations (L13/18) over flaky mobile networks: chunk + checksum +
     commit-last (L20/25), resume tokens, and progress polling. Trade: robustness on bad networks vs protocol &
