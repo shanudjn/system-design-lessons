@@ -1384,10 +1384,33 @@
     is a TRIANGLE no single store wins → write the event in 3 shapes, route each question to its corner (= CQRS + tiered
     storage + lambda/kappa as one pattern). Four traps: one store for everything; mis-routing a query; two copies of one
     metric; ignoring "consistent enough." Trade: freshness & per-query latency vs duplicated pipelines & cost. (Lesson 0069)
-70. Idempotent, resumable data APIs (uploads & long jobs) — resumable multipart uploads (L20), long-running job
-    status endpoints (L05), and safely retryable mutations (L13/18) over flaky mobile networks: chunk + checksum +
-    commit-last (L20/25), resume tokens, and progress polling. Trade: robustness on bad networks vs protocol &
-    server-state complexity.
+70. ✅ **Idempotent, resumable data APIs (uploads & long jobs)** — a phone on a flaky mobile network (drops ~every
+    3 min) uploads a 2 GB video and kicks off a ~4-min export. Estimate the two failures as arithmetic: a single-POST
+    upload = 2048 MB ÷ 0.625 MB/s ≈ 55 min crossing ~18 disconnect windows → effectively never completes (each drop
+    restarts at byte 0); a 4-min blocking POST is guaranteed to beat the ~60 s client/proxy timeout → the retry runs
+    the expensive export TWICE (L13 double-charge). Two protocols on one backbone. **Resumable chunked upload**:
+    create a session (durable upload_id = resume token, L18 cursor) → PUT 256 × 8 MB chunks, each idempotent BY INDEX
+    (absolute PUT, re-send is a no-op, L13) + checksummed (L20), resume from what the SERVER confirms it received
+    (never the client's guess) → make the file real only at **commit-last** (verify all parts, L20/25). A drop now
+    wastes ≤1 chunk (~4 MB) vs ~1 GB = **256×** less waste; a 12.8 s chunk survives a 180 s-MTBF link ~93% of the
+    time so progress is monotonic. **Async job**: POST returns **202 Accepted** + a client-chosen **idempotency key**
+    so a re-submit returns the SAME job_id, not a 2nd 4-min run (L13 exactly-once EFFECT) → worker does the work
+    behind the request (L5/9) → client **polls** status with exponential backoff (L7, the frequency/freshness/load
+    dial) or gets **pushed** the result (webhook L45 / WebSocket L26). Trace: upload survives a tunnel (resume from
+    server truth, waste 1 chunk); ambiguous re-sent chunk 77 absorbed as a no-op (never solve "did it land?"); job
+    survives the client crashing (re-submit K-3 → same J-5). First bottleneck = **resumable means the server holds
+    in-flight STATE**: orphaned abandoned sessions (~10% of 100k/day × ~1 GB = ~10 TB/day) → **TTL** sweep (L8/13/48,
+    two-sided dial: too short deletes a resumable upload, too long hoards orphans); the state must live in a SHARED
+    store (any server can serve the resume, L26 truth-off-the-connection) and stay consistent with the bytes
+    (record-received AFTER durable, L33 dual-write; re-verify at commit); chunk size is a trade (small = less waste
+    per drop + more overhead/rows; big = fewer requests + more waste per drop; 8 MB sweet spot); and the JOB must
+    itself resume across worker crashes (visibility timeout L5/9 + idempotent/checkpointed work, temp-write +
+    atomic-rename = commit-last again L20). Deepest point: on an unreliable network you can't make a step succeed, so
+    you make REPEATING it free — shrink the unit of work until a failure is cheap, give every unit a stable identity
+    until a retry is safe (= L13 idempotency + L20/25 commit-last + L26 truth-off-connection + L18 cursor, assembled).
+    Four traps: trusting the client's idea of progress; a slow mutation in a blocking request; no TTL on in-flight
+    state; recording a part received before its bytes are durable. Trade: robustness on bad networks vs protocol &
+    server-state complexity. (Lesson 0070)
 
 ### Advanced topics (next batch — queued so the course never runs dry)
 71. Quorum reads/writes & tunable consistency — the R + W > N dial from the inside (L06/11/63): pick R, W, N per call

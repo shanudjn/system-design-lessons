@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 70 — Idempotent, Resumable Data APIs: A 2 GB Upload and a Long Job Over a Flaky Network</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 70 · Worked Example</div>
+  <h1>Idempotent, Resumable Data APIs: A 2 GB Upload and a Long Job Over a Flaky Network</h1>
+  <p class="lead">Every lesson so far assumed the request <i>arrives</i>. This one drops that assumption. A customer on a train is uploading a <b>2 GB</b> dashcam video from their phone, and the mobile signal comes and goes — a tunnel here, a dead spot there, a handoff between cell towers. The same customer then taps "export my order history," a job that takes the server <b>minutes</b> to run. Two hard shapes hide here: a <span class="key">huge transfer that will not survive one unbroken connection</span>, and a <span class="key">mutation that takes longer than any HTTP request should wait</span>. Do the naïve thing — one giant <code>POST</code> for the file, one blocking request for the job — and the file restarts from byte zero on every hiccup (it may <i>never</i> finish), while the job's request times out and the client, seeing an error, retries and kicks off the <i>same</i> export twice. We'll <b>estimate</b> why a single connection can't carry either one; <b>model</b> the two patterns that fix them — <b>chunked, resumable upload</b> (split, checksum, commit-last) and <b>async job + status polling</b> (accept fast, work in the background, poll for the result) — bound together by one idea, the <b>idempotency key</b> (Lesson 13/18) that makes every retry safe; <b>trace</b> an upload surviving a dropped connection and a job survived across a client crash; and find <span class="key">the first bottleneck, which is that "resumable" means the server now holds <i>state</i> for every in-flight upload and job — state that must be found, expired, and cleaned up.</span> The trade under all of it: <b>robustness on bad networks vs protocol &amp; server-state complexity.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0070-resumable-uploads-jobs.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>A phone app talks to our API over a mobile network that disconnects, on average, <b>every ~3 minutes</b>. Two operations must work anyway. <b>(1) Upload:</b> a <b>2 GB</b> video (a large binary <i>blob</i>, Lesson 20) must reach our object store intact. <b>(2) Long job:</b> "export my full order history to a CSV" runs on the server for <b>~4 minutes</b> and produces a downloadable file. The naïve design treats both as ordinary requests — one <code>POST /upload</code> with the whole file in the body, one <code>POST /export</code> that blocks until the CSV is ready. On a perfect network that works. On this network, both fail in ways that <i>waste enormous work</i> and — worse — <span class="key">can happen twice.</span> The fix is two protocols that share one backbone: make big transfers <i>resumable</i>, make slow work <i>asynchronous</i>, and make every retry <i>idempotent</i> so a flaky network costs a <b>resume</b>, never a <b>restart</b> or a <b>duplicate</b>.</p>
+
+<div class="diagram"><pre>
+  TWO operations over a network that drops every ~3 min. Same backbone.
+
+   (1) RESUMABLE UPLOAD                    (2) ASYNC LONG JOB
+   2 GB file, phone -> object store        "export history", ~4 min server work
+
+   client                 server           client              server
+     |  create upload  ----->  |             |  POST /export ---->  |
+     |  <--- upload_id, 8MB    |             |     (idem-key)       |  create job,
+     |       chunk size        |             |  <--- 202, job_id ---|  enqueue (L5/9)
+     |                         |             |                      |  return NOW
+     |  PUT chunk 0 (+hash) -->|  store,     |  GET /jobs/{id} ---->|
+     |  PUT chunk 1 (+hash) -->|  record     |  <--- {running,40%} -|  worker runs
+     |  ...  [DROP! tower]     |  which      |  GET /jobs/{id} ---->|  in background
+     |  --- reconnect ---      |  arrived    |  <--- {done, url} ---|
+     |  GET status: "have 0..N"|             |                      |
+     |  resume at chunk N+1 -->|             |  download url (L14)  |
+     |  ...                    |             |                      |
+     |  POST complete  ------->|  verify all,|   Key: the SLOW work is not
+     |  <--- 200, file ready   |  COMMIT last|   inside the HTTP request.
+     |                         |  (L20/25)   |
+     v                         v             v                      v
+
+  One idea underneath both: an IDEMPOTENCY KEY (L13/18) so any retried
+  step -- a re-PUT chunk, a re-POST export -- lands at most once.
+</pre></div>
+
+<p class="note"><span class="key">The one idea the whole lesson turns on:</span> a network that drops connections turns every operation into "did that actually happen?" You cannot prevent the drop, so you design so the drop is <i>cheap</i> and <i>safe</i>. Cheap means the unit of loss is small — a chunk, not a file; a poll, not a job. Safe means repeating any step changes nothing — a re-sent chunk overwrites itself, a re-submitted job is recognized as the same job. Both fall out of two moves: <b>break the big thing into small, independently-committable pieces the server tracks</b>, and <b>give every piece a stable identity so a retry is a no-op, not a duplicate.</b> Everything else — resume tokens, status polling, commit-last, TTL cleanup — is machinery around those two moves.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Chunk (part)</b> — a fixed-size slice of a big file (we'll use <b>8 MB</b>) uploaded as its own small request, so a failure loses only that slice.</li>
+  <li><b>Resumable upload</b> — a multi-request upload where the server remembers which chunks it already has, so after a disconnect the client sends only what's missing.</li>
+  <li><b>Upload session / upload_id</b> — a server-side record identifying one in-progress upload and tracking its received chunks. The <i>resume token</i> is how the client names it.</li>
+  <li><b>Checksum</b> — a hash of the bytes (e.g. a CRC or SHA of a chunk) sent alongside them, so the server can detect a corrupted or truncated transfer and reject it.</li>
+  <li><b>Commit-last</b> — the object becomes visible/usable only in a final step, after all chunks are present and verified (Lesson 20's "commit metadata last," Lesson 25's atomic commit).</li>
+  <li><b>Idempotent</b> — an operation you can repeat and get the same result as doing it once (Lesson 13). A retry causes no extra effect.</li>
+  <li><b>Idempotency key</b> — a client-chosen unique id attached to a mutation so the server recognizes a retry of the <i>same</i> request and doesn't do the work twice (Lesson 13/18).</li>
+  <li><b>Asynchronous (async) job</b> — work the server does <i>after</i> answering the request. The request returns a handle immediately; the work finishes later (Lesson 5).</li>
+  <li><b>202 Accepted</b> — the HTTP status meaning "I took your request, I haven't finished it; here's where to check." The standard "async accepted" answer.</li>
+  <li><b>Status polling</b> — the client repeatedly asks "is job X done yet?" via a status endpoint until it's finished (or failed).</li>
+  <li><b>Resume token / cursor</b> — the opaque handle the client keeps so it can ask "what have you got, and where do I continue?" (Lesson 18's cursor idea, applied to transfers).</li>
+  <li><b>TTL (time-to-live)</b> — how long the server keeps an abandoned upload session or finished job around before garbage-collecting it (Lesson 8/13/48).</li>
+</ul>
+
+<h2>Move 1 — Estimate: why one connection can't carry either operation</h2>
+<p>Put real numbers on "the network is bad," and the two failures become arithmetic, not bad luck.</p>
+
+<div class="card calc">
+  <p><b>The upload will not finish in one shot.</b> Uploading 2 GB over a typical mobile uplink of <b>5 Mbps</b> = <code>0.625 MB/s</code> takes <code>2048 MB ÷ 0.625 ≈ 3,277 s ≈ 55 minutes</code>. Now add the network: connections drop on average every <b>~180 s</b>. A 55-minute upload therefore crosses about <code>3,277 ÷ 180 ≈ 18</code> disconnect windows. <span class="key">The probability the whole transfer survives with zero drops is astronomically small (roughly <code>e^-18 ≈ 1 in 80 million</code>).</span> With the naïve single <code>POST</code>, every one of those ~18 drops throws away everything sent so far and restarts at byte 0 — so the upload doesn't just retry, it <i>never converges</i>. The unit of loss (the whole file, avg ~1 GB wasted per drop) is catastrophically too big.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Chunking shrinks the unit of loss by 256×.</b> Split the 2 GB file into <b>8 MB chunks</b> → <code>2048 ÷ 8 = 256 chunks</code>, each taking <code>8 ÷ 0.625 ≈ 12.8 s</code> to send. A disconnect now wastes at most the one chunk in flight — on average <b>~4 MB</b>, versus <b>~1 GB</b> for the naïve restart, a <span class="key"><code>1024 ÷ 4 = 256×</code> reduction in wasted bytes per failure</span>. And a single chunk transfer (12.8 s) has a <code>e^-(12.8/180) ≈ 93%</code> chance of surviving, so almost every chunk lands on the first try and the rest just retry cheaply. The upload now <i>makes monotonic progress</i>: after each disconnect the client resumes from where the server confirms it left off, and 55 minutes of good-signal-time gets you there no matter how many drops interrupt it.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The long job outlives the request — and the retry is the real danger.</b> The CSV export scans the customer's full order history and takes the server <b>~4 minutes</b>. But a phone's HTTP client typically times out an idle request in <b>~30–60 s</b>, and mobile gateways cut long-held connections even sooner. So a blocking <code>POST /export</code> is <i>guaranteed</i> to time out: the client gets an error at ~60 s while the server is still working. What does an app do on an error? It retries. <span class="key">Now the same expensive export is running <i>twice</i> — and if the job has any side effect (charges a fee, emails a file, mutates a row, Lesson 13's <code>$50 → $100</code>), the timeout has manufactured a duplicate.</span> Long work simply cannot live inside a request that something along the path will kill; it must be <i>accepted</i> quickly and run <i>behind</i> the request (Lesson 5's producer→queue→worker).</p>
+</div>
+
+<p class="note why"><b>Why "just make the timeout longer / the connection more reliable" is the tempting wrong answer:</b> you cannot buy your way out of physics on a shared mobile network — a tunnel drops the connection no matter how patient your client is, and raising the request timeout to 5 minutes just means a thread (and a load-balancer slot, Lesson 7's thread-pool) sits blocked for 5 minutes per user, collapsing your capacity. The fix is never "hold the fragile thing open longer." It's <b>stop depending on one fragile hold</b>: chop the transfer into pieces each short enough to usually succeed, and move the slow work off the request path entirely. Name the trade: one simple request vs a resilient multi-step protocol.</p>
+
+<h2>Move 2 — Model: two protocols, one backbone</h2>
+
+<h3>Pattern A — the resumable, chunked upload</h3>
+<p>Three phases: <b>create</b> a session, <b>upload</b> chunks (retrying only the missing ones), <b>complete</b> with a commit that makes the file real only when every piece is present and verified.</p>
+
+<div class="card calc">
+  <p><b>Create.</b> The client says "I want to upload a 2 GB file named <code>drive.mp4</code>." The server mints an <b>upload_id</b> (the resume token), records an upload session (<code>upload_id → {size, chunk_size: 8 MB, received: {}}</code>), and returns it. The session — not the connection — is now the durable thing that survives a drop. <b>Upload.</b> The client <code>PUT</code>s each chunk to <code>/uploads/{upload_id}/parts/{index}</code>, with a <b>checksum</b> of the chunk's bytes in a header. The server verifies the checksum (rejecting a truncated/corrupted transfer, which on a flaky link is common), stores the part, and records <code>received[index] = true</code>. <span class="key">Each chunk is <b>idempotent by its index</b>: re-<code>PUT</code>ting chunk 7 just overwrites chunk 7 — sending it twice after an ambiguous timeout is harmless</span> (Lesson 13's natural idempotency of an absolute <code>PUT</code>). <b>Complete.</b> The client <code>POST</code>s <code>/uploads/{upload_id}/complete</code>. The server checks it has <i>all</i> 256 parts, optionally verifies a whole-file checksum, assembles them, and <b>only then</b> makes the object visible — the <b>commit-last</b> step (Lesson 20/25). Before complete, a half-uploaded file is never readable; after it, the file is atomically there.</p>
+</div>
+
+<p class="note why"><b>The resume is the whole point, and it's just a status read.</b> After any disconnect, the client reconnects and asks <code>GET /uploads/{upload_id}</code>: "which parts do you have?" The server answers "I have 0…N." The client resumes at <code>N+1</code>, skipping everything already confirmed. This is Lesson 18's cursor idea wearing a transfer's clothes: <span class="key">the resume token names a stable place in the work, and progress is measured by what the <i>server</i> confirms it received</span> — never by what the client <i>thinks</i> it sent (the last chunk before a drop may or may not have landed; only the server knows). That "ask the server what it actually has" step is what makes progress monotonic across any number of failures.</p>
+
+<h3>Pattern B — the async job with status polling</h3>
+<p>Four phases: <b>submit</b> (accept fast), <b>work</b> (in the background), <b>poll</b> (client checks status), <b>fetch</b> (download the result).</p>
+
+<div class="card calc">
+  <p><b>Submit.</b> The client <code>POST</code>s <code>/exports</code> with an <b>idempotency key</b> (a UUID it generated, Lesson 13). The server does the minimum synchronously: create a <code>job</code> row (<code>job_id, status: queued</code>), enqueue the work (Lesson 5/9), and return <code>202 Accepted</code> with the <code>job_id</code> — <i>immediately</i>, in milliseconds, long before the ~60 s timeout. <b>Work.</b> A background worker (Lesson 5) picks up the job, runs the ~4-minute export, writes the CSV to object storage, and updates the job row to <code>status: done, result_url: …</code> (or <code>failed, error: …</code>). <b>Poll.</b> The client periodically <code>GET</code>s <code>/jobs/{job_id}</code> and reads <code>{status, progress, result_url?}</code> — a cheap, fast, <i>read-only</i> request that a flaky network can retry freely. <b>Fetch.</b> When status flips to <code>done</code>, the client downloads the CSV from the returned URL (served via CDN, Lesson 14). <span class="key">The slow work has been lifted out of the request and put behind a handle the client can check as often as it likes.</span></p>
+</div>
+
+<p class="note why"><b>Why the idempotency key on submit is not optional.</b> The submit request itself can time out on this network: the server created the job and enqueued it, but the <code>202</code> got lost on the way back. The client, seeing no answer, re-submits. Without a key, that's a <i>second</i> export job — duplicated work, and if the job has any side effect, a Lesson 13 double-charge. <span class="key">With a client-chosen idempotency key, the server does an atomic "claim this key" (Lesson 13's unique-constraint check) before creating the job: the retry finds the key already claimed and returns the <i>existing</i> <code>job_id</code> instead of starting a new job.</span> One logical submission, at most one job, no matter how many times a bad network makes the client re-ask. This is the same exactly-once <i>effect</i> on at-least-once <i>delivery</i> we've built since Lesson 13 — here guarding the "start the work" step.</p>
+
+<div class="card calc">
+  <p><b>Polling has its own dial: frequency vs freshness vs load (Lesson 2's cache dial, reborn).</b> Poll every 1 s and a 4-minute job costs <code>240</code> status requests per client; poll every 10 s and it costs <code>24</code> — 10× less server load, but the client learns the job finished up to 10 s late. Two refinements tame it: <b>exponential backoff</b> on the poll interval (check often early, then ease off, Lesson 7) so a job that's clearly going to take minutes isn't hammered every second; and, at larger scale, replace polling with a <b>push</b> — a webhook (Lesson 45) or a WebSocket (Lesson 26) that tells the client "done" the instant it is, trading polling's simplicity for a live connection's complexity. Start with backed-off polling; reach for push when the poll traffic itself becomes the load.</p>
+</div>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Three scenarios: an upload surviving a mid-flight disconnect, an ambiguous re-sent chunk absorbed harmlessly, and a long job surviving the client crashing and coming back.</p>
+
+<h3>Path A — upload survives a dropped connection</h3>
+<div class="diagram"><pre>
+  2 GB file, 256 chunks of 8 MB. Signal dies after chunk 130.
+
+    create   -> upload_id = U-9, chunk_size 8 MB, received {}
+    PUT 0..129 (each +checksum, each verified & recorded)
+    PUT 130   -> [TRAIN ENTERS TUNNEL — connection dropped]
+                 (server may or may not have finished storing 130)
+
+    --- 40 s later, signal back ---
+    GET /uploads/U-9   -> server: "received = 0..129" (130 didn't commit)
+    resume: PUT 130, 131, ... 255   (skip the 130 already-confirmed parts)
+    POST /uploads/U-9/complete
+      -> server checks all 256 present + whole-file checksum -> COMMIT
+      -> 200, file is now visible in the object store (L20)
+
+    Wasted by the drop: ONE chunk (<= 8 MB), not 130 chunks (~1 GB).
+    Progress was monotonic: each reconnect resumed from server truth.
+</pre></div>
+
+<h3>Path B — an ambiguous chunk, re-sent, absorbed</h3>
+<div class="diagram"><pre>
+  The subtle case: the chunk arrived but the ACK was lost (L13/68).
+
+    PUT chunk 77  -> server stores it, sends 200 -> [200 LOST in a dead spot]
+    client sees a timeout, doesn't know if 77 landed
+      -> SAFE MOVE: just PUT chunk 77 again
+      -> server overwrites part 77 with identical bytes, received[77] still true
+      -> 200
+
+    Why harmless: a chunk PUT is idempotent by its INDEX (an absolute
+    write, L13's natural idempotency). Re-sending is a no-op on state.
+    The client never has to know "did it land?" -- it just re-sends and
+    the server converges. No duplicate part, no corruption.
+</pre></div>
+
+<h3>Path C — long job survives the client crashing</h3>
+<div class="diagram"><pre>
+  Export ~4 min. Client submits, then the app is killed / phone dies.
+
+    POST /exports  (idempotency-key = K-3)
+      -> server: claim K-3 (atomic), create job J-5 queued, enqueue (L5)
+      -> 202 Accepted, job_id = J-5           [work runs in background]
+    [app crashes here — the connection is gone, but the JOB IS NOT]
+
+    --- user reopens app 10 min later ---
+    app still holds K-3 (saved locally) OR lists the user's recent jobs
+    POST /exports (idempotency-key = K-3)   <- retry of the SAME submit
+      -> server sees K-3 already claimed -> returns EXISTING J-5 (no 2nd job)
+    GET /jobs/J-5  -> {status: done, result_url: .../export-J5.csv}
+    download the CSV (L14).
+
+    The work was decoupled from the connection: the job outlived the
+    client. The idempotency key made the re-submit return the SAME job,
+    not start a second ~4-min export (L13 exactly-once EFFECT).
+</pre></div>
+
+<p>Path A is the payoff of chunking: a drop costs one chunk and the server's confirmed state is the source of truth for resume. Path B is the payoff of idempotent-by-index chunks: the client never has to solve the impossible "did my last write land?" problem — it just re-sends and the server converges. Path C is the payoff of async + idempotency key together: the slow work survives the client entirely, and the retry that a flaky network <i>guarantees</i> lands on the same job instead of duplicating four minutes of work. <span class="key">In all three, the network still fails constantly — we just made each failure cost a cheap, safe retry.</span> That resilience is bought with something, and the bill comes due next.</p>
+
+<h2>Move 4 — Find the first bottleneck: "resumable" means the server holds state</h2>
+<p>The moment an upload can pause and resume, the server must <i>remember</i> every in-flight upload between requests. The moment a job outlives its request, the server must <i>store</i> every job's status. That stored, in-flight state — not bandwidth, not CPU — is the real cost of this whole design.</p>
+
+<div class="card calc">
+  <p><b>The first bottleneck — orphaned state and its cleanup (the TTL dial).</b> Every <code>create</code> that never reaches <code>complete</code> leaves an <b>orphaned upload session</b>: partial chunks sitting in storage, a session row in the index. On a flaky network, <i>many</i> uploads are abandoned — the user closes the app, gives up, or never comes back. Suppose <b>100,000 uploads/day</b> start and <b>10%</b> are abandoned mid-flight at an average of <b>1 GB</b> already uploaded: that's <code>10,000 × 1 GB = 10 TB/day</code> of orphaned bytes piling up, plus their part rows in your metadata store (Lesson 20's metadata plane). <span class="key">Without cleanup, you pay to store garbage forever.</span> The fix is a <b>TTL</b> on every session (Lesson 8/13/48): if an upload sees no activity for, say, 24 hours, a background sweeper deletes its parts and its session row. The TTL is a two-sided dial — too <i>short</i> and you garbage-collect an upload the user meant to resume tomorrow (their progress is gone); too <i>long</i> and orphaned bytes accumulate and cost money. Finished <i>jobs</i> need the same treatment: keep the result and status for a bounded window (long enough for the client to poll and download, e.g. 7 days), then reap the CSV and the job row.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — where the in-flight state lives, and keeping it consistent with the bytes.</b> The upload session (<code>which parts received</code>) and the job status (<code>queued/running/done</code>) are small but <b>hot and shared</b>: every chunk <code>PUT</code> updates a session, every poll reads a job row, and — critically — a load balancer may send the resume request to a <i>different</i> server than the one that took the earlier chunks. So this state <b>cannot live in one server's memory</b>; it must sit in a shared store (Lesson 26's connection-registry lesson: keep the truth off the disposable front-end). Two consistency traps follow. (1) The part bytes (in object storage) and the "I have this part" record (in the metadata store) are <i>two writes</i> — record the part as received <b>only after</b> its bytes are durably stored, or a resume will skip a part that isn't really there (Lesson 33's dual-write, in miniature). (2) The <code>complete</code> step must re-verify all parts are present at commit time, because a part could have been TTL-swept between upload and complete. <span class="key">The commit is the one linearization point (Lesson 25's atomic commit): before it, nothing is real; at it, everything is checked and made real at once.</span></p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — choosing the chunk size, and the resume-after-crash-mid-job problem.</b> The chunk size is itself a trade: <b>smaller chunks</b> (say 1 MB) waste less per drop and resume faster, but multiply request overhead and metadata rows (2 GB = 2,048 parts to track); <b>larger chunks</b> (say 64 MB) mean fewer requests but a single drop wastes more and a slow link may not finish one chunk between disconnects. <code>8 MB</code> is a common sweet spot for mobile: ~13 s per chunk (usually survives a 180 s-MTBF link) and only 256 rows to track. And jobs have their own resumability question: if a worker <i>crashes 3 minutes into the 4-minute export</i>, the job must not be lost or silently stuck — the queue's visibility timeout (Lesson 5/9) makes the message reappear so another worker retries, which means <span class="key">the job's own work must be idempotent or checkpointed</span> (write the CSV to a temp path and atomically rename on completion, Lesson 20's commit-last again), so a retried job overwrites cleanly instead of producing a half-file or double side effect. Resumability is fractal: the upload resumes across drops, and the job must resume across worker crashes, by the same commit-last and idempotency moves.</p>
+</div>
+
+<p>So the honest design for our flaky-network customer is: for the big transfer, a <b>resumable chunked upload</b> — <code>create</code> a session with a durable <b>upload_id</b> (Lesson 18's cursor as a resume token), <code>PUT</code> fixed-size <b>chunks</b> that are <b>idempotent by index</b> and <b>checksummed</b> (Lesson 13/20), resume after any drop by asking the server <i>what it actually has</i>, and make the file real only at a <b>commit-last</b> step (Lesson 20/25); for the slow mutation, an <b>async job</b> — accept fast with <code>202</code> and a client-chosen <b>idempotency key</b> so a re-submit returns the <i>same</i> job (Lesson 13), run the work behind the request on a worker (Lesson 5/9), and let the client <b>poll</b> a status handle with backoff (Lesson 7) or get <b>pushed</b> the result (Lesson 26/45); and pay for all of it in <b>server-held in-flight state</b> that lives in a shared store (Lesson 26), stays consistent with the bytes (Lesson 33), and gets <b>TTL-swept</b> when abandoned (Lesson 8/13/48). Every choice names its price: resumability costs state; smaller chunks cost overhead; polling costs traffic; commit-last costs a two-phase protocol.</p>
+
+<p><span class="key">The deepest point: on an unreliable network you cannot make a step succeed, so you make repeating it free.</span> The whole design is one instinct applied twice — <b>shrink the unit of work until a failure is cheap, and give every unit a stable identity until a retry is safe.</b> A chunk indexed <code>77</code> can be re-sent forever with no harm; a job keyed <code>K-3</code> can be re-submitted forever and still run once. That's the same exactly-once-<i>effect</i>-on-at-least-once-<i>delivery</i> spine from Lesson 13, the same commit-last from Lesson 20/25, the same "keep the truth off the disposable connection" from Lesson 26, and the same cursor-names-a-stable-place from Lesson 18 — assembled into a protocol that treats a dropped connection as a routine event to resume past, not an error to fail on. The standing tension, from Lesson 2's first cache to here: <span class="key">robustness on bad networks vs protocol &amp; server-state complexity.</span></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>2 GB won't survive one connection</td><td>Chunk into 8 MB parts (L20)</td><td>a drop wastes 1 chunk not the file (256×) / more requests &amp; parts to track</td></tr>
+  <tr><td>Where do I resume after a drop?</td><td>Upload session + resume token (L18)</td><td>ask the server what it has → monotonic progress / server must hold session state</td></tr>
+  <tr><td>Did my last chunk land?</td><td>Idempotent-by-index chunk PUT (L13)</td><td>just re-send, it's a no-op / requires stable part identity</td></tr>
+  <tr><td>Half-uploaded file must not be usable</td><td>Commit-last (L20/25)</td><td>atomic visibility, verified whole / a two-phase complete step</td></tr>
+  <tr><td>4-min job can't fit in a request</td><td>Async 202 + worker (L5/9)</td><td>accept in ms, work behind the request / need a job store &amp; queue</td></tr>
+  <tr><td>Client retries the submit</td><td>Idempotency key on submit (L13/18)</td><td>at most one job per logical submit / a dedup store keyed by the key</td></tr>
+  <tr><td>How does the client learn it's done?</td><td>Status polling + backoff (L7) or push (L26/45)</td><td>simple &amp; retry-safe / poll traffic, or a live connection to manage</td></tr>
+  <tr><td>Abandoned uploads pile up</td><td>TTL sweep of sessions/jobs (L8/13/48)</td><td>reclaim orphaned bytes / mis-tuned TTL loses resumable progress</td></tr>
+  <tr><td>Resume request hits a different server</td><td>Shared state store (L26)</td><td>any server can serve the resume / a hot shared dependency</td></tr>
+  <tr><td>Worker crashes mid-job</td><td>Visibility timeout + idempotent/checkpointed work (L5/9/20)</td><td>the job resumes cleanly / job logic must be replay-safe</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — trusting the client's idea of progress.</b> Resuming from "the last chunk I <i>think</i> I sent" is wrong: the chunk before a drop may or may not have landed. Always resume from what the <i>server confirms</i> it received (<code>GET</code> the session) — the server's stored state is the only truth.</li>
+  <li><b>Trap 2 — a slow mutation inside a blocking request.</b> Any request held open for minutes will be killed by a client, proxy, or gateway timeout, and the client's retry then duplicates the work (Lesson 13's double-charge). Accept fast with <code>202</code>, run behind the request, and guard the submit with an idempotency key.</li>
+  <li><b>Trap 3 — no TTL on in-flight state.</b> Every abandoned upload and finished job is state you keep paying for. Without a TTL sweeper, orphaned parts (10 TB/day in our estimate) and stale job rows accumulate forever. But tune it: too short and you delete an upload the user meant to resume.</li>
+  <li><b>Trap 4 — recording a part as received before its bytes are durable.</b> If the "I have part 77" record commits before part 77's bytes are safely stored (or a part is swept between upload and complete), a resume skips a part that isn't there and the file is silently corrupt. Record after durability, and re-verify all parts at commit-last.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We dropped the hidden assumption behind every earlier lesson — that the request arrives — and designed for a mobile network that disconnects every ~3 minutes. <b>Estimate</b> showed the two failures as arithmetic: a 2 GB / 55-minute upload crosses ~18 disconnect windows so a single <code>POST</code> effectively never finishes, and a ~4-minute job is guaranteed to outlast the ~60 s request timeout, so the client's inevitable retry runs the expensive work twice. <b>Model</b> gave two protocols on one backbone: a <b>resumable chunked upload</b> (create a session → <code>PUT</code> 256 checksummed, index-idempotent 8 MB chunks → resume from server-confirmed state → <b>commit-last</b>), and an <b>async job</b> (<code>202</code> + client-chosen <b>idempotency key</b> → background worker → poll-with-backoff or push → download), bound by the one idea that makes every retry safe. <b>Tracing</b> watched an upload survive a tunnel by wasting one chunk not a gigabyte, an ambiguous re-sent chunk absorbed as a no-op, and a job survive the client crashing by returning the same <code>job_id</code> on re-submit. The <b>first bottleneck</b> was that "resumable" means the server now holds in-flight state for every upload and job — orphaned sessions (~10 TB/day) demanding a TTL sweep, state that must live in a shared store and stay consistent with the actual bytes (record-after-durable, re-verify at commit), a chunk-size trade, and jobs that must themselves resume across worker crashes. Every dial named its trade. The standing tension, unbroken since Lesson 2's first cache: <span class="key">robustness on bad networks vs protocol &amp; server-state complexity.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we've made single writes survive a bad network. Now open up the consistency dial itself.</b></p>
+  <p style="margin:.2rem 0">• <b>Quorum reads/writes &amp; tunable consistency (Lesson 71):</b> we've used <code>W + R &gt; N</code> as a black box since Lesson 6/11/63. Now work it from the inside — pick <code>R</code>, <code>W</code>, and <code>N</code> <i>per call</i> to slide between fast-but-stale and slow-but-fresh, watch <b>read-repair</b> and <b>hinted handoff</b> fix a stale replica on the read path, and see why <code>W = N</code> quietly kills availability. Trade: per-request consistency vs latency &amp; availability.</p>
+  <p style="margin:.2rem 0">• Then further out: <b>bulk &amp; batch APIs</b> — killing the N+1 round-trip problem (Lesson 18/72). Say <b>next</b> to open the quorum dial.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">chunk / part</span>
+    <span class="pill">resumable upload</span>
+    <span class="pill">upload session / upload_id</span>
+    <span class="pill">checksum</span>
+    <span class="pill">commit-last</span>
+    <span class="pill">idempotent</span>
+    <span class="pill">idempotency key</span>
+    <span class="pill">async job</span>
+    <span class="pill">202 Accepted</span>
+    <span class="pill">status polling</span>
+    <span class="pill">resume token / cursor</span>
+    <span class="pill">exponential backoff</span>
+    <span class="pill">TTL</span>
+    <span class="pill">visibility timeout</span>
+    <span class="pill">robustness vs complexity</span>
+  </p>
+  <p>That's Lesson 70. It builds on: Lesson 13 (idempotency key; exactly-once <i>effect</i> on at-least-once delivery; the double-charge), Lesson 18 (the cursor that names a stable place, here a resume token; API contracts), Lesson 20 (chunking a big blob; the metadata plane; commit metadata last), Lesson 25 (the atomic commit), Lesson 5 (producer→queue→worker for background work; job status), Lesson 9 (the durable log &amp; visibility timeout so a crashed worker's message reappears), Lesson 26 (keep the truth off the disposable connection — here the upload/job state in a shared store), Lesson 33 (the dual-write trap between bytes and the "received" record), Lesson 7 (timeouts, backoff, thread-pool exhaustion from long holds), Lesson 14 (serving the finished result via CDN), and Lesson 45 (a webhook push instead of polling). <b>Ask me follow-ups</b> — e.g. "how do I pick the chunk size for a given network and file-size distribution?", "how does S3's real multipart-upload API map onto this (create/UploadPart/CompleteMultipartUpload)?", "should the client poll or should I push with a webhook/WebSocket, and when?", "how do I make the export job itself idempotent so a worker retry doesn't double-send the email?", or "what exactly should the resume token contain, and can a malicious client forge one?" When you're ready, say <b>next</b> and we'll open the quorum dial — <i>picking R, W, and N per call to tune consistency against latency.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "A phone uploads a 2 GB video as one big POST. It fails around 45% done, retries from the start, fails again, and never finishes. Your teammate says 'the retry logic is fine, the network is just bad.' What's the real design flaw and the fix?",
+    options: [
+      {t:"The unit of loss is the whole file: a single POST makes progress depend on one unbroken ~55-minute connection, but the network drops every few minutes, so the transfer restarts from byte 0 on every drop and never converges. Split the file into small chunks (e.g. 8 MB), have the server track which chunks it has received, and after any drop resume from the server-confirmed position — so a disconnect wastes one chunk, not a gigabyte, and progress is monotonic.",
+       ok:true,
+       fb:"Right. You can't stop the drops, so you make each drop cheap: chunk the file, track received parts server-side, and resume from what the server confirms. The unit of loss shrinks ~256× and the upload converges no matter how many times the connection breaks."},
+      {t:"The retry should just use a much longer timeout and keep the single connection open until the whole 2 GB is through, so it survives the dead spots.",
+       ok:false,
+       fb:"A longer timeout can't hold a connection open through a tunnel — the drop happens regardless — and holding one request open for ~55 minutes pins a thread/LB slot per user (Lesson 7's thread-pool problem). The fix is to stop depending on one fragile hold, not to hold longer."},
+      {t:"Compress the video client-side so it's small enough to fit in one request that finishes before a drop.",
+       ok:false,
+       fb:"Compression is a nice bandwidth optimization but not a reliability strategy: a video is already compressed, and even a smaller file can span a disconnect on a bad link. The structural fix is resumability (chunk + track + resume), which works for any size."}
+    ]
+  },
+  {
+    stem: "Your upload client sends chunk 77, the server stores it and replies 200, but the 200 is lost in a dead spot. The client can't tell whether chunk 77 landed. What should it do, and why is that safe?",
+    options: [
+      {t:"Just re-send (PUT) chunk 77. Because a chunk is written to a fixed index, re-PUTting it simply overwrites part 77 with identical bytes — an idempotent, absolute write (Lesson 13) — so the server's state is unchanged whether the first attempt landed or not. The client never has to solve the impossible 'did my write land?' question; it re-sends and the server converges.",
+       ok:true,
+       fb:"Exactly. Making each chunk idempotent by its index turns an ambiguous outcome into a free retry. The client doesn't need certainty about the lost ACK — a duplicate PUT is a no-op on state, so it just re-sends."},
+      {t:"Call a 'check chunk 77' endpoint first, and only re-send if the server says it's missing, because re-sending a chunk that already landed would create a duplicate part and corrupt the file.",
+       ok:false,
+       fb:"An extra check round-trip isn't wrong, but it's unnecessary — and the premise is false: a chunk PUT is idempotent by index, so re-sending an already-stored chunk overwrites it with the same bytes and creates no duplicate. The whole point of index-addressed chunks is that you can just re-send safely."},
+      {t:"Abandon the upload and restart the whole file from chunk 0, since a lost ACK means the session is now in an unknown, unrecoverable state.",
+       ok:false,
+       fb:"Restarting throws away 76 confirmed chunks over one ambiguous ACK — exactly the catastrophic unit-of-loss the chunked design exists to avoid. The session is perfectly recoverable: GET its status to see confirmed parts, and re-send only what's missing. One lost ACK never justifies a full restart."}
+    ]
+  },
+  {
+    stem: "An 'export my history' endpoint runs for ~4 minutes as a blocking POST. Users report they sometimes receive two exports and get charged the export fee twice. What happened, and what's the correct design?",
+    options: [
+      {t:"The 4-minute work outlives the client/proxy timeout (~60 s), so the client gets an error while the job is still running and retries — kicking off a second export with its own fee. Make it asynchronous: POST returns 202 with a job_id immediately, a background worker does the ~4-minute work, and the client polls for status. Guard the submit with a client-chosen idempotency key so a retried submit returns the SAME job instead of starting a second one (Lesson 13's exactly-once effect).",
+       ok:true,
+       fb:"Right. Long work can't live inside a request something will kill; accept fast (202), run behind the request, and dedup the submit with an idempotency key so the inevitable retry lands on the same job. That's what stops the duplicate work and the double fee."},
+      {t:"The server is too slow; optimize the export to run in under 60 s so it fits inside the request and never times out.",
+       ok:false,
+       fb:"Even if you shrink it below 60 s today, the network can still drop the response and trigger a retry, and tomorrow's larger export blows the budget again. The durable fix is decoupling the work from the request (async + idempotency key), not racing the timeout."},
+      {t:"Tell clients not to retry failed export requests; if the request errors, the user should just wait and assume it worked.",
+       ok:false,
+       fb:"'Never retry' is both unrealistic (apps and users retry) and unsafe (if it really failed, the user gets nothing). The correct answer is to make retries safe via an idempotency key and an async job the client can poll — so a retry is harmless and the user can always find out the real status."}
+    ]
+  },
+  {
+    stem: "You ship resumable uploads. A month later storage costs are climbing fast even though completed uploads are modest, and some users complain a paused upload 'disappeared' overnight. What's going on, and what's the master dial?",
+    options: [
+      {t:"Resumability means the server holds in-flight state: every upload that starts but never reaches 'complete' leaves orphaned parts and a session row. On a flaky network many uploads are abandoned, so orphaned bytes pile up (our estimate: ~10 TB/day) — that's the cost climb. You need a TTL sweeper to reclaim abandoned sessions, and the TTL is the master dial: too long and orphans accumulate; too short and you delete an upload a user meant to resume (the 'disappeared' complaint). Tune it to how long a legitimate pause lasts.",
+       ok:true,
+       fb:"Exactly. In-flight state is the real price of resumability. A TTL sweep reclaims orphans, but the TTL is two-sided: sweep too aggressively and you kill resumable progress; too leniently and garbage accumulates. Both symptoms here are the same knob, mis-set."},
+      {t:"The completed files are just larger than expected; add more storage capacity and the problem goes away.",
+       ok:false,
+       fb:"The clue is that completed uploads are modest while cost climbs — the growth is orphaned, never-completed sessions, not finished files. Adding capacity pays to store more garbage; you need to reclaim abandoned in-flight state with a TTL, and the 'disappeared upload' complaint shows the TTL also has a floor."},
+      {t:"Keep every upload session forever so no user ever loses resumable progress; storage is cheap and deleting sessions is what causes the complaints.",
+       ok:false,
+       fb:"Never expiring sessions is exactly what makes the cost climb unbounded — the 10 TB/day of orphans never gets reclaimed. The complaint isn't caused by having a TTL; it's caused by a TTL set too short. The answer is a well-tuned TTL, not an infinite one."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
