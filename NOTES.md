@@ -1413,9 +1413,24 @@
     server-state complexity. (Lesson 0070)
 
 ### Advanced topics (next batch — queued so the course never runs dry)
-71. Quorum reads/writes & tunable consistency — the R + W > N dial from the inside (L06/11/63): pick R, W, N per call
-    to slide between fast-but-stale and slow-but-fresh, read-repair and hinted handoff on the read path, why W=N kills
-    availability. Trade: per-request consistency vs latency & availability.
+71. ✅ **Quorum reads/writes & tunable consistency** — one key on N=3 replicas; a write waits for W acks, a read for R
+    replies, and W/R are a per-request dial. Estimate the two costs in real numbers: availability (99%-up replicas → W=3
+    fails on any one down = 2.97% of writes ≈ 260 h/yr, 100× worse than W=2's 0.03% ≈ 2.6 h/yr) and tail latency (wait for
+    the W-th fastest → R=3 pinned to the slowest, ~14% of reads dragged to the tail at 95%-fast replicas, L17). Model the
+    **pigeonhole** guarantee: two subsets of N whose sizes add to >N can't be disjoint → the R-set intersects the W-set →
+    the read sees the newest COMPLETED write; **W + R > N** is a budget you split (W=3,R=1 read-heavy · W=1,R=3 write-heavy ·
+    W=R=2 majority default · W=R=1 below-budget when stale is fine). Two healers: **read-repair** (read path writes the
+    winning version back to a lagging replica, heals hot keys free) and **hinted handoff** (write parks on a stand-in node
+    tagged "belongs to C," handed off when C returns — keeps writes available through a failure, L11/34). Versioning (L35
+    vector clock) is the silent prerequisite: decides newer-vs-older AND concurrent-vs-causal. Trace quorum read catching a
+    stale replica (overlap forces it), read-repair healing the loser, hinted handoff surviving a down replica. First
+    bottleneck = **overlap is NOT order**: quorum resolves *staleness*, never *conflicting concurrent writes* (two writes
+    each satisfy W → siblings a version compare can't rank → LWW drops one / keep siblings + app merge L23 / serialize via
+    consensus L62); **W=R=N is a trap** (worst availability + worst tail latency + STILL no linearizability); honest strong =
+    majority W=R=2, true linearizability needs L62 Raft; **sloppy quorum** (hinted handoff, stand-ins count) softens the
+    strict overlap to "eventually" = L11's CAP choice (strict=C, sloppy=A). Four traps: W=R=N as "max safety"; quorum orders
+    concurrent writes; a low quorum reads stale by design (fine for a view count); sloppy = strict. Trade: per-request
+    consistency vs latency & availability. (Lesson 0071)
 72. Bulk & batch APIs (the N+1 and fan-out problem) — one screen needing 200 records: why 200 round trips (L18) is the
     silent killer, batch endpoints, request coalescing/dataloader, GraphQL-style field selection, and the over-fetch vs
     under-fetch tension. Trade: fewer round trips & payload control vs API & caching complexity.

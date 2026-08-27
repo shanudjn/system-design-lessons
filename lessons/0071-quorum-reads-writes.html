@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 71 — Quorum Reads &amp; Writes: Tuning Consistency Against Latency, One Call at a Time</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 71 · Worked Example</div>
+  <h1>Quorum Reads &amp; Writes: Tuning Consistency Against Latency, One Call at a Time</h1>
+  <p class="lead">We have used <code>W + R &gt; N</code> as a magic incantation since Lesson 6 — "make the quorums overlap and reads see writes" — and leaned on it again in Lessons 11 and 63 without ever opening the box. This lesson opens it. One key, its value copied to <b>N = 3</b> replicas; every write lands on some replicas, every read asks some replicas, and the two numbers <b>W</b> (replicas a write waits for) and <b>R</b> (replicas a read waits for) are <span class="key">a dial you can turn per request</span> — slide it one way for fast-but-maybe-stale, the other for slow-but-fresh. The same store, the same data, can serve a throwaway "what's this user's display name?" read cheaply <i>and</i> a "read the account's current plan before charging it" read strictly — the caller chooses. We'll <b>estimate</b> the two forces that pull the dial apart (a hard availability cost and a hard latency cost, both in real numbers), <b>model</b> the pigeonhole guarantee that makes <code>W + R &gt; N</code> work and the two repair mechanisms — <b>read-repair</b> and <b>hinted handoff</b> — that heal a lagging replica, <b>trace</b> a quorum read catching a stale replica, a read healing it, and a write staying alive while a replica is down, and find <span class="key">the first bottleneck: quorum buys overlap, not order — it stops <i>staleness</i> but not <i>conflicting concurrent writes</i>, and the tempting "just set W = R = N for max safety" quietly destroys availability while still not giving you a total order.</span> The trade under all of it: <b>per-request consistency vs latency &amp; availability.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0071-quorum-reads-writes.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>A distributed key-value store (the Dynamo-style store of Lesson 63) holds user data — say a shopping cart or a profile. Each key's value is copied to <b>N = 3</b> replicas on three separate nodes, call them <b>A, B, C</b>, so any one node can die and the data survives (Lesson 20's durability, Lesson 6's replication). A client never talks to the replicas directly; it talks to a <b>coordinator</b> (any node can play the role) that fans the request out to all three replicas and <i>waits for a threshold number of them to answer</i>. That threshold is the whole lesson. On a write, the coordinator waits for <b>W</b> acknowledgements before telling the client "done." On a read, it waits for <b>R</b> responses before answering. Set W and R low and you wait for the fastest replicas — fast, but a slow or missed replica means a read can return an old value. Set them high and you wait for more replicas — slower and more fragile, but a read is far likelier to see the newest write. <span class="key">There is no single right setting. There is a dial, and the skill is knowing which way to turn it for each call.</span></p>
+
+<div class="diagram"><pre>
+  ONE KEY, N = 3 REPLICAS.  Coordinator waits for a THRESHOLD of replies.
+
+                          coordinator
+                        (any node; fans
+        client  ---->    out to all 3)   ----> replica A  [v5]
+                              |    \-------->   replica B  [v5]
+                              |     \------->   replica C  [v4]  (missed
+                              |                                   last write)
+              WRITE: wait for W acks         READ: wait for R replies
+              READ : wait for R replies      then pick the HIGHEST version
+
+   The dial (N = 3):
+     W=1,R=1  -> W+R = 2  (NOT > 3)  fast, no overlap  -> can read stale
+     W=2,R=2  -> W+R = 4  (   > 3)   balanced default   -> read sees last write
+     W=3,R=1  -> W+R = 4  (   > 3)   fast reads, fragile writes (read-heavy)
+     W=1,R=3  -> W+R = 4  (   > 3)   fast writes, fragile reads (write-heavy)
+
+   The rule:  W + R > N  ==>  the write set and the read set must OVERLAP
+              in at least one replica  ==>  the read sees the newest write.
+</pre></div>
+
+<p class="note"><span class="key">The one idea the whole lesson turns on:</span> a read and a write each touch a <i>subset</i> of the N replicas. If the write subset and the read subset are guaranteed to share at least one replica, then that shared replica — which has the new value — is in every read, so no read can miss the write. Two subsets of a 3-element set are <i>forced</i> to share a member exactly when their sizes add to more than 3. That is the entire content of <code>W + R &gt; N</code>: it is a pigeonhole guarantee about set overlap, nothing more mystical. Everything else — versioning to pick the winner, read-repair to heal the loser, hinted handoff to stay available — is machinery around that one guarantee.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Replica</b> — one copy of a key's value on one node. We keep <b>N = 3</b> of them.</li>
+  <li><b>Replication factor (N)</b> — how many replicas each key has. Fixed for a key; here N = 3.</li>
+  <li><b>Coordinator</b> — the node handling one request; it fans out to the replicas and counts responses.</li>
+  <li><b>W (write quorum)</b> — how many replica acks a write waits for before it's called successful.</li>
+  <li><b>R (read quorum)</b> — how many replica responses a read waits for before it answers.</li>
+  <li><b>Quorum</b> — "enough" replicas. A <i>strict majority</i> quorum is <code>⌊N/2⌋+1</code> (= 2 of 3), but W and R can be any value from 1 to N — they don't have to be majorities, they just have to satisfy the overlap rule you want.</li>
+  <li><b>Version</b> — a tag on each stored value (a counter or a <i>vector clock</i>, Lesson 35) so the coordinator can tell a newer value from an older one when replicas disagree.</li>
+  <li><b>Read-repair</b> — when a read finds a replica holding an old version, the coordinator writes the winning value back to it, healing it on the read path.</li>
+  <li><b>Hinted handoff</b> — when a target replica is down during a write, the coordinator stores the write on a stand-in node with a note ("this belongs to C"); when C returns, the stand-in hands it off. Keeps writes available during a failure.</li>
+  <li><b>Strict vs sloppy quorum</b> — strict counts only the key's real home replicas; sloppy lets stand-in nodes (from hinted handoff) count toward W, trading the overlap guarantee for availability.</li>
+  <li><b>Stale read</b> — a read that returns an older value than the most recent successful write.</li>
+  <li><b>Linearizable / eventual</b> — Lesson 6/11: linearizable = every read sees the latest write, one global order; eventual = replicas converge <i>eventually</i>, reads may lag.</li>
+</ul>
+
+<h2>Move 1 — Estimate: the two forces pulling the dial apart</h2>
+<p>Why not just set W and R as high as possible and always be safe? Because a high quorum costs you on <i>two</i> independent axes, and both are measurable. Put numbers on them and the dial stops being abstract.</p>
+
+<div class="card calc">
+  <p><b>Force 1 — availability: a high write quorum fails whenever a replica is down.</b> Suppose each replica is up <b>99%</b> of the time (down 1% — reboots, deploys, brief network blips, Lesson 34). A write needs W of the 3 replicas reachable. Compute the chance a write <i>succeeds</i>:</p>
+  <ul>
+    <li><b>W = 1:</b> need ≥1 of 3 up = <code>1 − 0.01³ = 0.999999</code> → six nines. A write fails only if <i>all three</i> are down at once.</li>
+    <li><b>W = 2:</b> need ≥2 of 3 up = <code>0.99³ + 3·0.99²·0.01 = 0.99970</code> → <b>0.03%</b> of writes fail ≈ <b>2.6 h/yr</b> equivalent. Tolerates any <i>one</i> replica being down.</li>
+    <li><b>W = 3 (= N):</b> need <i>all three</i> up = <code>0.99³ = 0.97030</code> → <span class="key"><b>2.97%</b> of writes fail ≈ <b>260 h/yr</b> equivalent</span> — a <b>100×</b> worse failure rate than W = 2, from a single knob.</li>
+  </ul>
+  <p>That last line is the headline of the lesson: <span class="key">setting <code>W = N</code> means a single replica hiccup blocks <i>every</i> write to every key that replica owns.</span> You paid for 3 replicas to survive failures, then chose a setting that makes you <i>less</i> available than a single machine. W = 2 tolerates one death; W = 3 tolerates none.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Force 2 — latency: a high quorum waits for the slower replicas.</b> Waiting for W (or R) replicas means waiting for the <b>W-th fastest</b> of the N to answer — and tails are fat (Lesson 17). Say each replica independently answers fast (≤5 ms) <b>95%</b> of the time and is slow (~200 ms, a GC pause or a busy disk) the other <b>5%</b>. The chance your request stays fast:</p>
+  <ul>
+    <li><b>Wait for 1 of 3</b> (fastest wins): fast unless all 3 are slow = <code>1 − 0.05³ = 0.999875</code> → ~<b>99.99%</b> fast. You're racing 3 replicas and taking the quickest.</li>
+    <li><b>Wait for 2 of 3:</b> need ≥2 fast = <code>0.95³ + 3·0.95²·0.05 = 0.99275</code> → ~<b>99.3%</b> fast; the other 0.7% you wait on a slow replica.</li>
+    <li><b>Wait for 3 of 3:</b> need <i>all</i> fast = <code>0.95³ = 0.857</code> → only ~<b>85.7%</b> fast; <span class="key"><b>14.3%</b> of requests are dragged to ~200 ms because you're hostage to the <i>slowest</i> of the three.</span></li>
+  </ul>
+  <p>So a lower quorum is both more available and lower-latency — it just gives up the overlap guarantee. That's the tension: the same move that makes you safe (wait for more replicas) makes you slow and fragile. The dial is exactly this trade.</p>
+</div>
+
+<p class="note why"><b>Why "just always use W = R = N" is the seductive wrong answer:</b> it feels maximally safe — every write hits every replica, every read reads every replica, surely that's the strongest consistency. But it is the <i>worst</i> of every world: writes fail if <i>any</i> replica is down (260 h/yr above), reads are pinned to the slowest replica (14% dragged to the tail), and — the sting in the tail — <span class="key">it <i>still</i> doesn't give you a clean linearizable order</span>, because two clients writing the same key concurrently can each reach all 3 replicas and produce two conflicting values with no built-in tiebreak (Force-3, the bottleneck, below). You paid the maximum availability and latency price and did not buy the thing you thought you were buying. The right instinct is never "crank both to N." It's "make W + R just barely exceed N, and split the cost toward whichever side (reads or writes) is rarer."</p>
+
+<h2>Move 2 — Model: the overlap guarantee and how a lagging replica gets healed</h2>
+
+<h3>The pigeonhole guarantee, worked concretely</h3>
+<div class="card calc">
+  <p>Nodes are <b>{A, B, C}</b>, N = 3. A client writes value <code>v5</code> with <b>W = 2</b>. The coordinator sends it to all three but returns success as soon as <b>2</b> ack — say <b>A</b> and <b>B</b> ack first, so the write set is <b>{A, B}</b>. Replica <b>C</b> was briefly slow and missed it; it still holds <code>v4</code>. Now a client reads with <b>R = 2</b>. The coordinator waits for 2 replies — say it hears from <b>B</b> and <b>C</b>, so the read set is <b>{B, C}</b>.</p>
+  <p><span class="key">Do the sets overlap? <code>|{A,B}| + |{B,C}| = 2 + 2 = 4 &gt; 3</code>, so by pigeonhole they <i>cannot</i> be disjoint — three slots can't hold two size-2 sets without a collision. They share <b>B</b>.</span> B holds <code>v5</code>. The read got two answers, <code>v5</code> (from B) and <code>v4</code> (from C); the coordinator compares versions and returns the higher, <code>v5</code>. The read saw the write. This holds for <i>any</i> choice of which 2 replicas each operation happened to reach — that's the point of the guarantee: it doesn't depend on luck.</p>
+  <p><b>Now break it.</b> Same write set <b>{A, B}</b> holding <code>v5</code>, but read with <b>R = 1</b> — the coordinator answers on the first reply. If that reply is from <b>C</b> (<code>v4</code>), the read returns stale. Here <code>W + R = 2 + 1 = 3 = N</code>, <i>not</i> greater, so overlap is not forced and a stale read is legal. <span class="key">The inequality is strict for a reason: equal means "might miss."</span></p>
+</div>
+
+<table>
+  <tr><th>Config (N=3)</th><th>W+R</th><th>Overlap guaranteed?</th><th>Survives replicas down</th><th>Good for</th></tr>
+  <tr><td><code>W=1, R=1</code></td><td>2</td><td>No — reads can be stale</td><td>write: 2 down · read: 2 down</td><td>fastest, eventual; staleness harmless</td></tr>
+  <tr><td><code>W=2, R=2</code></td><td>4</td><td>Yes</td><td>write: 1 down · read: 1 down</td><td>balanced default</td></tr>
+  <tr><td><code>W=3, R=1</code></td><td>4</td><td>Yes</td><td>write: <b>0 down</b> · read: 2 down</td><td>read-heavy, writes rare (fast reads)</td></tr>
+  <tr><td><code>W=1, R=3</code></td><td>4</td><td>Yes</td><td>write: 2 down · read: <b>0 down</b></td><td>write-heavy (fast writes)</td></tr>
+</table>
+
+<p class="note"><b>Read the table as a budget you split.</b> To get overlap on N = 3 you must spend a total of 4 across W and R. You choose <i>where</i> to spend it. Read-heavy workload with rare writes (a config value, a product catalog)? Put the cost on the write: <code>W = 3, R = 1</code> — reads are single-replica fast, writes are rare so their fragility rarely bites. Write-heavy (an event log, a counter)? <code>W = 1, R = 3</code>. Balanced or unsure? <code>W = 2, R = 2</code> — the majority quorum, tolerant of one death on both sides, the sane default. And when staleness is genuinely harmless (a view count, a "last seen" timestamp), spend <i>less</i> than 4: <code>W = 1, R = 1</code> for maximum speed and availability, accepting eventual consistency (Lesson 6/11). <span class="key">The dial is per-call because the <i>right</i> answer is per-call.</span></p>
+
+<h3>Two repair mechanisms: keeping the lagging replica from staying wrong</h3>
+<p>Overlap guarantees the <i>read</i> returns the right value. It does not, by itself, fix the replica that fell behind — C still holds <code>v4</code>. Left alone, that divergence grows. Two mechanisms heal it.</p>
+
+<div class="card calc">
+  <p><b>Read-repair — the read path heals as it goes.</b> When the coordinator gathered <code>v5</code> from B and <code>v4</code> from C, it noticed C is stale. So <i>after</i> (or while) answering the client, it writes <code>v5</code> back to C. The next read of that key finds all three in sync. <span class="key">Reads aren't just consumers of consistency — they actively push replicas toward agreement.</span> On a frequently-read key, read-repair alone keeps replicas nearly converged for free. The cost: a read now sometimes issues an extra background write, and a cold (rarely-read) key never gets repaired this way — which is why there's a second mechanism.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Hinted handoff — the write path stays available through a failure.</b> Suppose at write time replica <b>C is fully down</b>. With W = 2 the write still succeeds on {A, B}. But we'd like C to eventually get the value too, without waiting for it to come back and be manually repaired. So the coordinator writes a third copy to a <i>stand-in</i> node <b>D</b>, tagged with a <b>hint</b>: "this really belongs to C." When C recovers and rejoins, D notices and <b>hands off</b> the stored value to C, then discards its copy. <span class="key">The write never blocked on the dead replica, and the dead replica still catches up.</span> This is what lets a Dynamo-style store keep taking writes during a node failure (Lesson 11's "AP" choice, Lesson 34's fail-static instinct) — and it is exactly the move that introduces the <i>sloppy quorum</i> caveat we hit in the bottleneck.</p>
+</div>
+
+<p class="note why"><b>Why versioning is the silent prerequisite.</b> Every one of these steps — "pick the higher value," "notice C is stale," "hand off the newer copy" — assumes the store can <i>tell which value is newer</i>. That's not free: it needs each value tagged with a <b>version</b>, and for concurrent writes a plain counter isn't enough (whose "5" wins?). This is why the store carries a <b>vector clock</b> (Lesson 35): it can say not just "newer/older" but "these two were <i>concurrent</i> — neither happened before the other." Quorum overlap decides <i>staleness</i>; versioning decides <i>which value the overlap should return</i>. Hold that thought — it's precisely where the guarantee runs out.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Three scenarios on <code>N = 3, W = 2, R = 2</code>: a quorum read catching a stale replica, that same read healing it, and a write staying alive while a replica is down.</p>
+
+<h3>Path A — a quorum read catches a stale replica</h3>
+<div class="diagram"><pre>
+  Cart key "u42:cart". Prior state everywhere = v4. New write v5, W=2.
+
+    WRITE v5 (add "shoes"):
+      coordinator -> A, B, C
+      A ack, B ack   -> W=2 reached -> client told "OK"   [write set {A,B}]
+      C was slow, request still in flight / dropped -> C stays v4
+
+    READ (R=2), a moment later:
+      coordinator -> A, B, C, waits for 2
+      first two replies: B = v5, C = v4        [read set {B,C}]
+      |{A,B}| + |{B,C}| = 4 > 3  -> sets share B  -> v5 is present
+      coordinator returns MAX(version) = v5    -> client sees "shoes"
+
+    Overlap did its job: even though C was stale, the read couldn't
+    miss v5, because any R=2 set must intersect the W=2 write set.
+</pre></div>
+
+<h3>Path B — read-repair heals the loser</h3>
+<div class="diagram"><pre>
+  Same read as Path A. The coordinator saw a disagreement.
+
+    read gathered:  B = v5   (winner)
+                    C = v4   (stale, LOSER)
+    -> coordinator asynchronously WRITES v5 back to C  (read-repair)
+    -> C now holds v5
+
+    next read of "u42:cart": A/B/C all v5, no disagreement, no repair.
+
+    The read didn't just return the right answer -- it left the
+    system MORE consistent than it found it. Hot keys self-heal.
+</pre></div>
+
+<h3>Path C — a write stays alive while a replica is down (hinted handoff)</h3>
+<div class="diagram"><pre>
+  Replica C is DOWN (deploy/reboot). Client writes v6, W=2.
+
+    coordinator -> A, B  (ack v6, W=2 reached)  -> client told "OK"
+                -> C unreachable
+    coordinator ALSO writes v6 to stand-in D, hinted "belongs to C"
+
+    ... C comes back online ...
+    D sees C is alive -> hands off v6 to C -> C now has v6 -> D drops it
+
+    The dead replica never blocked the write (W=2 needed only A,B),
+    and it still caught up when it returned. Availability preserved.
+
+    CAVEAT (the bottleneck): while the hint lived on D, a STRICT read
+    quorum among {A,B,C} that happened to hit only {C, <old>} before
+    C healed could miss v6 -- "sloppy quorum" trades the strict
+    overlap guarantee for staying available. (Move 4.)
+</pre></div>
+
+<p>Path A is the payoff of overlap: staleness on a single replica cannot fool a quorum read, no matter which replicas answer. Path B is the payoff of read-repair: the read path itself drives convergence, so busy keys stay fresh almost for free. Path C is the payoff of hinted handoff: a write survives a replica being down and the down replica still catches up — but it also shows the crack, because the stand-in copy isn't one of the key's home replicas, so the strict <code>W + R &gt; N</code> arithmetic no longer strictly holds. <span class="key">The first three moves make quorum look like a clean consistency knob. The fourth move is where its limits — and the deeper truth about what it does and doesn't guarantee — come out.</span></p>
+
+<h2>Move 4 — Find the first bottleneck: overlap is not order</h2>
+<p>The pigeonhole guarantee is real but narrow. It says: a read quorum intersects a <i>completed</i> write quorum, so a read sees a write that <i>finished before it started</i>. It does <b>not</b> say anything about writes that overlap in time, and it does <b>not</b>, by itself, give you a single global order of operations. Those two gaps are the bottleneck.</p>
+
+<div class="card calc">
+  <p><b>The first bottleneck — concurrent writes: quorum gives overlap, not a total order.</b> Two clients update <code>u42:cart</code> at the same moment: client X adds "shoes" (making <code>v5x</code>), client Y adds "hat" (making <code>v5y</code>), each with W = 2, neither having seen the other. X's write reaches {A, B}; Y's reaches {B, C}. Both satisfy W = 2. Both "succeeded." Now the replicas hold <i>two different v5s</i> with no agreed winner — a read with R = 2 that gathers both will find <span class="key">a genuine <i>conflict</i>, not a staleness</span>. Overlap did its job (the read sees both writes); what it can't do is <i>decide which one wins</i>, because neither happened before the other — they're concurrent (Lesson 35's vector clock says so). The store has three honest choices, none of which quorum alone provides: <b>last-write-wins</b> (pick one by timestamp — simple, silently drops the other, and trusts a skewable clock, Lesson 35's hazard), <b>keep both as siblings</b> and hand the merge to the application (Lesson 23's CRDT / add-wins cart), or <b>serialize writes to the key</b> through a single owner or a consensus layer (Lesson 62's Raft) so concurrency never arises. <span class="key">Quorum tunes <i>staleness</i>; it does not resolve <i>conflict</i>. That's a separate decision you must make.</span></p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — <code>W = R = N</code> is the trap, not the safe choice.</b> The instinct "for maximum safety, wait for everyone" fails three ways at once, as Move 1 measured: writes fail whenever <i>any</i> replica is down (<b>~260 h/yr</b> vs 2.6 h/yr at W = 2 — a 100× availability loss), reads are pinned to the slowest replica (<b>~14%</b> dragged into the tail), and <span class="key">you <i>still</i> don't get linearizability</span> — concurrent writes still conflict (the first wall), so you paid the maximum price and didn't buy a total order. The honest "strongest" quorum is the <i>majority</i> one, <code>W = R = 2</code> on N = 3 (<code>⌊N/2⌋+1</code>): it guarantees overlap, tolerates one failure on each side, and any two write-majorities also overlap each other — but even it is not linearizable without extra care (read-repair timing, sloppy quorums, and concurrent writes all leak through). True linearizability needs a consensus protocol layered on top (Lesson 62), which is why systems that <i>require</i> it (leader election, a lock, an account balance) pay for Raft/Paxos instead of leaning on bare quorums.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — sloppy quorum: hinted handoff quietly weakens the guarantee.</b> Path C kept the write available by parking it on stand-in node D. But D is <i>not</i> one of the key's home replicas, so a later strict read quorum among the home nodes {A, B, C} might not include the value on D → the strict <code>W + R &gt; N</code> overlap no longer holds while a hint is outstanding. This is the difference between a <b>strict quorum</b> (only home replicas count toward W and R — preserves overlap, but a write can fail if too many home replicas are down) and a <b>sloppy quorum</b> (stand-ins count — the write stays available, but the overlap guarantee softens to "eventually, once the hint is handed off"). <span class="key">It's the same CAP choice from Lesson 11 wearing quorum's clothes:</span> strict = lean toward consistency (refuse the write rather than weaken the guarantee), sloppy = lean toward availability (take the write, accept a window of possible staleness). Dynamo-style stores default sloppy because staying writable through failures is usually what a cart or profile wants; a system that can't tolerate the soft window sets strict and eats the reduced write availability.</p>
+</div>
+
+<p>So the honest picture of the quorum dial is: on <b>N</b> replicas, a write waits for <b>W</b> acks and a read for <b>R</b> replies, and choosing <code>W + R &gt; N</code> forces the read set and the write set to <b>overlap</b> (a pigeonhole guarantee, Lesson 6/11/63) so a read sees the newest <i>completed</i> write; you <b>split a budget</b> across W and R per call — toward reads when reads are hot (<code>W = 3, R = 1</code>), toward writes when writes are hot (<code>W = 1, R = 3</code>), majority (<code>W = R = 2</code>) when balanced, and <i>below</i> the budget (<code>W = 1, R = 1</code>) when staleness is harmless; a lagging replica is healed by <b>read-repair</b> on hot keys and <b>hinted handoff</b> during failures; and you pay for all of it by accepting that quorum resolves <b>staleness but not conflict</b> (concurrent writes still need Lesson 35 versioning + Lesson 23 conflict resolution, or Lesson 62 consensus for a true order), that <code>W = N</code> is a <b>trap</b> not a safeguard, and that <b>sloppy quorums</b> soften the guarantee to keep writes available (Lesson 11's CAP choice again). Every setting names its price: higher quorum costs availability and tail latency; lower quorum costs freshness; sloppy costs the strict guarantee.</p>
+
+<p><span class="key">The deepest point: <code>W + R &gt; N</code> is not a consistency <i>setting</i>, it is a consistency <i>dial</i> — and the reason it's a dial and not a switch is that consistency, latency, and availability are the same budget seen from three sides.</span> You cannot spend the same replica-wait on all three; every quorum choice is a decision about which of them matters most <i>for this call</i>. That's why the good stores expose W and R per request instead of picking one global setting: the display-name read and the balance read live in the same store but want opposite ends of the dial, and now you can give each what it needs. The standing tension, unbroken since Lesson 6's first replica and Lesson 11's CAP: <span class="key">per-request consistency vs latency &amp; availability.</span></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>Will a read see the latest write?</td><td><code>W + R &gt; N</code> overlap (L6/11/63)</td><td>read intersects the write set → no stale read / must wait for a quorum</td></tr>
+  <tr><td>Reads hot, writes rare</td><td><code>W = 3, R = 1</code></td><td>single-replica fast reads / writes fail if any replica down</td></tr>
+  <tr><td>Writes hot, reads rare</td><td><code>W = 1, R = 3</code></td><td>single-replica fast writes / reads fragile &amp; slow</td></tr>
+  <tr><td>Balanced / unsure</td><td><code>W = R = 2</code> (majority)</td><td>overlap + tolerate 1 death each side / moderate latency both sides</td></tr>
+  <tr><td>Staleness is harmless (view count)</td><td><code>W = 1, R = 1</code></td><td>fastest &amp; most available / eventual, reads may lag</td></tr>
+  <tr><td>A replica fell behind (hot key)</td><td>Read-repair (L6)</td><td>read path heals it for free / an extra background write; cold keys unhealed</td></tr>
+  <tr><td>A replica is down at write time</td><td>Hinted handoff (L11/34)</td><td>write stays available, dead replica catches up / softens overlap (sloppy)</td></tr>
+  <tr><td>Which of two values is newer?</td><td>Version / vector clock (L35)</td><td>pick the winner / metadata per value; concurrent = a conflict, not a winner</td></tr>
+  <tr><td>Two concurrent writes to one key</td><td>LWW / siblings+merge (L23) / consensus (L62)</td><td>a decided outcome / LWW drops data; merge is app work; consensus is slower</td></tr>
+  <tr><td>Need a true global order</td><td>Consensus layer (L62 Raft)</td><td>real linearizability / a leader, an election, higher cost than quorum</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — thinking <code>W = R = N</code> is "maximum safety."</b> It's the worst corner: writes fail if any replica is down (100× worse availability than majority), reads pinned to the slowest replica, and you <i>still</i> don't get a total order. The honest strong setting is the <i>majority</i> quorum <code>W = R = ⌊N/2⌋+1</code>; true linearizability needs consensus (L62), not a bigger quorum.</li>
+  <li><b>Trap 2 — believing quorum orders concurrent writes.</b> Overlap guarantees a read sees a <i>completed</i> write; two writes racing on the same key can both satisfy W and produce a conflict. You must <i>separately</i> choose how conflicts resolve — LWW (drops a write), siblings + app merge (L23), or serialize the key (L62). Skip this and you silently lose updates (L6).</li>
+  <li><b>Trap 3 — forgetting a low quorum reads stale by design.</b> <code>W = 1, R = 1</code> (or any <code>W + R ≤ N</code>) is a legitimate, fast choice — but it <i>will</i> return old values. That's correct for a view count, wrong for anything a user acts on. Match the per-call quorum to whether staleness is harmless <i>for that call</i>, not by habit.</li>
+  <li><b>Trap 4 — assuming a sloppy quorum is as strong as a strict one.</b> Hinted handoff keeps writes available by parking them on stand-ins, which means a strict read among home replicas can miss a just-written value until the hint is handed off. It's the L11 CAP choice: default sloppy for availability, go strict only when you truly can't tolerate the soft window (and accept the reduced write availability).</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We opened the <code>W + R &gt; N</code> box we'd used as an incantation since Lesson 6. <b>Estimate</b> priced the two forces that make it a dial: a high write quorum <i>fails</i> whenever a replica is down (<code>W = N</code> → ~260 h/yr of failed writes, a 100× hit over majority), and a high read quorum <i>waits</i> on the slowest replica (~14% of reads dragged to the tail at R = N) — lower quorums are more available and faster but give up the overlap guarantee. <b>Model</b> showed the guarantee is pure pigeonhole (two subsets of N whose sizes exceed N must share a member, so a read quorum can't miss a completed write quorum), gave the budget-splitting table (<code>W=3,R=1</code> read-heavy, <code>W=1,R=3</code> write-heavy, <code>W=R=2</code> balanced, <code>W=R=1</code> when stale is fine), and added the two healers — <b>read-repair</b> (the read path fixes lagging replicas) and <b>hinted handoff</b> (a stand-in keeps writes available through a failure). <b>Tracing</b> watched a quorum read catch a stale replica, that read heal it, and a write survive a down replica. The <b>first bottleneck</b> was the guarantee's edge: quorum buys <b>overlap, not order</b> — concurrent writes still conflict (needing L35 versioning + L23 resolution or L62 consensus), <code>W = R = N</code> is a trap that costs everything and buys no total order, and sloppy quorums soften the guarantee to stay available (L11's CAP choice again). Every dial named its trade. The standing tension, unbroken since the first replica: <span class="key">per-request consistency vs latency &amp; availability.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we've tuned how a single record is read and written across replicas. Now attack the other everyday killer: too many round trips.</b></p>
+  <p style="margin:.2rem 0">• <b>Bulk &amp; batch APIs — the N+1 &amp; fan-out problem (Lesson 72):</b> one screen needs 200 records, and the naïve client fires 200 separate requests (Lesson 18's per-item fetch). Why that's the silent latency killer even when each call is fast, how <b>batch endpoints</b>, <b>request coalescing / dataloader</b>, and <b>field selection</b> collapse 200 round trips into a handful, and the over-fetch vs under-fetch tension. Trade: fewer round trips &amp; payload control vs API &amp; caching complexity.</p>
+  <p style="margin:.2rem 0">• Then further out: <b>deduplication &amp; entity resolution at scale</b> — "are these two records the same customer?" across 500M rows (Lesson 73). Say <b>next</b> to kill the N+1.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">replica</span>
+    <span class="pill">replication factor (N)</span>
+    <span class="pill">coordinator</span>
+    <span class="pill">W / write quorum</span>
+    <span class="pill">R / read quorum</span>
+    <span class="pill">quorum</span>
+    <span class="pill">W + R &gt; N overlap</span>
+    <span class="pill">version / vector clock</span>
+    <span class="pill">read-repair</span>
+    <span class="pill">hinted handoff</span>
+    <span class="pill">strict vs sloppy quorum</span>
+    <span class="pill">stale read</span>
+    <span class="pill">last-write-wins</span>
+    <span class="pill">linearizable / eventual</span>
+    <span class="pill">consistency vs latency &amp; availability</span>
+  </p>
+  <p>That's Lesson 71. It builds on: Lesson 6 (replication, lost updates, read-your-writes, and the first <code>W + R &gt; N</code> quorum), Lesson 11 (CAP — choose C or A while partitioned; here the strict-vs-sloppy quorum choice), Lesson 63 (the Dynamo-style KV store this quorum lives inside), Lesson 35 (logical clocks / vector clocks — telling newer from older, and concurrent from causal), Lesson 23 (conflict resolution — LWW vs CRDT/siblings for the concurrent-write conflict quorum can't decide), Lesson 34 (fail-static instinct behind hinted handoff), Lesson 17 (tail latency — why waiting for the slowest replica hurts), Lesson 20 (durability from replication), and Lesson 62 (consensus/Raft — the real linearizability quorum alone can't give). <b>Ask me follow-ups</b> — e.g. "why isn't a majority quorum linearizable on its own?", "how does read-repair interact with vector clocks — what if the two replicas are concurrent, not stale-vs-fresh?", "when should I pick strict over sloppy quorum, concretely?", "how do I choose N — why is 3 so common, and when do I want 5?", or "if quorum can't order concurrent writes, when do I reach for Raft (L62) instead?" When you're ready, say <b>next</b> and we'll kill the N+1 round-trip problem — <i>batching 200 requests into a handful.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your store has N = 3 replicas per key. A teammate sets W = 3 and R = 3 everywhere, saying 'wait for all replicas on every operation — that's the safest, strongest consistency we can get.' What's wrong with this?",
+    options: [
+      {t:"It's the worst corner, not the safest: with W = 3 a write fails whenever ANY single replica is down (~2.97% of writes vs ~0.03% at W = 2 — a 100× availability loss), reads with R = 3 are pinned to the slowest of the three replicas (dragged into the tail ~14% of the time), and it STILL doesn't give a linearizable total order — two concurrent writes to one key can each reach all three replicas and conflict. You paid maximum availability and latency cost and didn't buy a global order. The honest strong setting is the majority quorum W = R = 2; true linearizability needs a consensus layer (Lesson 62), not a bigger quorum.",
+       ok:true,
+       fb:"Right. W = R = N maximizes cost on every axis — availability, latency — while still not ordering concurrent writes. Majority (W = R = 2 on N = 3) is the sane strong default; linearizability is a consensus problem, not a quorum-size problem."},
+      {t:"Nothing is wrong — waiting for all N replicas is exactly how you get linearizable, strongly consistent reads and writes with no downsides.",
+       ok:false,
+       fb:"Two things are false here. First, there are big downsides: writes fail if any replica is down, and reads wait on the slowest replica. Second, W = R = N still doesn't linearize — concurrent writes to the same key can both satisfy their quorums and conflict, with no built-in tiebreak."},
+      {t:"It's wrong because W + R = 6 which is far greater than N = 3, and over-shooting the overlap inequality corrupts data.",
+       ok:false,
+       fb:"Over-shooting W + R > N doesn't corrupt anything — more overlap is still valid overlap. The real problems are availability (any replica down blocks writes) and latency (pinned to the slowest), plus that overlap never ordered concurrent writes in the first place. The inequality just needs to be exceeded, not minimized-or-maximized for correctness."}
+    ]
+  },
+  {
+    stem: "N = 3, and you want a read to be guaranteed to see the most recent completed write. A write used W = 2. What's the smallest R that guarantees it, and why exactly does it work?",
+    options: [
+      {t:"R = 2, because W + R = 2 + 2 = 4 > 3 = N. Two subsets of a 3-element set whose sizes add to more than 3 cannot be disjoint (pigeonhole), so the read set must share at least one replica with the write set — and that shared replica holds the new value, so a version comparison across the read's responses returns it. R = 1 would give W + R = 3 = N (not greater), so the single replica read could be the one that missed the write → a legal stale read.",
+       ok:true,
+       fb:"Exactly. The guarantee is pure set overlap: W + R > N forces the read and write subsets to intersect, and the intersecting replica carries the newest value. R = 1 here leaves W + R = 3 = N, which is not strictly greater, so overlap isn't forced and a stale read is possible."},
+      {t:"R = 1 is enough, because as long as the coordinator reads from any one replica it will always have the latest value — replication keeps all three identical at all times.",
+       ok:false,
+       fb:"Replication is not instantaneous — a replica can miss or lag a write (that's the whole reason quorums exist). With W = 2, one replica may still hold the old value; an R = 1 read that happens to hit that replica returns stale. You need W + R > N (here R = 2) to force overlap."},
+      {t:"R = 3, because only reading every replica can guarantee freshness; any smaller read set might miss the write entirely.",
+       ok:false,
+       fb:"R = 3 works but is unnecessarily expensive — it pins the read to the slowest replica and fails if two replicas are down. R = 2 already guarantees overlap with a W = 2 write (2 + 2 > 3). The minimum that satisfies the inequality is the right choice; over-paying buys nothing here."}
+    ]
+  },
+  {
+    stem: "Two clients update the same cart key at the same instant with W = 2: X adds 'shoes', Y adds 'hat', neither having seen the other. Both writes reach a quorum and report success. A later read finds two different values. Did quorum fail, and what's actually needed?",
+    options: [
+      {t:"Quorum didn't fail — it did its only job (a read sees completed writes) but that job was never to ORDER concurrent writes. Overlap resolves staleness, not conflict: two writes that don't happen-before each other can both satisfy W and produce siblings a version comparison can't rank (a vector clock, Lesson 35, will show them as concurrent, not older/newer). Resolving them is a separate decision: last-write-wins (simple, but silently drops one and trusts a skewable clock), keep both as siblings and merge in the app (Lesson 23's add-wins cart), or serialize writes to the key through a consensus layer (Lesson 62) so concurrency never arises.",
+       ok:true,
+       fb:"Right. W + R > N guarantees a read sees a completed write; it says nothing about writes that overlap in time. Concurrent writes are a conflict to be resolved (LWW / merge / serialize), not a staleness quorum can fix. Choosing the resolution is a distinct design decision."},
+      {t:"Yes, quorum failed — W = 2 was too low. If both had used W = 3, the two writes couldn't have conflicted and one would have cleanly won.",
+       ok:false,
+       fb:"W = 3 wouldn't help: both concurrent writes could still each reach all three replicas and there's still no built-in rule for which 'v5' wins. A bigger write quorum doesn't create an ordering between concurrent writes — only versioning + a resolution policy (or serializing the key via consensus) does."},
+      {t:"The read is simply broken and should be retried until it returns a single value; the conflict will resolve itself on the next read.",
+       ok:false,
+       fb:"Retrying doesn't invent a winner — the two values are genuinely concurrent, so a re-read finds the same conflict. Something must decide: last-write-wins, an application merge of the siblings, or serializing writes to the key. The conflict is a real design choice, not a transient glitch."}
+    ]
+  },
+  {
+    stem: "During a write with W = 2, one of the key's three home replicas (C) is down. The write still succeeds on the other two, and the coordinator also stores the value on a stand-in node with a note 'this belongs to C.' What is this, and what's the catch?",
+    options: [
+      {t:"It's hinted handoff (a sloppy quorum): parking the write on a stand-in keeps writes available while C is down, and when C returns the stand-in hands the value off so C catches up. The catch is that the stand-in isn't one of C's home replicas, so while the hint is outstanding a STRICT read quorum among the home nodes can miss the value — the strict W + R > N overlap softens to 'eventually.' It's Lesson 11's CAP choice in quorum clothing: sloppy leans available (take the write, accept a soft window), strict leans consistent (refuse the write rather than weaken the guarantee).",
+       ok:true,
+       fb:"Exactly. Hinted handoff trades the strict overlap guarantee for write availability during a failure, healing when the replica returns. Strict vs sloppy is the same C-vs-A dial from CAP: default sloppy for availability, go strict only when the soft window is unacceptable."},
+      {t:"It's read-repair, and there's no catch — the stand-in guarantees the read quorum will always still overlap the write, so consistency is unchanged.",
+       ok:false,
+       fb:"Two errors: this is hinted handoff (a write-path mechanism), not read-repair (which heals a stale replica on the read path). And there IS a catch — the stand-in isn't a home replica, so a strict read among home nodes can miss the value until the hint is handed off. The strict overlap guarantee is temporarily softened."},
+      {t:"It's a bug — writes should never go to a node that isn't one of the key's replicas, and doing so corrupts the data placement.",
+       ok:false,
+       fb:"It's a deliberate, standard mechanism (hinted handoff), not a bug: it's how a Dynamo-style store keeps taking writes through a node failure, and the stand-in cleanly hands off and drops its copy when the real replica returns. The real trade-off is the softened overlap guarantee (sloppy quorum), not data corruption."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
