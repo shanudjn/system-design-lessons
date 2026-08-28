@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 72 — Bulk &amp; Batch APIs: Collapsing 200 Round Trips Into Two</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 72 · Worked Example</div>
+  <h1>Bulk &amp; Batch APIs: Collapsing 200 Round Trips Into Two</h1>
+  <p class="lead">Lesson 18 paged one <code>GET /feed</code> down to a phone and mentioned, in passing, that a client fetching each item's details separately re-creates an <b>N+1</b> — a pattern that "batching fixes." This lesson makes that concrete. One screen: a social app's home feed shows <b>200 posts</b>, and each post is written by an author whose <b>name and avatar</b> the screen must display. The feed call returns 200 posts, each carrying an <code>author_id</code>. The naïve client now fires <span class="key">one request per author — 200 more calls</span> to paint one screen. We'll <b>estimate</b> why that is the silent latency killer <i>even when every individual call is fast</i> (the cost is the round-trip count, not the work), <b>model</b> the three fixes that collapse it — a <b>batch endpoint</b>, server-side <b>request coalescing / DataLoader</b>, and <b>field selection</b> — and the over-fetch vs under-fetch tension underneath them, <b>trace</b> the N+1 happening, a batch endpoint erasing it, and a GraphQL-style query that <i>looks</i> like one call but fans out to N+1 inside the resolver until a DataLoader coalesces it, and find <span class="key">the first bottleneck: a batch is a new unit of failure, latency, and load — one unbounded batch becomes a slow all-or-nothing query, a partial failure that sinks 200 good items, or a scatter-gather that just moved the N+1 onto the server; and collapsing cacheable GETs into one uncacheable POST throws away the edge cache.</span> The trade under all of it: <b>fewer round trips &amp; payload control vs API, caching &amp; failure-handling complexity.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0072-bulk-batch-apis.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>A mobile app's <b>home feed</b>. The client calls <code>GET /feed?limit=200</code> (Lesson 18's paged endpoint) and gets back 200 posts. Each post has text, a timestamp, and an <code>author_id</code> — but <i>not</i> the author's name or avatar, because the feed table stores the id, not a copy of the profile (Lesson 12/24: don't denormalize a mutable name into every post). To render the screen, the client needs, for each of the 200 posts, the author's <b>display name</b> and <b>avatar URL</b>. The naïve approach — the one every framework makes easy — is a loop: for each post, call <code>GET /users/{author_id}</code>. That's the <b>N+1</b>: <b>1</b> call to get the list, then <b>N = 200</b> calls to get each item's related data. It works in the demo with 3 posts on office Wi-Fi. It falls apart at 200 posts on a train. <span class="key">The whole lesson is about turning that <code>1 + N</code> into a small constant number of calls without giving up on always having the freshest name.</span></p>
+
+<div class="diagram"><pre>
+  THE N+1: one screen, 200 posts, each needs its author's name+avatar.
+
+    client                         server / DB
+      |  GET /feed?limit=200  ----> [200 posts, each w/ author_id]
+      |  <----------------------
+      |
+      |  GET /users/17   -------->  [user 17]     \
+      |  GET /users/4    -------->  [user 4]       |  200 SEPARATE
+      |  GET /users/17   -------->  [user 17 again]|  round trips,
+      |  GET /users/88   -------->  [user 88]      |  many duplicates
+      |     ... 196 more ...                       /
+      |
+   1 list call + N item calls  =  1 + 200  =  201 round trips
+
+   Each call is FAST on its own (~3 ms of server work).
+   The killer is the COUNT x the network round-trip time, not the work.
+</pre></div>
+
+<p class="note"><span class="key">The one idea the whole lesson turns on:</span> a network round trip has a fixed floor — the time for a request to reach the server and the response to come back — that has nothing to do with how little work the server does. On a phone that floor is ~100 ms whether the handler takes 1 ms or 50 ms. So the cost of a screen isn't <i>the work</i>, it's <i>the number of round trips × that floor</i>. The fix is never "make each call faster." It's "make fewer calls" — bundle the N item fetches into one request. Everything else (coalescing, field selection, batch caps) is machinery around that one move.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Round trip / RTT</b> — one request out and its response back. Its time is dominated by network latency (~100 ms on mobile), not server work.</li>
+  <li><b>N+1 problem</b> — 1 query/request to fetch a list, then N more to fetch each item's related data; the classic hidden performance bug (Lesson 18 in GraphQL, Lesson 17's N+1 of feature-store calls).</li>
+  <li><b>Batch endpoint / multiget</b> — one endpoint that takes <i>many</i> keys and returns <i>many</i> results in a single request (e.g. <code>POST /users:batchGet {ids:[...]}</code>), backed by one set query (<code>WHERE id IN (...)</code>).</li>
+  <li><b>Request coalescing / DataLoader</b> — a server-side collector that gathers all the per-item lookups issued within one request (or one tick), de-duplicates the keys, and fires a single batched query for them.</li>
+  <li><b>Field selection</b> — the client naming exactly which fields it wants (a sparse fieldset / field mask, or a GraphQL query) so the response carries no more than needed.</li>
+  <li><b>Over-fetch</b> — the endpoint returns more than the client needs (the whole 2 KB user when 40 B of name+avatar would do).</li>
+  <li><b>Under-fetch</b> — the endpoint returns too little, forcing the client to make <i>another</i> call for the rest — re-creating round trips.</li>
+  <li><b>Chatty vs chunky</b> — a chatty interface makes many small calls; a chunky one makes few big calls. The dial this lesson turns.</li>
+  <li><b>Scatter-gather</b> — one request the server must fan out to many backends/shards and reassemble (Lesson 3/19).</li>
+  <li><b>Partial failure</b> — some items in a batch succeed and some fail; the response must report per-item status, not one all-or-nothing code.</li>
+</ul>
+
+<h2>Move 1 — Estimate: why round trips, not work, are the killer</h2>
+<p>The instinct "each <code>GET /users/{id}</code> is tiny, 200 of them can't be that bad" is exactly the trap. Put real numbers on it and the round-trip count dominates everything.</p>
+
+<div class="card calc">
+  <p><b>Force 1 — network: the round-trip floor times the count.</b> A mobile round trip is ~<b>100 ms</b> (cellular RTT; office Wi-Fi hides this, which is why the bug ships). The screen needs <b>201</b> requests (1 feed + 200 authors).</p>
+  <ul>
+    <li><b>Sequential</b> (a naïve <code>for</code> loop, awaiting each): <code>201 × 100 ms = 20,100 ms ≈ <b>20 s</b></code>. The user has closed the app.</li>
+    <li><b>Parallel, 6 at a time</b> (HTTP/1.1 caps ~6 connections per host): <code>⌈200/6⌉ = 34</code> rounds + the feed = ~35 rounds → <code>35 × 100 ms = <b>3.5 s</b></code>. Better, still ~7× over the ~500 ms "feels instant" bar, and it pins the radio and drains battery.</li>
+    <li><b>HTTP/2, all 200 in flight on one connection:</b> the transport collapses to ~1–2 RTT, but the <i>server</i> now handles 201 requests, each paying its fixed overhead — TLS/framing, auth check, logging, a DB round trip. Even at ~3.5 ms each that's <code>200 × 3.5 ms = <b>700 ms</b></code> of CPU, and 200 concurrent handler invocations hammer the connection/thread pool (Lesson 28 backpressure) for data one query returns in ~5 ms.</li>
+  </ul>
+  <p><span class="key">There is no transport trick that fixes this, because the problem isn't the pipe — it's that you asked 200 separate questions.</span> Multiplexing hides the network cost; it does nothing about 200× the server overhead and pool pressure. The only real fix is to ask fewer, bigger questions.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Force 2 — payload: over-fetching multiplies the bytes.</b> A full user object is ~<b>2 KB</b> (bio, settings, follower counts, preferences). The screen needs only name + avatar URL ≈ <b>40 B</b>. Fetch 200 <i>full</i> users and you move <code>200 × 2 KB = <b>400 KB</b></code> to use <code>200 × 40 B = 8 KB</code> — <span class="key"><b>50×</b> wasted bytes</span> over a metered, high-latency mobile link. Over-fetching turns a fast call into a slow one and a cheap screen into an expensive one.</p>
+  <p>The naïve fix (a skinnier endpoint like <code>/users/{id}/name</code>) over-corrects into <b>under-fetching</b>: now the avatar needs a <i>second</i> call, and you're back to multiplying round trips. The two errors point in opposite directions, which is why field selection (Move 2) exists — let the client name the 40 B it wants, in one shape that serves every screen.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The target.</b> Replace the 200 author calls with <b>one</b> batch call over just the ids the feed returned, asking for just the two fields:</p>
+  <p style="margin:.5rem 0 .2rem"><code>POST /users:batchGet&nbsp; { ids:[17,4,88,...], fields:["name","avatar"] }</code></p>
+  <p>Server runs one <code>SELECT id,name,avatar FROM users WHERE id IN (&lt;deduped ids&gt;)</code> — ~200 primary-key index seeks ≈ <b>~2 ms</b> (Lesson 12's B-tree), payload <b>8 KB</b>. Screen load becomes <b>feed + batch = 2 round trips ≈ 200 ms</b>, versus 201 trips and ~3.5–20 s. <span class="key">~100× fewer round trips, ~50× fewer bytes, from one endpoint shape.</span></p>
+</div>
+
+<p class="note why"><b>Why "just parallelize the 200 calls" is the seductive wrong answer:</b> firing all 200 at once <i>feels</i> like the fix — it drops 20 s to 3.5 s — but it treats a design problem as a concurrency problem. You still pay 200× the per-request server overhead (700 ms of CPU, 200 pool slots), you still can't cache or reason about it as one unit, and you've made the client hammer the server with a burst it must now defend against (Lesson 8 rate limiting, Lesson 28 shedding). Parallelism moves the wait around; batching removes the calls. The right instinct is never "make the N calls faster or more concurrent." It's "there should not be N calls."</p>
+
+<h2>Move 2 — Model: three ways to collapse the N+1</h2>
+
+<h3>Fix 1 — the batch endpoint (multiget): change the API shape</h3>
+<div class="card calc">
+  <p>Add an endpoint that takes <i>many</i> keys and returns <i>many</i> results: <code>POST /users:batchGet {ids:[...]}</code>, or a cache-friendly <code>GET /users?ids=4,17,88</code>. The client collects all 200 <code>author_id</code>s from the feed, <b>de-duplicates</b> them (a feed of 200 posts might have only ~60 distinct authors — dedup alone can cut the work 3×), and sends one request. The server answers with one <b>set query</b> (<code>WHERE id IN (...)</code>) instead of a loop of point reads. <span class="key">The N+1 becomes <code>1 + 1</code>.</span></p>
+  <p>The cost is API surface: every "list of ids → list of objects" relationship wants a batch variant, and the response is now a <i>map</i> (id → object or "not found") the client must re-join to its posts. The batch also needs a <b>size cap</b> and <b>partial-failure</b> semantics (the bottleneck, Move 4) — a single object endpoint needed neither.</p>
+</div>
+
+<h3>Fix 2 — request coalescing / DataLoader: batch without changing the client</h3>
+<div class="card calc">
+  <p>Sometimes you can't change the caller — a page's components each independently ask for "the author of post X," or a GraphQL resolver is <i>defined</i> per-item and naturally fires one lookup per post. A <b>DataLoader</b> (request-coalescing loader) sits between that code and the database: instead of running each <code>load(id)</code> immediately, it <b>collects the ids requested within one tick</b> (or one request), de-duplicates them, and fires a <i>single</i> batched query for the whole set, then hands each caller its result. <span class="key">The code still <i>reads</i> as "fetch one author per post," but underneath, 200 <code>load()</code> calls become one <code>WHERE id IN (...)</code>.</span> It usually also holds a per-request cache so the same id asked twice is fetched once. This is the server-side twin of the batch endpoint — same collapse, but the batching is invisible to the calling code.</p>
+</div>
+
+<h3>Fix 3 — field selection: send only the bytes needed</h3>
+<div class="card calc">
+  <p>Let the client name the fields: <code>?fields=name,avatar</code> (a sparse fieldset / field mask) or a GraphQL query that lists exactly the fields the screen renders. The response carries 40 B, not 2 KB — killing the over-fetch — <i>and</i> the same endpoint serves a screen that wants five fields and one that wants two, killing the under-fetch (no need for a zoo of skinny endpoints). <span class="key">Field selection controls the <i>payload</i>; batching controls the <i>round trips</i> — they're orthogonal, and you usually want both.</span> The catch: GraphQL's field selection makes it <i>trivial</i> to write a query that walks <code>posts → author → name</code>, and the per-post <code>author</code> resolver quietly re-creates the N+1 on the server — which is exactly why GraphQL servers lean on Fix 2 (DataLoader) to survive (Lesson 18's "resolver reintroduces the N+1").</p>
+</div>
+
+<table>
+  <tr><th>Fix</th><th>Collapses</th><th>Where it lives</th><th>Its price</th></tr>
+  <tr><td>Batch endpoint / multiget</td><td>round trips (client controls it)</td><td>a new API shape</td><td>API surface, response is a map, needs cap + partial failure</td></tr>
+  <tr><td>Coalescing / DataLoader</td><td>round trips (client unchanged)</td><td>server, between code &amp; DB</td><td>a per-request collector + cache; per-tick batching subtlety</td></tr>
+  <tr><td>Field selection</td><td>payload bytes (over/under-fetch)</td><td>request params / query language</td><td>flexible responses harder to cache; enables the GraphQL N+1</td></tr>
+</table>
+
+<p class="note why"><b>Why the two problems are separate.</b> "Too many round trips" and "each response too fat" feel like one problem — "the API is slow" — but they have different fixes and you can have either without the other. A single fat <code>GET /users/{id}</code> over-fetches (2 KB) with no N+1. A perfectly slim <code>/users/{id}/name</code> under-fetches and creates round trips. Batching fixes the <i>count</i>; field selection fixes the <i>size</i>. Fixing one and not the other leaves half the tax on the table — a batch of 200 <i>full</i> users is one round trip but still 400 KB. Do both: one call, exact fields.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Three renders of the same 200-post screen: the N+1 as it actually happens, a batch endpoint erasing it, and a GraphQL query that hides an N+1 until a DataLoader coalesces it.</p>
+
+<h3>Path A — the N+1 as it really unfolds</h3>
+<div class="diagram"><pre>
+  Client renders 200 posts, each needs author name+avatar.
+
+    GET /feed?limit=200      -> 200 posts [{id, text, author_id}, ...]
+    for each post:
+       GET /users/{author_id}   (fires 200 times; ~60 distinct ids,
+                                  so ~140 are DUPLICATE fetches)
+    total: 1 + 200 = 201 round trips
+    wall clock: 20 s sequential / 3.5 s at 6-way parallel
+    server: 201 handler runs, ~700 ms CPU, 200 pool slots burned
+
+  Works with 3 posts on Wi-Fi. Dies with 200 on cellular.
+</pre></div>
+
+<h3>Path B — a batch endpoint erases it</h3>
+<div class="diagram"><pre>
+  Same screen, one extra endpoint.
+
+    GET /feed?limit=200      -> 200 posts, collect author_ids
+    client dedups ids        -> [17,4,88,...]  (~60 distinct)
+    POST /users:batchGet { ids:[...], fields:["name","avatar"] }
+       server: SELECT id,name,avatar FROM users WHERE id IN (...)
+               ~60 PK index seeks ~= 2 ms, payload ~2.4 KB
+       -> { "17":{name,avatar}, "4":{...}, ... , "999":null }  (map)
+    client joins the map back onto its 200 posts
+
+    total: 2 round trips (feed + batch)  ~= 200 ms
+    round-trip cut ~100x, byte cut ~50x, one DB query not 200.
+    NOTE the "999":null -- a missing/deleted user is a per-item
+    result, not a failed batch (Move 4).
+</pre></div>
+
+<h3>Path C — GraphQL hides an N+1 until DataLoader coalesces it</h3>
+<div class="diagram"><pre>
+  ONE query goes out; the N+1 hides on the SERVER.
+
+    query { feed(limit:200){ text author { name avatar } } }
+      |
+      v  server resolves:
+      feed resolver     -> 200 posts
+      author resolver   -> called ONCE PER POST = 200 times !!
+                           (N+1 moved server-side; client sees 1 call)
+
+    Fix: wrap the author load in a DataLoader.
+      author resolver calls loader.load(author_id)   x200
+      loader collects the tick's ids, dedups -> ~60
+      fires ONE  SELECT ... WHERE id IN (...)  -> hands each its row
+
+    client: 1 round trip.  server: 1 feed query + 1 batched user query.
+    Field selection gave payload control; DataLoader gave round-trip
+    (query) control. You needed BOTH.
+</pre></div>
+
+<p>Path A is the tax in full: 201 trips, most of them duplicate fetches of the same ~60 authors, ~700 ms of pointless server CPU. Path B is the client-side cure: one batch call, one <code>IN</code> query, a map re-joined on the client — and it already shows the bottleneck's edge (a deleted user comes back as <code>null</code>, a per-item outcome, not a batch-wide failure). Path C is the subtle one: field selection can make the round-trip count look solved while the N+1 lives on inside the resolver, and only a coalescing loader actually collapses the server work. <span class="key">The first three moves make batching look like a free win. Move 4 is where the batch's own costs — failure, latency, load, cacheability — come due.</span></p>
+
+<h2>Move 4 — Find the first bottleneck: a batch is a new unit of failure, latency &amp; load</h2>
+<p>Collapsing 200 calls into 1 doesn't delete the work — it fuses it into a single request that now succeeds, fails, waits, and loads as one thing. That fusion is the source of every problem below.</p>
+
+<div class="card calc">
+  <p><b>The first bottleneck — the unbounded batch.</b> If the endpoint accepts <i>any</i> number of ids, a client (buggy or hostile) sends <code>ids:[...100,000...]</code>. Now one request is a 100k-key <code>IN</code> query (a slow, planner-punishing scan), a response of <code>100,000 × 2 KB = <b>~200 MB</b></code> (a memory spike that can OOM the handler, Lesson 28), and a single unit of work big enough to be a denial-of-service all by itself. <span class="key">A batch endpoint without a size cap is a DoS you built yourself.</span> The fix is a hard cap (say 100–1,000 ids/batch) plus <b>pagination</b> of the batch itself (Lesson 18): the client sends the 200 ids as, e.g., two calls of 100. You've re-introduced <i>a</i> round trip — but 2 or 3, not 200. The cap size is the dial: bigger = fewer trips but fatter, slower, riskier requests; smaller = safer but chattier.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — partial failure and tail latency.</b> One call for 200 items is <i>one</i> status code and <i>one</i> latency — and that's the problem. If id <code>999</code> was deleted, does the whole batch <code>500</code> and sink 199 good rows? It must not: <span class="key">a batch response is a <i>list of per-item results</i></span> (<code>{"17":{...}, "999":{"error":"not_found"}}</code>), so one bad key can't fail the other 199 (Lesson 32's "some steps commit, some don't"). And the batch's latency is the <b>slowest</b> item's latency — if 199 users are cached and one is on a cold, slow shard, the whole response waits for it (Lesson 17's tail latency, now fused into one request). A single-item call could fail or lag alone; a batch shares one fate across all its items unless you deliberately design per-item outcomes.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — batching the wire is not batching the work.</b> The client now makes 1 call, but if the server implements <code>batchGet</code> as a <code>for id in ids: db.get(id)</code> loop, <span class="key">the N+1 didn't die — it moved server-side</span>, and it's now 200 <i>sequential</i> DB round trips inside one slow handler (often worse, because there's no client parallelism left). The batch must become one <i>set</i> operation: a single <code>WHERE id IN (...)</code>, or — if users are sharded by id across, say, 16 nodes (Lesson 3/4) — a <b>scatter-gather</b> that groups the ids per shard, fires one multiget per shard in parallel, and merges (Lesson 19/21's "local compute, central union"). Batch the <i>work</i>, not just the <i>wire</i>; otherwise you paid for a new endpoint and kept the N+1.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The fourth wall — batching burns the cache.</b> Two hundred individual <code>GET /users/{id}</code> calls are each independently <b>cacheable</b> — at the CDN/edge (Lesson 14) and in the client (Lesson 2) — so the same author seen on the next screen is a free hit, and a popular author is served from the edge to everyone. One <code>POST /users:batchGet</code> is <b>uncacheable</b> (a POST body, and a near-unique id set no two screens share). <span class="key">Batching trades edge-cacheability for round-trip count.</span> The middle path: a cache-friendly batch — <code>GET /users?ids=4,17,88</code> with the ids <i>sorted</i> so the URL is stable and cacheable — or coalesce client-side while still hitting per-id caches underneath. The dial is Lesson 2/14's freshness-and-reuse against this lesson's round-trip count: <b>chatty &amp; cacheable</b> vs <b>chunky &amp; uncacheable</b>.</p>
+</div>
+
+<p>So the honest picture of bulk APIs: a screen that needs <b>N</b> related records must not make <b>N</b> calls, because a screen's cost is <b>round trips × the ~100 ms RTT floor</b>, not the trivial per-call work (Lesson 18/17's N+1). You collapse the N+1 three ways — a <b>batch endpoint</b> (client bundles the ids, server runs one set query), <b>request coalescing / DataLoader</b> (the same collapse made invisible to the calling code, the fix GraphQL's per-item resolvers <i>require</i>), and <b>field selection</b> (name the exact fields, killing over- and under-fetch) — and batching (round trips) and field selection (payload) are orthogonal so you want both. You pay for it by accepting that a batch is a <b>new unit</b>: cap its size and paginate it or it's a self-inflicted DoS; give it <b>per-item results</b> or one bad id sinks the batch and one slow id sets the whole latency (Lesson 17/32); implement it as one <b>set/scatter-gather</b> query or the N+1 just moved to the server; and know it <b>can't be edge-cached</b> the way the individual GETs could (Lesson 2/14). Every choice names its price: batching costs API surface, cacheability, and failure-handling; field selection costs cache-key explosion; a bigger batch costs tail latency and blast radius.</p>
+
+<p><span class="key">The deepest point: the N+1 is not a database bug or a client bug — it's a boundary-crossing bug.</span> Every one of those 200 author fetches is cheap; what's expensive is <i>crossing the network boundary</i> 200 times, because a boundary crossing has a fixed floor that dwarfs the work on either side. So the cure is always the same shape — <b>move the fan-out to the side of the boundary where it's cheap</b>: do the 200 lookups as one set operation <i>inside</i> the datacenter (one <code>IN</code> query, one scatter-gather), and cross the expensive client↔server boundary <i>once</i>. Batching, DataLoader, GraphQL-with-a-loader are three spellings of that one idea. The standing tension, unchanged since Lesson 18 first paged a feed: <span class="key">fewer round trips &amp; payload control vs API, caching &amp; failure-handling complexity.</span></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>200 items each need related data</td><td>Batch endpoint / multiget (L18)</td><td>1 call, 1 set query / new API shape, response is a map</td></tr>
+  <tr><td>Can't change the caller / GraphQL resolver</td><td>Coalescing / DataLoader</td><td>invisible batching + dedup / a per-request collector &amp; cache</td></tr>
+  <tr><td>Response too fat (2 KB for 40 B)</td><td>Field selection (L18)</td><td>exact bytes, one shape fits all screens / harder to cache</td></tr>
+  <tr><td>Same id fetched many times</td><td>Dedup keys before the batch</td><td>~60 fetches not 200 / must key/join by id</td></tr>
+  <tr><td>Client sends 100k ids</td><td>Size cap + paginate the batch (L18/28)</td><td>bounded work / a few round trips return</td></tr>
+  <tr><td>One bad/slow item in the batch</td><td>Per-item results (L32/17)</td><td>199 good rows survive / response is a status list, tail = slowest item</td></tr>
+  <tr><td>Server loops point reads</td><td>One <code>IN</code> query / scatter-gather (L3/19)</td><td>batch the work not just the wire / distributed query merge</td></tr>
+  <tr><td>Lost the per-item edge cache</td><td>Cache-friendly GET batch / client coalesce (L2/14)</td><td>keep cacheability / sorted-id URLs, more plumbing</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — an unbounded batch.</b> No size cap means a client can request 100,000 ids → a slow mega-query, a ~200 MB response, an OOM, a self-built DoS. Always cap batch size and paginate the batch (L18/28); the cap is a dial (bigger = fewer trips but fatter/riskier requests).</li>
+  <li><b>Trap 2 — one status for the whole batch.</b> Returning a single <code>500</code> when one of 200 ids is missing sinks 199 good results, and a single latency means one slow item drags the whole response (L17). A batch response must be a list of <i>per-item</i> results (L32), not all-or-nothing.</li>
+  <li><b>Trap 3 — batching the wire but looping on the server.</b> A <code>batchGet</code> implemented as a per-id loop just relocated the N+1 into the handler, often serialized and slower. Express it as one set query (<code>WHERE id IN</code>) or a per-shard scatter-gather (L3/19) — batch the <i>work</i>.</li>
+  <li><b>Trap 4 — collapsing cacheable GETs into one uncacheable POST.</b> 200 individual GETs are each edge- and client-cacheable (L2/14); one POST batch is not. Weigh the round-trip win against the lost cache; reach for a cache-friendly GET-with-sorted-ids or client-side coalescing when reuse is high.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We took Lesson 18's throwaway line — "fetch each item separately and you've re-created the N+1" — and made it a whole system. <b>Estimate</b> priced the round-trip tax: a 200-post screen that fetches each author separately is <b>201 round trips</b> ≈ <b>20 s</b> sequential (3.5 s even 6-way parallel, ~700 ms of pointless server CPU), and fetching full 2 KB users for 40 B of name+avatar wastes <b>50×</b> the bytes — the killer is the round-trip <i>count × the ~100 ms RTT floor</i>, not the trivial per-call work, so no transport trick can save it. <b>Model</b> gave three collapses: a <b>batch endpoint</b> (bundle the ids, one <code>WHERE id IN</code> set query → <code>1 + 1</code>), <b>request coalescing / DataLoader</b> (the same collapse made invisible to per-item code, the fix GraphQL resolvers require), and <b>field selection</b> (name the exact fields, killing over- and under-fetch) — batching for round trips and field selection for payload, orthogonal, both wanted. <b>Tracing</b> watched the N+1 unfold (201 trips, mostly duplicates), a batch erase it (2 trips, one query, ~100× fewer round trips), and a GraphQL query hide an N+1 inside its resolver until a DataLoader coalesced it. The <b>first bottleneck</b> was the batch's own nature as a fused unit: cap its size and paginate it or it's a self-inflicted DoS; give it per-item results or one bad/slow id sinks or stalls the rest (L17/32); make it one set/scatter-gather query or the N+1 just moved server-side (L3/19); and accept it can't be edge-cached like the individual GETs (L2/14). The deepest point: the N+1 is a <b>boundary-crossing</b> bug — move the fan-out to the cheap side of the network boundary and cross the expensive one once. The standing tension, unchanged since we first paged a feed: <span class="key">fewer round trips &amp; payload control vs API, caching &amp; failure-handling complexity.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we've made reads cheap to gather. Now face a data-quality problem hiding in every large dataset: the same real thing stored twice.</b></p>
+  <p style="margin:.2rem 0">• <b>Deduplication &amp; entity resolution at scale (Lesson 73):</b> across <b>500M</b> customer rows, "are these two records the same person?" Comparing every pair is <b>N²</b> ≈ 1.25×10¹⁷ comparisons — impossible — so <b>blocking keys</b> group plausible matches to shrink the candidate set, <b>similarity scoring</b> ranks them, <b>MinHash / LSH</b> (Lesson 65's nearest-neighbours) finds near-duplicates without the N², and a <b>survivorship</b> rule decides which record wins the merge. Trade: match recall vs precision &amp; compute cost.</p>
+  <p style="margin:.2rem 0">• Then further out: <b>config &amp; feature-flag delivery at scale</b> — pushing a flag change to 40k servers in seconds without a deploy (Lesson 74). Say <b>next</b> to resolve the duplicates.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">round trip / RTT</span>
+    <span class="pill">N+1 problem</span>
+    <span class="pill">batch endpoint / multiget</span>
+    <span class="pill">request coalescing / DataLoader</span>
+    <span class="pill">field selection</span>
+    <span class="pill">over-fetch</span>
+    <span class="pill">under-fetch</span>
+    <span class="pill">chatty vs chunky</span>
+    <span class="pill">scatter-gather</span>
+    <span class="pill">partial failure / per-item results</span>
+    <span class="pill">batch size cap</span>
+    <span class="pill">cacheability</span>
+  </p>
+  <p>That's Lesson 72. It builds on: Lesson 18 (API design &amp; pagination — the paged feed, the GraphQL resolver N+1, and additive field selection this lesson makes concrete), Lesson 17 (tail latency — why a batch waits for its slowest item, and the N+1 of serial feature-store calls), Lesson 12 (B-tree index seeks behind the <code>IN</code> query), Lesson 3/4 (sharding &amp; consistent hashing — why a batch across a sharded key becomes a scatter-gather), Lesson 19/21 (scatter-gather &amp; merge — local compute, central union), Lesson 2/14 (caching &amp; CDN — the edge-cacheability a batch gives up), Lesson 28 (backpressure — the unbounded batch as a memory/DoS risk), and Lesson 32 (partial failure — some items in a batch succeed while others fail). <b>Ask me follow-ups</b> — e.g. "how does a DataLoader decide when a 'tick' ends — how does it know it has collected all the ids?", "when is a cache-friendly GET-with-ids batch worth the complexity over a POST batch?", "how do I choose a batch size cap — what actually breaks first?", "how do partial-failure results interact with HTTP status codes — what does the outer response return?", or "isn't HTTP/2 multiplexing enough to make the 200 calls fine?" When you're ready, say <b>next</b> and we'll take on deduplication &amp; entity resolution — <i>are these two records the same customer, across 500M rows, without comparing every pair?</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your app's home screen shows 200 posts, and for each it fetches the author with a separate GET /users/{id}. A teammate says 'each call is only ~3 ms of server work, so 200 of them is fine — and if it's slow we'll just fire them in parallel.' What's actually wrong?",
+    options: [
+      {t:"The cost of the screen is the round-trip COUNT times the ~100 ms mobile RTT floor, not the per-call work — 201 calls is ~20 s sequential, and even fired 6-at-a-time it's ~3.5 s while still burning 200× the server's per-request overhead (~700 ms of CPU) and 200 pool slots. Parallelizing moves the wait around but doesn't remove the calls; the fix is to make FEWER, bigger calls — one batch endpoint (POST /users:batchGet) that bundles the deduped ids into a single WHERE id IN (...) query, turning 1+N into 1+1.",
+       ok:true,
+       fb:"Right. The round-trip floor dominates trivial per-call work, so the answer is fewer calls, not faster/more-parallel calls. A batch endpoint collapses the 200 author fetches into one set query."},
+      {t:"Nothing is wrong once you parallelize — HTTP/2 multiplexing puts all 200 requests on one connection, so the round trips are effectively free and the design is fine as-is.",
+       ok:false,
+       fb:"Multiplexing hides the transport cost but not the rest: the server still runs 201 handlers (~700 ms CPU), burns 200 pool slots, and you still can't cache or reason about it as one unit. The pipe wasn't the problem — asking 200 separate questions was."},
+      {t:"The real problem is that each user object is 2 KB, so the fix is a skinnier endpoint like /users/{id}/name that returns only the name.",
+       ok:false,
+       fb:"Over-fetching is a real but SEPARATE problem (fixed by field selection). A skinnier endpoint doesn't reduce the 201 round trips — and /users/{id}/name under-fetches, forcing a second call for the avatar, making the round-trip count worse. Batching fixes the count; field selection fixes the size."}
+    ]
+  },
+  {
+    stem: "You add POST /users:batchGet {ids:[...]}. To be flexible, it accepts any number of ids and returns HTTP 500 if any id doesn't exist. Two things about this design will hurt. What are they?",
+    options: [
+      {t:"(1) No size cap = a self-inflicted DoS: a client can send 100,000 ids → a slow mega IN-query and a ~200 MB response that can OOM the handler. Cap the batch (e.g. 100–1,000) and paginate it. (2) One status for the whole batch means a single missing id sinks all 199 good results — a batch response must be a list of PER-ITEM results ({\"17\":{...}, \"999\":{\"error\":\"not_found\"}}), not all-or-nothing, and its latency is the SLOWEST item's, so one cold id stalls the whole response (tail latency).",
+       ok:true,
+       fb:"Exactly. An unbounded batch is a DoS you built; an all-or-nothing status/latency fuses 200 independent items' fates. Cap + paginate, and return per-item results."},
+      {t:"Both are fine: an unlimited id list is a feature (clients can fetch everything at once), and a 500-on-any-missing-id keeps the response simple and consistent.",
+       ok:false,
+       fb:"An unlimited list is a DoS vector (100k ids → slow query, huge payload, OOM), and 500-on-any-missing throws away 199 valid results because one id was deleted. Neither is fine — cap the batch and return per-item results."},
+      {t:"The only issue is that POST isn't cacheable; switch it to GET and both the DoS and the failure-handling problems disappear.",
+       ok:false,
+       fb:"Cacheability is a real fourth concern, but switching to GET fixes neither the missing size cap (still a DoS) nor the all-or-nothing status (still sinks good rows). Those need a cap+pagination and per-item results respectively.",}
+    ]
+  },
+  {
+    stem: "A GraphQL query `{ feed(limit:200){ text author { name avatar } } }` goes out as ONE request from the client, so a developer concludes the N+1 is solved. Why might it not be, and what fixes it?",
+    options: [
+      {t:"The client makes one call, but the server's per-post `author` resolver fires once per post — 200 times — so the N+1 just moved SERVER-side and is invisible to the client. Field selection controlled the payload but not the query fan-out. The fix is a DataLoader: the author resolver calls loader.load(id) 200 times, the loader collects the tick's ids, de-duplicates (~60 distinct), and fires ONE WHERE id IN (...) query — so you needed both field selection (payload) AND coalescing (round-trip/query) control.",
+       ok:true,
+       fb:"Right. GraphQL's per-item resolvers make the server-side N+1 trivially easy; a DataLoader coalesces the per-post loads into one batched query. Field selection and batching are orthogonal — you need both."},
+      {t:"It's fully solved — GraphQL sends one HTTP request, and one request means one database query by definition, so there's no N+1 anywhere.",
+       ok:false,
+       fb:"One HTTP request does NOT mean one query. The server resolves the nested `author` field per post, firing ~200 user lookups internally. The N+1 is real, just hidden on the server until a DataLoader batches those loads."},
+      {t:"The problem is over-fetching — asking for `name avatar` pulls the whole 2 KB user — so the fix is to request even fewer fields.",
+       ok:false,
+       fb:"Field selection here already limits the payload to name+avatar; the problem isn't bytes, it's the 200 per-post resolver calls (a round-trip/query fan-out). Fewer fields won't collapse those calls — a DataLoader will."}
+    ]
+  },
+  {
+    stem: "You replace 200 individual GET /users/{id} calls with one POST /users:batchGet. A reviewer notes you may have lost something, and asks how the server actually runs the batch. Which two concerns are they pointing at?",
+    options: [
+      {t:"(1) Cacheability: the 200 individual GETs were each edge- and client-cacheable (a popular author served from the CDN to everyone, a repeat author a free hit), but one POST batch over a near-unique id set is uncacheable — consider a cache-friendly GET /users?ids=4,17,88 with sorted ids, or client-side coalescing over per-id caches. (2) Batch the WORK, not just the wire: if the server implements batchGet as a per-id loop it just moved the N+1 server-side (often serialized/slower); it must be one WHERE id IN (...) set query, or a per-shard scatter-gather if users are sharded by id.",
+       ok:true,
+       fb:"Exactly. Batching trades per-item edge-cacheability for round-trip count, and a batch endpoint that loops point reads internally has only relocated the N+1 — it must be a single set/scatter-gather query."},
+      {t:"Neither is a real concern: a POST batch is automatically cached by the CDN the same way GETs are, and the database always turns an id list into a single optimal query on its own.",
+       ok:false,
+       fb:"CDNs don't cache POST bodies, and the near-unique id set wouldn't share a cache key anyway; and the server only runs one query if you WRITE it as one (WHERE id IN / scatter-gather) — a naive loop stays N queries. Both concerns are real."},
+      {t:"The only concern is latency, and it's strictly better now — one batch call is always faster than 200 calls in every dimension, with no trade-offs.",
+       ok:false,
+       fb:"Round trips drop dramatically, but it's not free: you lose the per-item edge cache, the batch's latency becomes the slowest item's, and a loop-based server implementation can be slower than the parallel individual calls. Batching has real trade-offs."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

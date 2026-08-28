@@ -1431,9 +1431,31 @@
     strict overlap to "eventually" = L11's CAP choice (strict=C, sloppy=A). Four traps: W=R=N as "max safety"; quorum orders
     concurrent writes; a low quorum reads stale by design (fine for a view count); sloppy = strict. Trade: per-request
     consistency vs latency & availability. (Lesson 0071)
-72. Bulk & batch APIs (the N+1 and fan-out problem) — one screen needing 200 records: why 200 round trips (L18) is the
-    silent killer, batch endpoints, request coalescing/dataloader, GraphQL-style field selection, and the over-fetch vs
-    under-fetch tension. Trade: fewer round trips & payload control vs API & caching complexity.
+72. ✅ **Bulk & batch APIs (the N+1 and fan-out problem)** — one home-feed screen shows 200 posts, each needing its
+    author's name+avatar, so the naïve client fires 1 feed call + 200 `GET /users/{id}` = **201 round trips** (L18's
+    N+1 made concrete). Estimate the killer = round-trip COUNT × the ~100 ms mobile RTT floor, NOT the work: 201×100 ms
+    = **20 s** sequential, **3.5 s** even 6-way parallel (⌈200/6⌉+1 rounds), ~700 ms of pointless server CPU + 200 pool
+    slots on HTTP/2; over-fetching full 2 KB users for 40 B name+avatar = **50×** wasted bytes. No transport trick fixes
+    it (you asked 200 separate questions). Three collapses: **batch endpoint / multiget** (client bundles the DEDUPED ids
+    ~60 distinct → one `WHERE id IN (...)` set query → 1+N becomes **1+1**, response is a map to re-join); **request
+    coalescing / DataLoader** (same collapse made invisible to per-item code — collects a tick's ids, dedups, one batched
+    query — the fix GraphQL's per-item resolvers REQUIRE, L18); **field selection** (`?fields=name,avatar` / GraphQL query
+    — kills over-fetch AND under-fetch with one shape). Batching = round trips, field selection = payload → **orthogonal,
+    want both** (a batch of 200 FULL users is 1 trip but still 400 KB). Trace: N+1 unfolds (201 trips, ~140 duplicate
+    fetches) → batch erases it (2 trips, 1 query, **~100×** fewer round trips, deleted user = `null` per-item not a batch
+    failure) → GraphQL query hides an N+1 in the per-post `author` resolver (fires 200×, client sees 1 call) until a
+    DataLoader coalesces it. First bottleneck = **a batch is a new unit of failure, latency & load**: (1) UNBOUNDED batch
+    = self-inflicted DoS (100k ids → slow mega IN-query + ~200 MB response + OOM) → size cap (100–1,000) + paginate the
+    batch (L18/28); (2) one status/latency for the whole batch sinks 199 good rows on one bad id + waits for the SLOWEST
+    item → **per-item results** (L32) + tail latency (L17); (3) batching the WIRE ≠ batching the WORK — a per-id server
+    loop just moved the N+1 server-side → one set query or per-shard **scatter-gather** (L3/19); (4) 200 individual GETs
+    are edge/client-cacheable (L2/14), one POST batch is NOT → cache-friendly `GET ?ids=` sorted, or client-coalesce.
+    Deepest point: the N+1 is a **boundary-crossing** bug — move the fan-out to the cheap side of the network (one IN /
+    scatter-gather inside the DC) and cross the expensive client↔server boundary ONCE; batching / DataLoader / GraphQL+
+    loader are three spellings of that. Reuses L18 (paged feed, resolver N+1, field selection), L17 (tail latency, N+1 of
+    serial calls), L12 (B-tree IN-query seeks), L3/4/19/21 (sharding → scatter-gather + merge), L2/14 (edge cache lost),
+    L28 (unbounded batch = DoS/OOM), L32 (partial failure). Trade: fewer round trips & payload control vs API, caching &
+    failure-handling complexity. (Lesson 0072)
 73. Deduplication & entity resolution at scale — "are these two records the same customer?" across 500M rows: blocking
     keys to avoid N² comparisons, similarity scoring, MinHash/LSH (L65 neighbors), and the merge/survivorship decision.
     Trade: match recall vs precision & compute cost.
