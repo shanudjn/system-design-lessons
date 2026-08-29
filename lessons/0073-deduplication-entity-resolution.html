@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 73 — Deduplication &amp; Entity Resolution: Are These Two Records the Same Person?</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 73 · Worked Example</div>
+  <h1>Deduplication &amp; Entity Resolution: Are These Two Records the Same Person?</h1>
+  <p class="lead">Every large dataset hides the same rot: the same real-world thing stored more than once, spelled a little differently each time. One customer signs up on the web as <i>"Jonathan Q Smith"</i>, again on mobile as <i>"Jon Smith"</i>, and a support agent types a third row as <i>"J. Smith"</i> — three rows, one human. This lesson takes <b>500 million customer records</b> and answers one question at scale: <span class="key">are these two records the same person?</span> The obvious method — compare every record to every other — is <b>N²</b>, and we'll <b>estimate</b> why that's <b>~1.25×10¹⁷</b> comparisons (a job measured in <i>millennia</i>, not hours). We'll <b>model</b> the four machines that make it possible — <b>blocking keys</b> that only compare records that could plausibly match, a <b>similarity score</b> (Jaccard, edit distance, field weights) that turns "close" into a number, <b>MinHash + LSH</b> that finds near-duplicates without the N², and a <b>clustering + survivorship</b> step that turns matched pairs into one <b>golden record</b> — <b>trace</b> two records through the whole funnel, and find <span class="key">the first bottleneck: this is a recall-vs-precision problem where the two errors are not symmetric — a blocking key that's too tight misses true dupes, a threshold that's too loose merges two different people into one (a corruption far worse and far harder to undo than leaving them split), and "same-as" is not transitive, so naïve clustering chains unrelated records into one giant blob.</span> The trade under all of it: <b>match recall vs precision &amp; compute cost.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0073-deduplication-entity-resolution.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>A company has grown by acquisitions and years of sloppy sign-up forms, and now holds <b>500 million</b> customer records across one big table. Nobody enforced "one row per person," so the same human appears many times with small differences: a nickname, a typo, an old address, a missing phone. We want to build a <b>deduplication</b> pipeline (also called <b>entity resolution</b> or <b>record linkage</b>): find every group of rows that refer to the <i>same real person</i>, and collapse each group into one clean <b>golden record</b>. The hard part is that there is no shared id to join on — if there were, this would be a <code>GROUP BY</code>, not a lesson. <span class="key">We have to <i>decide</i> sameness from fuzzy, dirty fields.</span> Three example rows we'll follow the whole way:</p>
+
+<div class="diagram"><pre>
+  Three rows. One human? We have to DECIDE.
+
+   id     name              email               phone       address
+   ------ ----------------- ------------------- ----------- ------------------
+   R1     Jonathan Q Smith  jsmith@gmail.com    555-0142    12 Oak Street
+   R2     Jon Smith         jsmith@gmail.com    (blank)     12 Oak St
+   R3     J. Smith          jon.s@work.com      555-0142    88 Pine Ave
+
+   No shared id. Every field disagrees a little. Are R1=R2? R1=R3? R2=R3?
+</pre></div>
+
+<div class="diagram"><pre>
+  THE FUNNEL: 500M records down to clean golden records.
+
+   500,000,000 records
+        |
+        v   [1] BLOCKING  -- never compare records that can't match.
+        |                    group by a cheap key (e.g. name-prefix+zip).
+   ~ candidate pairs only WITHIN each block  (N^2  ->  N*b/2)
+        |
+        v   [2] SCORE     -- turn "close" into a number per pair.
+        |                    Jaccard / edit-distance / weighted fields.
+   pair score in [0,1]
+        |
+        v   [3] DECIDE    -- match / review / no-match against thresholds.
+        |
+        v   [4] CLUSTER + SURVIVE -- join matched pairs into groups,
+        |                            pick one winning "golden" record.
+        v
+   one row per real person
+</pre></div>
+
+<p class="note"><span class="key">The one idea the whole lesson turns on:</span> you cannot afford to <i>ask</i> "same person?" about most pairs, so the entire design is about <b>not asking</b>. Blocking throws away the ~99.9999% of pairs that obviously can't match (different name, different city) so the expensive fuzzy comparison only ever runs on a tiny plausible shortlist. Everything else — the scoring, the S-curve of LSH, the clustering — is machinery around that one move: <b>compare few, compare well.</b></p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Entity resolution / record linkage / deduplication</b> — deciding which records refer to the same real-world entity (here, a person) and collapsing them.</li>
+  <li><b>Golden record / master record</b> — the single clean row that survives after a group of duplicates is merged.</li>
+  <li><b>Pairwise comparison</b> — one "are these two the same?" check. The unit of work, and the thing we must ration.</li>
+  <li><b>Blocking / blocking key</b> — a cheap key computed per record so we only compare records that share it (same <b>block</b>). Turns N² into "N² within small blocks."</li>
+  <li><b>Similarity score</b> — a number (usually 0–1) for how alike two records are. 1 = identical, 0 = nothing in common.</li>
+  <li><b>Jaccard similarity</b> — for two sets, <code>|A∩B| / |A∪B|</code>: the fraction of all distinct items that both share.</li>
+  <li><b>Edit distance (Levenshtein)</b> — the number of single-character insert/delete/substitute edits to turn one string into another (<code>Jon</code>→<code>Jan</code> = 1).</li>
+  <li><b>Shingle / token set</b> — a string broken into pieces (words, or overlapping character n-grams) so it becomes a <i>set</i> we can take a Jaccard of.</li>
+  <li><b>MinHash</b> — a small fixed-size signature of a set such that the chance two signatures agree in a slot <i>equals</i> the sets' Jaccard. Estimates Jaccard cheaply (Lesson 21's sketch idea).</li>
+  <li><b>LSH (locality-sensitive hashing)</b> — hashing so that <i>similar</i> items land in the same bucket with high probability and dissimilar ones almost never do — blocking done by similarity, not by an exact key.</li>
+  <li><b>Precision / recall</b> — of the pairs we called "match," what fraction really match (precision); of all real matches, what fraction we found (recall).</li>
+  <li><b>Transitivity</b> — the property "if A=B and B=C then A=C." <i>Sameness is transitive; a similarity score is not</i> — the source of the giant-blob trap.</li>
+  <li><b>Survivorship rule</b> — how you pick the winning value for each field when merging (newest, most complete, most trusted source).</li>
+  <li><b>False merge vs false split</b> — merging two <i>different</i> people into one row (a corruption) vs failing to merge one person's two rows (a nuisance). The lesson's core asymmetry.</li>
+</ul>
+
+<h2>Move 1 — Estimate: why N² is a wall, and blocking is the only way through</h2>
+<p>The naïve algorithm is one nested loop: for every record, compare it to every other record. Put the real number on it and the method dies on contact.</p>
+
+<div class="card calc">
+  <p><b>The N² wall.</b> With <code>N = 500,000,000</code>, the number of distinct pairs is <code>N·(N−1)/2 ≈ N²/2</code>:</p>
+  <p style="margin:.4rem 0"><code>(5×10⁸)² / 2 = 2.5×10¹⁷ / 2 ≈ <b>1.25×10¹⁷</b> pairwise comparisons.</code></p>
+  <ul>
+    <li>A fuzzy record comparison (parse two names, run an edit-distance, weight the fields) is at best ~<b>1 µs</b>. On <b>one core</b>: <code>1.25×10¹⁷ × 1 µs = 1.25×10¹¹ s ≈ <b>3,960 years</b></code>.</li>
+    <li>Throw a big cluster at it — <b>1,000 cores</b> at 1M comparisons/sec each = 10⁹/s: <code>1.25×10¹⁷ / 10⁹ = 1.25×10⁸ s ≈ <b>4 years</b></code> — for <i>one</i> run of a job you need to run nightly.</li>
+  </ul>
+  <p><span class="key">N² isn't slow, it's impossible.</span> Doubling the customer base <i>quadruples</i> the work. No faster comparison saves you — 10× faster still leaves centuries. The only fix is to stop doing most of the comparisons.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Blocking collapses the wall.</b> Almost every pair is a trivially-obvious non-match: "Jon Smith in Ohio" versus "Wei Chen in Osaka" share nothing. So compute a cheap <b>blocking key</b> per record — say <code>(first 3 letters of last name + zip code)</code> — and only compare records that land in the <i>same block</i>. If a key spreads 500M records into blocks that average <b>b = 100</b> records each, the comparisons are the pairs <i>within</i> blocks:</p>
+  <p style="margin:.4rem 0"><code>(N/b) blocks × (b²/2 pairs each) = N·b/2 = 5×10⁸ × 100 / 2 = <b>2.5×10¹⁰</b></code> comparisons.</p>
+  <p>That is a reduction of <code>(N²/2) / (N·b/2) = N/b = 5×10⁸ / 100 = <b>5,000,000×</b></code>. The same job that was 3,960 years on one core is now <code>2.5×10¹⁰ × 1 µs ≈ <b>6.9 hours</b></code> on one core — and <b>~25 seconds</b> across the 1,000-core cluster. <span class="key">One cheap key turned an impossible job into a coffee break.</span></p>
+</div>
+
+<p class="note why"><b>Why blocking is a bet, not a free lunch:</b> the 5-million× cut comes entirely from <i>refusing to compare</i> records whose blocking key differs. That is a wager that "same person ⇒ same key." It is often wrong — the same person with a mistyped zip, or a maiden vs married name, lands in a <i>different</i> block and is <b>never compared, so never matched</b>. Blocking trades <b>recall</b> (did we find all the real dupes?) for <b>compute</b> (how many pairs did we score?). Turn the key tighter and you compare fewer pairs but miss more true matches; looser, and you find more but pay more. This dial is the first bottleneck (Move 4); for now, just hold that <i>the cut and the misses are the same knob.</i></p>
+
+<h2>Move 2 — Model: the four machines</h2>
+
+<h3>Machine 1 — blocking keys: compare only the plausible</h3>
+<div class="card calc">
+  <p>A blocking key is any cheap, deterministic function of a record that <i>equal records tend to share</i>. Good keys: <code>zip + last-name-prefix</code>, <code>Soundex(last_name) + birth_year</code> (Soundex maps <code>Smith</code> and <code>Smyth</code> to the same code — a phonetic key survives spelling), the <code>email</code> domain, the first 4 digits of a phone. You <b>sort or hash by the key</b> so same-key records sit together, then run the expensive pairwise scoring only <i>inside</i> each block (Lesson 3's sharding-by-key, reused: a block is a shard of the comparison work). <span class="key">The key's job is to be cheap, and to almost never separate two records that are truly the same.</span> "Almost never" is doing a lot of work — see Move 4.</p>
+</div>
+
+<h3>Machine 2 — the similarity score: turn "close" into a number</h3>
+<div class="card calc">
+  <p>Within a block we still must decide sameness from fuzzy fields. Two building blocks:</p>
+  <ul>
+    <li><b>Edit distance</b> for short strings: <code>Jon</code> → <code>Jonathan</code> is a few edits; <code>Smith</code> vs <code>Smyth</code> is one substitution. Cheap for names.</li>
+    <li><b>Jaccard similarity</b> for "bag of pieces" fields. Break each string into a <b>token set</b>, then <code>Jaccard = |A∩B| / |A∪B|</code>. Worked example on our R1 vs R2 addresses+names, tokenised:</li>
+  </ul>
+  <div class="diagram" style="margin:.6rem 0"><pre>
+   A = { jon,        smith, 12, oak, street }     (from R1)
+   B = { jonathan,   smith, 12, oak, st     }     (from R2)
+
+   A ∩ B = { smith, 12, oak }            -> 3 shared
+   A ∪ B = { jon, jonathan, smith, 12, oak, street, st }  -> 7 total
+
+   Jaccard = 3 / 7 = 0.43
+  </pre></div>
+  <p>A single 0-to-1 number isn't enough, because fields carry <i>different weight as evidence</i>. Two people sharing a <b>rare</b> value (the exact same email, the same phone) is strong evidence they're the same; sharing a <b>common</b> value ("lives in New York," first name "John") is weak. So the record score is a <b>weighted blend</b>: <code>score = w₁·sim(name) + w₂·sim(email) + w₃·sim(phone) + w₄·sim(address)</code>, with big weights on high-<i>discriminating</i> fields (this is Lesson 16's IDF instinct — rare tokens carry more information — applied to whole fields). For R1 vs R2: emails match <i>exactly</i> (strong), names are close, addresses are the same street abbreviated — the blend lands <b>high</b>. For R1 vs R3: name close, but different email <i>and</i> different address, shared phone only — the blend lands in the murky <b>middle</b>.</p>
+</div>
+
+<h3>Machine 3 — MinHash + LSH: near-duplicate blocking without the N²</h3>
+<div class="card calc">
+  <p>Exact-key blocking has a hole: it only groups records that share the key <i>exactly</i>. We want to block by <i>similarity</i> itself — put records together when their token sets are <b>Jaccard-close</b>, typo or not. Computing Jaccard for all pairs is back to N². <b>MinHash</b> (Lesson 21's sketch family) fixes it: hash a set through <code>k</code> hash functions, keep the minimum under each — a <code>k</code>-slot <b>signature</b>. The magic property: <span class="key">the probability two signatures agree in any given slot <i>equals</i> the Jaccard of the original sets.</span> So comparing two <code>k=100</code> signatures estimates Jaccard to about <code>1/√k = ±10%</code> error (Lesson 21's "small chosen error for constant memory"), from tiny fixed-size signatures instead of the full sets.</p>
+  <p><b>LSH</b> turns that into blocking. Split each 100-slot signature into <code>b = 20</code> <b>bands</b> of <code>r = 5</code> rows. Two records become <b>candidates</b> if they match in <i>all 5 rows of at least one band</i>. The chance of colliding as a function of true similarity <code>s</code> is <code>1 − (1 − sʳ)ᵇ</code> — an <b>S-curve</b> with a threshold near <code>(1/b)^(1/r) ≈ 0.55</code>:</p>
+  <div class="diagram" style="margin:.6rem 0"><pre>
+   LSH collision probability   (k=100, b=20 bands, r=5 rows/band)
+
+    similarity s   P(become a candidate pair)
+    -----------    --------------------------
+       0.80          0.9996     <- true dupes: almost always caught
+       0.55          0.64       <- the threshold "knee"
+       0.43          0.26
+       0.30          0.047      <- distinct people: almost always skipped
+
+   Sharp S-curve: high-similarity pairs pass, low-similarity pairs are
+   filtered out -- WITHOUT ever computing an all-pairs Jaccard.
+  </pre></div>
+  <p><span class="key">LSH is blocking by similarity:</span> tune <code>b</code> and <code>r</code> to move the knee — more bands (higher <code>b</code>) lowers the threshold and catches looser matches (higher recall, more candidates to score); fewer bands raises it (higher precision, fewer candidates). It's the same recall-vs-compute dial as exact blocking, but the "key" is now <i>fuzzy nearness</i>, which plugs the typo hole.</p>
+</div>
+
+<h3>Machine 4 — decide, cluster, and choose a survivor</h3>
+<div class="card calc">
+  <p>Each candidate pair gets a score, and <b>two thresholds</b> split the outcomes into three, not two: <code>score ≥ 0.85</code> → <b>auto-match</b>; <code>score ≤ 0.45</code> → <b>no-match</b>; in between → a <b>review band</b> queued for a human (the middle is where automation is dangerous — Move 4). Matched pairs are edges in a graph; you take <b>connected components</b> (union-find) to turn pairwise "R1=R2, R2=R7" into whole clusters that are one person. Finally, <b>survivorship</b> collapses each cluster to one golden record by field-level rules: newest non-null address, most-complete name, most-trusted source for email, union of all phone numbers — and you keep every original row's id as <b>provenance</b> so a bad merge can be traced and undone.</p>
+</div>
+
+<table>
+  <tr><th>Machine</th><th>Turns…</th><th>…into</th><th>Its price</th></tr>
+  <tr><td>Blocking keys</td><td>N² pairs</td><td>only same-key pairs (N·b/2)</td><td>misses matches whose key field differs (recall)</td></tr>
+  <tr><td>Similarity score</td><td>"close"</td><td>a weighted 0–1 number</td><td>weights &amp; thresholds must be tuned/learned</td></tr>
+  <tr><td>MinHash + LSH</td><td>all-pairs Jaccard</td><td>similar → same bucket, an S-curve</td><td>~10% estimate error; b,r tuning; approximate</td></tr>
+  <tr><td>Cluster + survive</td><td>matched pairs</td><td>one golden record per person</td><td>non-transitivity → giant blobs; survivorship rules</td></tr>
+</table>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Follow our three rows through the funnel, then watch LSH generate a candidate a typo would have hidden.</p>
+
+<h3>Path A — R1 and R2 resolve into one person</h3>
+<div class="diagram"><pre>
+   R1 Jonathan Q Smith / jsmith@gmail.com / 555-0142 / 12 Oak Street
+   R2 Jon Smith        / jsmith@gmail.com / (blank)  / 12 Oak St
+
+   [1] BLOCK   key = zip(same) + lastname-prefix "smi"
+               -> R1 and R2 land in the SAME block. They get compared.
+   [2] SCORE   email  : EXACT match  (rare value -> strong)   sim=1.0 w=.45
+               name   : Jon~Jonathan, Smith=Smith             sim=0.7 w=.20
+               address: "12 Oak Street" ~ "12 Oak St"         sim=0.9 w=.25
+               phone  : one blank -> no evidence, not penalty  --   w=.10
+               blend  -> ~0.90
+   [3] DECIDE  0.90 >= 0.85  ->  AUTO-MATCH  (edge R1--R2)
+   [4] MERGE   golden: name "Jonathan Q Smith" (most complete),
+               phone "555-0142" (only non-null), address newest,
+               keep {R1,R2} ids as provenance.
+</pre></div>
+
+<h3>Path B — R3 is the hard one: the review band earns its keep</h3>
+<div class="diagram"><pre>
+   R1 Jonathan Q Smith / jsmith@gmail.com / 555-0142 / 12 Oak Street
+   R3 J. Smith         / jon.s@work.com   / 555-0142 / 88 Pine Ave
+
+   [2] SCORE   phone  : EXACT 555-0142 (rare -> strong)       sim=1.0 w=.10
+               name   : J. Smith ~ Jonathan .. Smith          sim=0.6 w=.20
+               email  : gmail vs work.com -> DIFFERENT         sim=0.0 w=.45
+               address: Oak St vs Pine Ave -> DIFFERENT        sim=0.0 w=.25
+               blend  -> ~0.22 ... but the shared phone nags.
+   [3] DECIDE  0.22 is below no-match? A shared RARE phone +
+               same last name is real evidence. Landing this as a
+               hard "no" risks a false split; as "yes" risks a false
+               merge (a work email + different address may be a
+               spouse/roommate sharing a landline).
+               ->  REVIEW BAND. A human (or a stronger model) decides.
+
+   The point: the MIDDLE is exactly where a naive threshold is most
+   likely to be catastrophically wrong. Don't guess -- defer.
+</pre></div>
+
+<h3>Path C — LSH catches a match that exact blocking would have missed</h3>
+<div class="diagram"><pre>
+   R2 "12 Oak St, Springfield"      R4 "12 Oak St, Sprinfield"  (typo!)
+
+   Exact block key = city -> "Springfield" != "Sprinfield"
+       -> DIFFERENT blocks -> never compared -> MISSED. (recall hole)
+
+   LSH on token-shingles:
+       token sets overlap heavily (12, oak, st, spring... )
+       true Jaccard ~ 0.80
+       P(candidate) at s=0.80  =  0.9996   ->  they collide in a band
+       -> become a CANDIDATE PAIR -> scored -> matched.
+
+   LSH blocks by NEARNESS, so a single typo no longer hides a duplicate.
+</pre></div>
+
+<p>Path A is the easy win the whole pipeline exists to automate: a shared <i>rare</i> value (the exact email) plus corroborating fields sails past the high threshold and merges cleanly, with provenance kept. Path B is the honest one — a shared rare phone but conflicting email and address is <i>genuinely ambiguous</i>, and the design's job there is not to guess but to <b>defer</b> to the review band, because both wrong answers are costly and one of them is very hard to undo. Path C shows why exact blocking alone isn't enough and LSH exists: a one-character city typo puts a true duplicate in a different block forever, and only similarity-based blocking recovers it. <span class="key">The first three moves make dedup look like a solved funnel. Move 4 is where its two errors turn out to be dangerously unequal.</span></p>
+
+<h2>Move 4 — Find the first bottleneck: recall vs precision, and two errors that aren't equal</h2>
+<p>Every knob in the pipeline is really one knob — how aggressively do you declare "same?" — and it trades the two ways you can be wrong. The trap is treating them as symmetric. They are not.</p>
+
+<div class="card calc">
+  <p><b>The first bottleneck — the two errors are asymmetric, and the expensive one is silent.</b> A <b>false split</b> (leaving one person as two rows) is a <i>nuisance</i>: a duplicate mailer, a slightly inflated user count — annoying, easily fixed later by a looser pass. A <b>false merge</b> (fusing two <i>different</i> people into one golden record) is a <i>corruption</i>: person A now sees person B's orders, addresses, maybe payment info (Lesson 30/56 — a privacy incident), and because you <i>deleted</i> the distinction, it is brutal to detect and unwind. <span class="key">A false split is reversible; a false merge destroys the very information you'd need to reverse it.</span> So the whole system must be <b>biased toward NOT merging</b> when unsure: high auto-match threshold, a wide review band for the murky middle, keep every source id as provenance so a merge is <i>reversible</i>, and never auto-merge on weak evidence alone. Precision (don't merge wrongly) is bought at some cost to recall (leave a few dupes) — and here that's the <i>right</i> trade.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — blocking recall: the match you never compared.</b> Blocking's 5-million× speed-up is built on <i>skipping</i> pairs, so any true duplicate whose blocking-key field is dirty (mistyped zip, maiden vs married name, "Bob" vs "Robert") lands in a different block and is <b>never scored — a miss you can't see</b>, because the pipeline never produced the pair to reject it. A single blocking pass caps your maximum recall no matter how good the scorer. Fix = <b>multi-pass blocking</b>: block several times on <i>different</i> keys (once by zip+name, once by phone, once by email domain, once by LSH on the address), and take the <b>union</b> of candidate pairs. A record has to be dirty in <i>every</i> key at once to escape all passes — far less likely. The cost is more candidate pairs to score (more compute), which is exactly the recall-vs-compute dial from Move 1, now turned deliberately.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — "same-as" is not transitive: the giant-blob trap.</b> Sameness <i>should</i> be transitive (if R1=R2 and R2=R3 then R1=R3), but a <i>similarity score</i> is not: R1 can be 0.86-similar to R2, and R2 0.86-similar to R3, while R1 and R3 are only 0.4-similar (Smith→Smyth→Smithe, each step tiny, the ends far apart). Take connected components naïvely and these near-matches <b>chain</b>: one over-eager edge welds two clusters, then a third, and a "John Smith" super-cluster swallows a thousand unrelated Smiths into one monstrous golden record (a false merge at industrial scale). <span class="key">Transitive closure amplifies a single bad edge into a catastrophe.</span> Fixes: require clusters to be dense (near-cliques, not chains), cap cluster size and quarantine anything implausibly large for review, use <b>cannot-link</b> constraints (two rows with different verified government IDs may never be merged, no matter the score), and correlation-cluster rather than blindly closing transitively.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The fourth wall — dedup is never "done": incremental resolution.</b> The 6.9-hour batch is a snapshot; meanwhile <b>new records arrive every second</b>, and re-running the full N²-avoiding batch on all 500M for each new signup is absurd. So the live path inverts the batch: when a record arrives, compute its blocking keys, fetch only the <i>candidates in those blocks</i> (a handful, not 500M), score, and attach it to an existing cluster or start a new one — an <b>incremental</b>, Lesson-19-style "query the neighbourhood, not the world." The periodic full batch still runs to catch drift and re-cluster (rules and models change; a merge good last year may be wrong now). And because merges must stay reversible, the golden record is a <i>derived view</i> over immutable source rows (Lesson 25/38 — the ledger/event-sourcing instinct: never destroy the originals; the merge is a computed projection you can recompute or roll back).</p>
+</div>
+
+<p>So the honest picture of deduplication: you cannot compare all <b>N²</b> ≈ 1.25×10¹⁷ pairs (millennia), so <b>blocking</b> compares only records sharing a cheap key (N·b/2, a ~5-million× cut) and <b>MinHash + LSH</b> extends that to blocking-by-similarity so a typo can't hide a duplicate; within the shortlist a <b>weighted similarity score</b> (Jaccard on token sets, edit distance, rare fields weighted like Lesson 16's IDF) turns "close" into a number, <b>two thresholds</b> split it into auto-match / <b>review band</b> / no-match, and <b>connected components + survivorship</b> collapse matched pairs into one <b>golden record</b> with provenance kept. The first bottleneck is that the two errors are not equal — a <b>false merge</b> corrupts and is near-irreversible while a <b>false split</b> is a cheap nuisance — so the whole system leans away from merging: high threshold, wide review band, reversible merges over immutable sources. Around it sit three more walls: blocking silently caps recall (fix: <b>multi-pass</b> blocking on several keys, union the candidates), similarity is <b>not transitive</b> so naïve clustering chains unrelated records into a giant blob (fix: dense clusters, size caps, cannot-link constraints), and the job is never done (fix: <b>incremental</b> resolution per new record + periodic full re-cluster). Every choice names its price: a tighter block is faster but misses more; a higher threshold is safer but splits more; LSH is cheap but approximate; automation is scalable but the murky middle belongs to a human.</p>
+
+<p><span class="key">The deepest point: entity resolution is a <i>decision under uncertainty</i>, not a computation.</span> There is no ground-truth join key — you are <i>inferring</i> an identity the data never recorded, from evidence that always partly conflicts. That reframes the whole design: the goal isn't a clever similarity formula, it's an <b>error budget deliberately spent on the cheaper mistake</b>. You will be wrong about some pairs no matter what; the engineering is choosing to be wrong in the direction you can afford and undo (leave a dupe) rather than the direction that corrupts and can't be undone (merge two people). Blocking, LSH, thresholds, the review band, provenance, cannot-link — every mechanism is a way to push your unavoidable errors toward the survivable side of that line. The standing tension: <span class="key">match recall vs precision &amp; compute cost.</span></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>N² comparisons impossible</td><td>Blocking keys (L3 shard-by-key)</td><td>N·b/2, ~5M× cut / misses off-key matches (recall)</td></tr>
+  <tr><td>Exact block misses typos</td><td>MinHash + LSH (L21 sketches)</td><td>block by similarity, S-curve / ~10% error, approximate</td></tr>
+  <tr><td>"Close" isn't a decision</td><td>Weighted similarity score (L16 IDF)</td><td>rare fields weighted, 0–1 number / weights must be tuned</td></tr>
+  <tr><td>Murky middle pairs</td><td>Two thresholds + review band</td><td>defer the dangerous calls / humans in the loop, latency</td></tr>
+  <tr><td>Pairs → whole groups</td><td>Connected components / union-find</td><td>one cluster per person / non-transitive → blob risk</td></tr>
+  <tr><td>Chains weld unrelated records</td><td>Dense clusters + cannot-link + size cap</td><td>stops the giant blob / more clustering complexity</td></tr>
+  <tr><td>One blocking key too fragile</td><td>Multi-pass blocking, union candidates</td><td>higher recall / more pairs to score (compute)</td></tr>
+  <tr><td>New records forever</td><td>Incremental resolution (L19 neighbourhood)</td><td>score vs a handful, not 500M / drift → periodic re-batch</td></tr>
+  <tr><td>A merge went wrong</td><td>Provenance + derived golden record (L25/38)</td><td>reversible merges / keep all immutable source rows</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — treating the two errors as equal.</b> A false merge fuses two real people (privacy breach, near-irreversible); a false split is a cheap, fixable dupe. Bias the whole system away from merging: high auto-match threshold, wide review band, reversible merges. Never auto-merge on weak evidence.</li>
+  <li><b>Trap 2 — one blocking key.</b> A single key silently caps recall — any dupe dirty in that field is never compared. Block in multiple passes on different keys (and LSH) and union the candidates; a record must be dirty in every key to escape.</li>
+  <li><b>Trap 3 — naïve transitive closure.</b> Similarity isn't transitive, so blindly taking connected components chains near-matches into a giant blob that swallows unrelated records. Require dense clusters, cap size, and honor cannot-link constraints (verified different IDs).</li>
+  <li><b>Trap 4 — destroying the originals on merge.</b> Overwriting the source rows with a golden record makes a bad merge unrecoverable. Keep every source id as provenance and treat the golden record as a <i>derived</i>, recomputable view (L25/38).</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We took the rot in every large dataset — the same real person stored many times, spelled differently — and built a pipeline to resolve <b>500M</b> records. <b>Estimate</b> priced the wall: comparing every pair is <b>N²/2 ≈ 1.25×10¹⁷</b> comparisons ≈ <b>3,960 years</b> on a core (≈4 years even on 1,000), so <b>blocking</b> — only comparing records that share a cheap key — cuts it to <b>N·b/2 ≈ 2.5×10¹⁰</b>, a <b>~5,000,000×</b> reduction (≈6.9 hours on one core, ~25 s on the cluster), at the cost of missing matches whose key field is dirty. <b>Model</b> gave four machines: <b>blocking keys</b> (compare only the plausible), a <b>weighted similarity score</b> (Jaccard on token sets — <code>3/7 = 0.43</code> worked out — plus edit distance, with rare fields weighted like Lesson 16's IDF), <b>MinHash + LSH</b> (block by <i>similarity</i> so a typo can't hide a dupe; k=100, b=20, r=5 gives a sharp S-curve — 99.96% of 0.80-similar pairs caught, 4.7% of 0.30-similar pairs), and <b>clustering + survivorship</b> (union-find matched pairs into one golden record). <b>Tracing</b> merged R1/R2 on a shared rare email, sent the genuinely-ambiguous R3 to the <b>review band</b>, and watched LSH recover a duplicate a one-character city typo had hidden from exact blocking. The <b>first bottleneck</b>: the two errors are <b>asymmetric</b> — a false merge corrupts two people's data near-irreversibly while a false split is a cheap nuisance — so the system must lean away from merging (high threshold, wide review band, reversible merges); around it, single-key blocking silently caps recall (→ multi-pass + union), similarity is <b>not transitive</b> so naïve clustering chains into a giant blob (→ dense clusters, caps, cannot-link), and the job never ends (→ incremental resolution + periodic re-batch). The deepest point: entity resolution is a <b>decision under uncertainty</b> — you infer an identity the data never stored — so the real engineering is spending your unavoidable error budget on the mistake you can afford and undo. The standing tension: <span class="key">match recall vs precision &amp; compute cost.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we've cleaned the data. Now push a decision OUT to a whole fleet, fast, without a deploy.</b></p>
+  <p style="margin:.2rem 0">• <b>Config &amp; feature-flag delivery at scale (Lesson 74):</b> flip a flag or config value on <b>40,000 servers</b> (Lesson 27's fleet) in <i>seconds</i> — a kill-switch, a rollout percentage, a tuning knob — without shipping code. A versioned <b>config plane</b>, <b>pull-with-long-poll vs push</b>, staged rollout and instant kill-switch (Lesson 31/51), and the hard part: making "everyone is on the same flag" true across a fleet that's always partly stale. Trade: change speed &amp; safety vs a new always-on dependency.</p>
+  <p style="margin:.2rem 0">• Then further out: <b>append-only audit logs &amp; tamper evidence</b> — a verifiable "who did what when" via hash-chaining and Merkle proofs (Lesson 75). Say <b>next</b> to push a flag to the fleet.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">entity resolution / record linkage</span>
+    <span class="pill">deduplication</span>
+    <span class="pill">golden record</span>
+    <span class="pill">pairwise comparison / N²</span>
+    <span class="pill">blocking key</span>
+    <span class="pill">similarity score</span>
+    <span class="pill">Jaccard similarity</span>
+    <span class="pill">edit distance</span>
+    <span class="pill">shingle / token set</span>
+    <span class="pill">MinHash</span>
+    <span class="pill">LSH / banding</span>
+    <span class="pill">precision / recall</span>
+    <span class="pill">review band</span>
+    <span class="pill">transitivity</span>
+    <span class="pill">connected components / union-find</span>
+    <span class="pill">survivorship rule</span>
+    <span class="pill">false merge vs false split</span>
+    <span class="pill">provenance</span>
+  </p>
+  <p>That's Lesson 73. It builds on: Lesson 3/4 (sharding &amp; consistent hashing — a blocking key is a shard of the comparison work), Lesson 21 (sketches — MinHash is a Jaccard sketch, "a small chosen error for constant memory"), Lesson 16 (search ranking — IDF's "rare tokens carry more information," reused as field weights), Lesson 19 (geo/proximity — "query the neighbourhood, not the world," reused for incremental resolution), Lesson 65 (vector search — LSH and approximate-nearest-neighbour blocking), Lesson 25/38 (ledgers &amp; event sourcing — keep immutable sources, the golden record as a derived view), and Lesson 30/56 (secrets &amp; privacy — why a false merge is a privacy incident). <b>Ask me follow-ups</b> — e.g. "how do I actually choose the auto-match and no-match thresholds — is that learned or hand-set?", "what's the difference between rule-based scoring and a trained (Fellegi–Sunter / ML) matcher?", "how does the review band scale — don't humans become the bottleneck?", "how do cannot-link constraints get enforced during clustering?", or "how does incremental resolution avoid re-clustering the whole graph when one edge changes?" When you're ready, say <b>next</b> and we'll push a config/flag change to 40,000 servers in seconds — <i>without a deploy, and with everyone agreeing on the same value.</i></p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "You have 500M customer records and want to find duplicates. A teammate proposes comparing every record to every other with a good fuzzy matcher, and says 'we'll just run it on a big cluster.' Why doesn't that work, and what's the actual fix?",
+    options: [
+      {t:"Comparing all pairs is N²/2 ≈ 1.25×10¹⁷ comparisons — ~3,960 years on one core and still ~4 years across 1,000 cores, because doubling N quadruples the work; no faster matcher escapes it. The fix is to stop doing most comparisons: a cheap BLOCKING key (e.g. zip + last-name-prefix) so you only compare records in the same block. If blocks average ~100 records, work drops to N·b/2 ≈ 2.5×10¹⁰ — a ~5,000,000× cut (hours, not millennia).",
+       ok:true,
+       fb:"Right. N² is impossible at 500M regardless of hardware; blocking compares only plausibly-matching records and cuts the work by ~N/b = 5 million×. You buy that speed by refusing to compare off-key pairs (a recall cost)."},
+      {t:"It works fine — 1.25×10¹⁷ comparisons on a 1,000-core cluster is only a few minutes, so no special technique is needed; just parallelize the nested loop.",
+       ok:false,
+       fb:"Not close. At 10⁹ comparisons/sec (1,000 cores × 1M each), 1.25×10¹⁷ still takes ~1.25×10⁸ seconds ≈ 4 years — for one run of a nightly job. N² is a wall you must design around, not parallelize through."},
+      {t:"The real problem is the matcher is too slow per comparison; make each comparison 10× faster and the full N² job becomes practical.",
+       ok:false,
+       fb:"A 10× faster comparison turns ~3,960 years into ~396 years — still impossible. The cost is the number of comparisons (N²), not the speed of each. You have to eliminate comparisons (blocking), not accelerate them."}
+    ]
+  },
+  {
+    stem: "Your dedup pipeline can be wrong two ways: a FALSE MERGE (fuse two different people into one golden record) or a FALSE SPLIT (leave one person as two rows). To keep it simple, an engineer wants one threshold — score above it merges, below it doesn't — tuned to maximize total accuracy. What's the flaw?",
+    options: [
+      {t:"The two errors are NOT symmetric, so 'total accuracy' is the wrong objective. A false split is a cheap, reversible nuisance (a duplicate mailer); a false merge corrupts two people's data — person A sees person B's orders/addresses (a privacy incident) — and since the distinction is destroyed, it's near-impossible to detect and undo. Bias the system AWAY from merging: a high auto-match threshold, a WIDE review band for the murky middle deferred to a human, and reversible merges with provenance kept. Precision (don't merge wrongly) is worth more here than recall.",
+       ok:true,
+       fb:"Exactly. A false merge is a corruption that deletes the info needed to reverse it; a false split is easily fixed later. The design must spend its error budget on the survivable mistake — high threshold, review band, provenance."},
+      {t:"There's no flaw: one threshold tuned for maximum accuracy is optimal by definition, since both error types count equally against accuracy.",
+       ok:false,
+       fb:"They don't count equally in the real world. Treating a false merge (irreversible privacy corruption) as no worse than a false split (a duplicate row) optimizes the wrong thing. The costs are asymmetric, so the decision boundary must be too."},
+      {t:"The flaw is only that a single threshold is hard to tune; pick a slightly higher number and both error types disappear.",
+       ok:false,
+       fb:"No threshold makes both errors vanish — raising it cuts false merges but creates more false splits, and vice versa. The point isn't a magic number, it's that the middle is genuinely ambiguous and belongs in a review band, not forced to a yes/no."}
+    ]
+  },
+  {
+    stem: "You block on exact city, then discover you're still missing duplicates. Investigating, you find record pairs like ('12 Oak St, Springfield') and ('12 Oak St, Sprinfield') never get compared. Separately, your clusters are ballooning: a 'John Smith' group has swallowed 900 clearly-different people. What's happening, and what fixes each?",
+    options: [
+      {t:"Two distinct failures. (1) Exact blocking silently caps recall: a one-char typo puts a true dupe in a different block, so it's never scored — fix with MinHash+LSH (block by SIMILARITY, so ~0.80-Jaccard pairs collide anyway) and/or MULTI-PASS blocking on several keys, unioning candidates. (2) Similarity isn't transitive: R1≈R2 and R2≈R3 doesn't make R1≈R3, so naive connected-components CHAINS near-matches (Smith→Smyth→Smithe) into a giant blob — fix by requiring dense clusters, capping size, and honoring cannot-link constraints (different verified IDs never merge).",
+       ok:true,
+       fb:"Right on both. The missed pair is a blocking-recall hole (LSH / multi-pass fixes it); the giant blob is transitive-closure amplifying weak edges (dense clusters + caps + cannot-link fixes it)."},
+      {t:"Both are the same bug — a threshold set too low — and raising the match threshold fixes the missed typos and the giant blob at once.",
+       ok:false,
+       fb:"They're opposite problems. The missed typo pair was never even compared (a blocking/recall issue, unaffected by the threshold), while the giant blob comes from chaining transitively-closed edges. A higher threshold might shrink the blob but makes the recall hole WORSE."},
+      {t:"The typo pair should be ignored (data entry errors aren't real dupes), and the 900-person cluster is correct because they're all named John Smith.",
+       ok:false,
+       fb:"A typo is exactly the case dedup must catch — same person, dirty field — that's the whole point of similarity-based blocking. And merging 900 different people because they share a common name is a catastrophic false merge; a common name is weak evidence, not a match."}
+    ]
+  },
+  {
+    stem: "To find near-duplicate addresses without an all-pairs Jaccard (N² again), you use MinHash signatures (k=100) + LSH with b=20 bands of r=5 rows, becoming candidates if any band matches fully. Why is this the right tool, and what does tuning b and r do?",
+    options: [
+      {t:"MinHash gives each set a 100-slot signature where the chance two slots agree EQUALS the sets' Jaccard — so you estimate similarity (±~1/√k = 10%) from tiny fixed-size signatures, not full sets (Lesson 21's sketch idea). LSH banding then makes collision probability 1−(1−sʳ)ᵇ — a sharp S-curve (threshold ≈ (1/b)^(1/r) ≈ 0.55 here): ~0.80-similar pairs collide 99.96% of the time, ~0.30-similar ones only 4.7%. Tuning b and r moves the knee: more bands lowers the threshold (higher recall, more candidates to score); fewer bands raises it (higher precision, fewer candidates) — the same recall-vs-compute dial as exact blocking.",
+       ok:true,
+       fb:"Exactly. MinHash is a Jaccard sketch; LSH turns it into similarity-based blocking with an S-curve you tune via b and r — trading recall (looser threshold, more candidates) against compute."},
+      {t:"MinHash+LSH gives an exact, deterministic list of all pairs above a similarity cutoff with zero error, which is why it replaces the fuzzy scorer entirely.",
+       ok:false,
+       fb:"It's approximate, not exact: MinHash estimates Jaccard (~10% error at k=100) and LSH is probabilistic (an S-curve, not a hard cutoff) — some true pairs miss, some weak pairs slip through. It's a candidate GENERATOR that feeds the scorer, not a replacement for it."},
+      {t:"b and r don't matter — any split of the 100 slots gives the same result — so you just pick b=r=10 for symmetry and move on.",
+       ok:false,
+       fb:"b and r set the S-curve's threshold ≈ (1/b)^(1/r) and its sharpness — the core knob. b=20,r=5 gives a ~0.55 threshold; b=10,r=10 gives a much higher one (~0.63) that would miss looser matches. Choosing them IS the recall-vs-precision decision."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

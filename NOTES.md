@@ -1456,9 +1456,25 @@
     serial calls), L12 (B-tree IN-query seeks), L3/4/19/21 (sharding → scatter-gather + merge), L2/14 (edge cache lost),
     L28 (unbounded batch = DoS/OOM), L32 (partial failure). Trade: fewer round trips & payload control vs API, caching &
     failure-handling complexity. (Lesson 0072)
-73. Deduplication & entity resolution at scale — "are these two records the same customer?" across 500M rows: blocking
-    keys to avoid N² comparisons, similarity scoring, MinHash/LSH (L65 neighbors), and the merge/survivorship decision.
-    Trade: match recall vs precision & compute cost.
+73. ✅ **Deduplication & entity resolution at scale** — 500M customer rows, no shared id, one question: "are these two
+    records the same person?" Estimate the N² wall — all-pairs = N²/2 ≈ **1.25×10¹⁷** ≈ 3,960 yr/core (≈4 yr even on
+    1,000) → **blocking** (compare only records sharing a cheap key) cuts to N·b/2 ≈ 2.5×10¹⁰, a **~5,000,000×** reduction
+    (~6.9 h/core), paid in recall (a dupe dirty in the key field lands in another block, never compared). Model 4 machines:
+    **blocking keys** (compare only the plausible, L3 shard-by-key); **weighted similarity score** (Jaccard on token sets
+    = |A∩B|/|A∪B| = 3/7 = 0.43, edit distance, rare fields weighted like L16's IDF); **MinHash + LSH** (L21/65 sketch —
+    P(slot agree)=Jaccard, ±1/√k=10% err; LSH banding k=100/b=20/r=5 → S-curve threshold (1/b)^(1/r)≈0.55, s=0.80 caught
+    99.96%, s=0.30 only 4.7% → block by SIMILARITY so a typo can't hide a dupe); **clustering + survivorship** (union-find
+    matched pairs → one **golden record**, keep source ids as provenance). Trace R1/R2 merge on a shared RARE email, R3
+    deferred to the **review band** (genuinely ambiguous: shared rare phone but conflicting email+address), LSH recovering
+    a dupe a one-char city typo hid from exact blocking. First bottleneck = the two errors are **asymmetric**: a **false
+    merge** (fuse two people) corrupts data near-irreversibly (privacy incident, L30/56) while a **false split** is a cheap
+    reversible nuisance → bias AWAY from merging (high threshold, wide review band, reversible merges over immutable
+    sources L25/38). Three more walls: single-key blocking silently caps recall → **multi-pass** blocking + union
+    candidates; similarity is **not transitive** (R1≈R2≈R3 ⇏ R1≈R3) so naïve connected-components CHAINS into a giant blob
+    → dense clusters + size caps + **cannot-link**; never "done" → **incremental** resolution per new record (L19
+    neighbourhood) + periodic re-batch. Deepest point: entity resolution is a **decision under uncertainty** (you infer an
+    identity the data never stored) → spend the unavoidable error budget on the mistake you can afford and undo. Trade:
+    match recall vs precision & compute cost. (Lesson 0073)
 74. Config & feature-flag delivery at scale — push a config/flag change to 40k servers (L27) in seconds without a
     deploy: a versioned config plane, pull-with-long-poll vs push, staged rollout & instant kill-switch (L31/51),
     consistency of "everyone on the same flag." Trade: change speed & safety vs a new always-on dependency.
