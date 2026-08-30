@@ -1475,12 +1475,55 @@
     neighbourhood) + periodic re-batch. Deepest point: entity resolution is a **decision under uncertainty** (you infer an
     identity the data never stored) → spend the unavoidable error budget on the mistake you can afford and undo. Trade:
     match recall vs precision & compute cost. (Lesson 0073)
-74. Config & feature-flag delivery at scale — push a config/flag change to 40k servers (L27) in seconds without a
-    deploy: a versioned config plane, pull-with-long-poll vs push, staged rollout & instant kill-switch (L31/51),
-    consistency of "everyone on the same flag." Trade: change speed & safety vs a new always-on dependency.
+74. ✅ **Config & feature-flag delivery at scale** — flip a value on 40k servers (L27) in seconds without a deploy.
+    Estimate kills naïve polling: 100 ms freshness = 40k×10 = 400k req/s carrying ~10 changes/day (3.46B polls/day ≈
+    346M pointless polls/change); 100 KB blob re-fetch = 4 GB/s → ETag/304 (8 MB/s check) + delta (4 MB). Fix =
+    long-poll (hanging GET): ask once, plane HOLDS open until change-or-30s-timeout → near-instant at 40k/30 ≈ 1,333
+    req/s (~300× cheaper than 100 ms short-poll AND fresher). Model the **config plane**: (1) versioned store
+    (monotonic v1200→v1201, immutable versions → exact rollback, L25/38; read-optimised tiny DB, huge blast radius);
+    (2) delivery on a latency-vs-statefulness dial — short-poll / long-poll (default, near-push, client-initiated so
+    firewall-friendly, nearly-stateless plane) / push-streaming (L26 socket, lowest latency but 40k stateful conns);
+    (3) local **fail-static** cache (RAM+disk) so a flag read is a µs memory lookup NEVER a network hop — plane off
+    the hot path; unreachable/garbage → serve last-known-good, baked default snapshot for boot-during-outage (L34 AP);
+    (4) **bucketing** = hash(uid) mod 10000 < pct×100 → deterministic, stateless, flicker-free (monotone ramps only
+    ADD users), a canary for BEHAVIOR (L4 stable-hash, L31 canary). Trace: 1%→25% ramp (~2 s via held long-polls, no
+    deploy), 25%→0% kill-switch (L31 rollback at ~100× speed — only a VALUE moved), plane outage (fail-static, fleet
+    on last-good). First bottleneck = **the flip is NEVER atomic**: ~2 s mixed-version window (some v1200/some v1201,
+    eventual consistency L6/11) → user's 2 requests hit both → flicker; can't make it atomic, make it SAFE (sticky
+    per-session eval + backward/forward-compatible features = L24/31 expand-contract, a config push IS a rolling
+    deploy of behavior). Three more walls: bad value propagates as fast as good (fat-finger 100%, unparseable crash,
+    faster than a human → schema-validate, fail-static drops garbage, CANARY the config to 1% of servers L17/31 — a
+    push is a deploy); correlated SPOF (40k depend on one service, one bad/empty config fails ALL → CP source-of-truth
+    consensus L10/62 for one agreed version + AP cached/CDN delivery L14/48, write CP / delivery AP); publish
+    thundering herd (change wakes all 40k long-polls at once → jitter + CDN the delta + relay-tree fan-out L2/15/26).
+    Deepest point: a config plane is a tiny EXTREME database whose writes change every other system's behavior in
+    seconds → "release" becomes its own distributed system (versioning/consistency/blast-radius/fail-static/herd/
+    stateless-hash), and the speed you built is the risk you took on → rebuild every deploy guardrail around the value.
+    Trade: change speed & safety vs a new always-on dependency. (Lesson 0074)
 75. Append-only audit logs & tamper evidence — an immutable, verifiable record of "who did what when" (L38/56):
     hash-chaining each entry to the last (a mini-blockchain), Merkle proofs a single entry is present & unaltered, and
     write-once storage. Trade: verifiability & compliance vs write cost & the impossibility of edits.
+
+### Advanced topics (next batch — queued so the course never runs dry)
+76. Health checks & graceful degradation — the difference between "up" and "useful": shallow vs deep health checks,
+    dependency health vs self health (a check probing a shared DB fails the whole fleet, L34), load-shedding tiers
+    and feature degradation (turn off recommendations to keep checkout alive, L28), and the "fail open vs fail closed"
+    choice per dependency. Trade: availability of the core vs completeness of the experience.
+77. Blob/media processing pipelines (transcoding at scale) — one uploaded 4K video (L20 object storage) fanned into
+    every resolution/codec/thumbnail: a DAG of transcode jobs, priority queues (viewer-waiting vs background), the
+    cost of re-encoding vs storing all variants, and idempotent/resumable jobs (L70). Trade: storage vs compute vs
+    time-to-first-play.
+78. Multi-level & write-through vs write-back caching — a cache hierarchy (L1/L2 CPU-style, then Redis, then CDN):
+    write-through (safe, slow) vs write-back (fast, loses data on crash) vs write-around, cache coherence across the
+    tiers, and the inclusion/exclusion trade. Reuses L2/48 invalidation. Trade: read/write latency vs durability &
+    coherence.
+79. Sharding strategies & resharding live — beyond L3/L4: directory-based vs range vs hash sharding, the resharding
+    problem (split a hot shard while serving traffic, L24 online-migration shape), cross-shard queries/joins and the
+    scatter-gather tax (L19), and shard key choice as a one-way door. Trade: even load & locality vs query flexibility.
+80. Cost & performance of serialization formats — the wire format nobody estimates: JSON vs Protobuf/Avro vs Thrift,
+    schema evolution (add/remove fields without breaking readers, L18/24), the CPU + bytes cost at 40k req/s, and
+    zero-copy/columnar formats for analytics (L29). Trade: human-readability & flexibility vs size, speed & schema
+    discipline.
 
 ## Lesson format conventions
 - Four reusable "moves" framing introduced in Lesson 01: estimate → model →

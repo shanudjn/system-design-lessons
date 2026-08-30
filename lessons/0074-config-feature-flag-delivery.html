@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 74 — Config &amp; Feature-Flag Delivery: Flip a Switch on 40,000 Servers in Seconds</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 74 · Worked Example</div>
+  <h1>Config &amp; Feature-Flag Delivery: Flip a Switch on 40,000 Servers in Seconds</h1>
+  <p class="lead">Lesson 31 taught the trick that a <b>feature flag</b> decouples <i>deploy</i> (code running) from <i>release</i> (behavior reaching users): dark-launch code turned off, flip it on for 1% of users, and roll back with a flag flip instead of a redeploy. That lesson waved a hand at "flip the flag." This lesson opens that hand. You have <b>40,000 servers</b> (Lesson 27's fleet). A knob lives in a config value — a rollout percentage, a rate limit, a timeout, a kill-switch for a flaky dependency — and you want to change it and have <span class="key">every one of the 40,000 servers act on the new value within <i>seconds</i>, without shipping code and without a restart.</span> We'll <b>estimate</b> why the obvious answer (have each server poll a config service) is a load-vs-freshness trap that carries hundreds of millions of pointless requests per real change; <b>model</b> the <b>config plane</b> — a versioned store, <b>long-poll vs push</b> delivery, deltas not blobs, and a local <b>fail-static</b> cache so a config read is a memory lookup and never a network hop; <b>trace</b> a staged rollout, an instant kill-switch, and a config-plane outage; and find <span class="key">the first bottleneck: "everyone is on the same flag" is never exactly true across a fleet that is always partly stale — the flip is not atomic, so you must make the mixed-version window <i>safe</i> rather than pretend it doesn't exist, and reckon with the fact that a bad value now propagates as fast as a good one.</span> The trade under all of it: <b>change speed &amp; safety vs a new always-on dependency.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0074-config-feature-flag-delivery.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>One flag, one fleet. The flag is <code>checkout_v2</code> — a new checkout flow, deployed to every server but <b>turned off</b>, currently released to <b>1%</b> of users. We want to (a) ramp it <b>1% → 5% → 25% → 100%</b> over the day, watching error rates at each step, and (b) if it misbehaves, <b>kill it instantly</b> — back to 0% across all 40,000 servers in seconds, no deploy. The value lives in a <b>config plane</b>: a small service whose whole job is to hold the current config and deliver changes to the fleet fast and safely. A config value is tiny (a number, a boolean, a short rule); what makes this hard is not the data, it's that <span class="key">changing it changes the running behavior of 40,000 machines at once.</span></p>
+
+<div class="diagram"><pre>
+  ONE control plane, 40,000 data-plane servers, one value to change.
+
+        operator sets  checkout_v2: 1% -> 25%
+                 |
+                 v
+        +-------------------------+     source of truth, VERSIONED
+        |     CONFIG PLANE        |     every change bumps a version:
+        |  store: {flag -> value} |       ... v1200 {checkout_v2:1%}
+        |  version: v1201         |           v1201 {checkout_v2:25%}
+        +-------------------------+     (immutable versions -> exact rollback)
+                 |  delivery: long-poll / push, send the DELTA
+        .--------+--------+--------+---- ... 40,000 servers ----.
+        v        v        v        v                            v
+      [srv 1] [srv 2] [srv 3] [srv 4]   ...                 [srv 40000]
+        |        |        |        |                            |
+      local    local    local    local     each server keeps a LOCAL CACHE
+      cache    cache    cache    cache      (last-known-good on disk + RAM)
+        |
+        v   a flag read is a MEMORY lookup, never a network call.
+      if config plane is down -> serve the cached value (FAIL-STATIC).
+</pre></div>
+
+<p class="note"><span class="key">The one idea the whole lesson turns on:</span> the config plane must <b>never be on the request hot path</b>. A server does not phone the config service to answer a user request — it reads a value from its own memory that a background process keeps fresh. Delivery (getting a change from the plane to 40,000 local caches) is a separate, asynchronous problem from evaluation (reading the cached value, which is instant and always available). Get that split right and the config plane can be slow, or briefly down, without taking the fleet with it. Get it wrong — read the config service per request — and you've built a 40,000-way dependency on a single point that fails the whole fleet at once.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Config / feature flag</b> — a value that changes a running system's behavior without changing its code. A flag is a config value that's usually a rollout rule ("on for X% of users").</li>
+  <li><b>Control plane vs data plane</b> — the control plane decides and distributes config (here, the config service); the data plane is the 40,000 servers doing the actual work and reading the config.</li>
+  <li><b>Config plane</b> — the control-plane service that stores the config, versions it, and delivers changes to the fleet.</li>
+  <li><b>Version</b> — a monotonically increasing number stamped on the whole config every time anything changes (<code>v1200 → v1201</code>). Lets a client ask "anything newer than mine?" and lets you roll back to an <i>exact</i> prior state.</li>
+  <li><b>Short poll</b> — client asks "changed?" every P seconds. Simple; stale up to P; load grows as fleet/P.</li>
+  <li><b>Long poll (hanging GET)</b> — client asks and the server <i>holds the request open</i> until the config changes (or a timeout ~30 s), then replies. Near-instant delivery with a fraction of the request load.</li>
+  <li><b>Push / streaming</b> — the config plane keeps an open connection and sends the change the instant it happens (Lesson 26's live socket). Lowest latency, but the plane holds 40,000 stateful connections.</li>
+  <li><b>Delta</b> — send only what changed (the one flag + new version), not the whole config blob.</li>
+  <li><b>ETag / <code>If-None-Match</code></b> — a version tag the client sends back; the server answers <code>304 Not Modified</code> (tiny) when nothing changed, so a "check" costs almost nothing.</li>
+  <li><b>Fail-static</b> — when the config plane is unreachable, keep serving the <i>last-known-good</i> cached config instead of failing or blanking (Lesson 34's AP choice for routing, here for config).</li>
+  <li><b>Percentage rollout / bucketing</b> — evaluate "on for 25% of users" by hashing a stable id into a bucket <code>[0,10000)</code> and comparing to the threshold — deterministic, so the same user is always in or out.</li>
+  <li><b>Kill-switch</b> — a flag whose sole purpose is to instantly disable a feature or dependency fleet-wide.</li>
+  <li><b>Mixed-version window</b> — the brief span during propagation when some servers are on the old version and some on the new. The flip is never truly atomic.</li>
+</ul>
+
+<h2>Move 1 — Estimate: why naïve polling is a load-vs-freshness trap</h2>
+<p>The instinct is: each server asks the config service "what's the current value?" on a timer. Put numbers on it and the timer becomes the whole problem — it's the same polling-waste shape as Lesson 26, now on 40,000 machines reading a value that almost never changes.</p>
+
+<div class="card calc">
+  <p><b>The polling-waste wall.</b> Config changes are <i>rare</i>: say <b>10 changes/day</b> across the whole fleet's config = <code>10 / 86,400 s ≈ 1.16×10⁻⁴</code> changes per second. But to keep the fleet <i>fresh</i>, every server polls on a timer.</p>
+  <ul>
+    <li>Poll every <b>1 s</b>: <code>40,000 servers × 1/s = <b>40,000 req/s</b></code> on the config plane, and a change is still up to <b>1 s stale</b>.</li>
+    <li>Want <b>100 ms</b> freshness? Poll 10×/s: <code>40,000 × 10 = <b>400,000 req/s</b></code> — to carry ~0.0001 real changes/s.</li>
+    <li>The fleet does <code>40,000 × 86,400 = <b>3.456 billion</b></code> polls/day to deliver <b>10</b> real changes: <code>≈ <b>346 million</b> pointless polls per actual change.</code></li>
+  </ul>
+  <p><span class="key">Polling makes you choose between load and freshness, and both are bad.</span> Slow polling is cheap but stale (a kill-switch that takes 30 s is not a kill-switch); fast polling is fresh but is a self-inflicted 400k req/s DDoS against your own most-critical service.</p>
+</div>
+
+<div class="card calc">
+  <p><b>And the payload is worse than the request count.</b> A full config blob (thousands of flags across the org) is easily <b>~100 KB</b>. If every poll re-downloads it: <code>100 KB × 40,000 = <b>4 GB</b></code> per round — at 1/s that's <b>4 GB/s ≈ 32 Gbps</b> of config traffic to move bytes that didn't change. Two fixes stack:</p>
+  <ul>
+    <li><b>ETag / <code>304</code>:</b> the client sends its version; unchanged → a ~200-byte "nothing new." A <i>check</i> now costs <code>200 B × 40,000 = <b>8 MB/s</b></code>, not 4 GB/s — a <b>500×</b> cut. But it's still 40k req/s of checks.</li>
+    <li><b>Delta on change:</b> when something <i>does</i> change, send only the changed key. One flag ≈ 100 bytes → <code>100 B × 40,000 = <b>4 MB</b></code>, once, instead of 4 GB.</li>
+  </ul>
+  <p>So the bytes are solvable. The remaining problem is the <b>40,000 req/s of "are we there yet?" checks</b> that exist only because the client doesn't know <i>when</i> to ask. That's the exact problem long-poll and push were invented to kill.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Long-poll collapses the check load.</b> Instead of asking every second, the server asks <i>once</i> and the config plane <b>holds the request open</b> until either the config changes or a <b>30 s</b> timeout fires, then answers. On a quiet fleet each server just re-connects every 30 s: <code>40,000 / 30 ≈ <b>1,333 req/s</b></code> — versus 400,000 req/s for 100 ms short-polling, a <b>~300× reduction</b> — <i>and</i> delivery is now near-instant instead of up-to-100 ms stale. <span class="key">Long-poll gives you better freshness AND less load at the same time</span> — it removes the guesswork of "when to ask" by letting the server answer the moment there's something to say.</p>
+</div>
+
+<p class="note why"><b>Why "read it per request" is the tempting disaster:</b> the simplest-looking design is to skip caching and just have each server ask the config plane while handling a user request. That makes config perfectly fresh — and puts the config plane on the hot path of all 40k req/s of <i>real</i> traffic, turning it into a latency tax on every request and a single dependency whose hiccup stalls the entire fleet (Lesson 34's "a health check probing a shared dep fails everyone"). The whole design below exists to keep config <b>fresh enough</b> while keeping the read <b>local and instant</b> — freshness of delivery is decoupled from availability of evaluation.</p>
+
+<h2>Move 2 — Model: the config plane</h2>
+
+<h3>Machine 1 — a versioned store: the source of truth</h3>
+<div class="card calc">
+  <p>The config plane holds <code>{flag → value}</code> and stamps the whole config with a <b>monotonic version</b> that bumps on every change (<code>v1200 → v1201</code>). Two properties fall out of versioning, both borrowed from the ledger instinct (Lesson 25/38): a client can ask <b>"anything newer than v1200?"</b> in a single integer compare, and you can <b>roll back to an exact prior state</b> by re-pointing to <code>v1200</code> — the old versions are kept, immutable, so "undo" is not a re-typed value that might be fat-fingered again, it's a known-good snapshot. Because writes are rare and reads are enormous, this store is <b>read-optimized and heavily cached/replicated</b> (Lesson 2/48): it's a tiny database with an outsized blast radius, so it must be the most boring, most available thing you own.</p>
+</div>
+
+<h3>Machine 2 — delivery: pull-with-long-poll vs push</h3>
+<div class="card calc">
+  <p>Three ways to get a change from the plane to 40,000 local caches, on a latency-vs-statefulness dial:</p>
+  <ul>
+    <li><b>Short poll</b> — ask every P seconds. Dead simple, stateless, firewall-friendly; stale up to P; load = fleet/P (the Move-1 trap).</li>
+    <li><b>Long poll (hanging GET)</b> — ask once, the plane holds it open until change-or-timeout. Near-instant, still client-initiated (so it works through NAT/firewalls like any HTTP request), load = fleet/timeout. The default: ~all the benefit of push with the simplicity of pull.</li>
+    <li><b>Push / streaming</b> — the plane keeps a live connection per server (Lesson 26's WebSocket) and sends the delta the instant it changes. Lowest latency, but now the plane is <b>stateful</b>: it holds 40,000 connections, must track who's connected, and inherits Lesson 26's reconnect-storm and slow-consumer problems. Worth it when you need sub-second and are already running a push tier; otherwise long-poll is the cheaper 95%.</li>
+  </ul>
+  <p><span class="key">The trade named:</span> latency vs statefulness. Push is fastest but makes the config plane hold connection state for the whole fleet; long-poll keeps the plane nearly stateless (a held request is cheap) at the cost of a small reconnect cadence. Either way you send a <b>delta</b>, not the 100 KB blob.</p>
+</div>
+
+<h3>Machine 3 — the local cache + fail-static: make the read instant and always-available</h3>
+<div class="card calc">
+  <p>Every server keeps the last config it received in <b>memory</b> (for instant reads) and on <b>local disk</b> (to survive a restart). Evaluating a flag is a map lookup — no network, microseconds. The delivery loop updates this cache in the background. The safety rule is <b>fail-static</b> (Lesson 34's AP choice, applied to config): if the config plane is unreachable, or returns something that fails validation, <span class="key">keep serving the last-known-good value</span> — never block, never blank the config, never crash. A stale flag is almost always fine; an empty config is a fleet-wide outage. Bake a sane default snapshot into the image too, so a server that boots <i>during</i> a config-plane outage still has values to serve.</p>
+</div>
+
+<h3>Machine 4 — targeting &amp; bucketing: "25% of users" without server state</h3>
+<div class="card calc">
+  <p>A flag is rarely a global boolean; it's a <b>targeting rule</b>: "on for 25% of users," "on in the EU," "on for internal accounts." The percentage is evaluated <b>client-side on each server</b> by hashing a stable id into a bucket and comparing to the threshold — no per-user state anywhere:</p>
+  <div class="diagram" style="margin:.6rem 0"><pre>
+   bucket = hash(user_id) mod 10000        // uniform in [0, 10000)
+   on     = bucket &lt; rollout_pct * 100      // 25% -> bucket &lt; 2500
+
+   user "alice" -> hash -> 1873  -> 1873 &lt; 2500 -> ON  (always, every server)
+   user "bob"   -> hash -> 7401  -> 7401 &lt; 2500 -> OFF (always, every server)
+  </pre></div>
+  <p>Because the bucket is a pure function of the user id, the decision is <b>deterministic and consistent</b>: the same user is on (or off) on <i>every</i> server, and — crucially — raising 25%→50% only ever <i>adds</i> users (buckets 2500–4999), never flips someone off then on (no flicker). This is Lesson 4's consistent-hashing instinct reused: a stable hash gives you sticky, stateless assignment. Ramping is Lesson 31's canary, but for <i>behavior</i> instead of code: <code>1% → 5% → 25% → 100%</code>, each step a checkpoint you can watch and hold.</p>
+</div>
+
+<table>
+  <tr><th>Machine</th><th>Turns…</th><th>…into</th><th>Its price</th></tr>
+  <tr><td>Versioned store</td><td>a mutable value</td><td>a monotonic version + exact rollback</td><td>keep immutable history; a tiny DB with huge blast radius</td></tr>
+  <tr><td>Long-poll / push delivery</td><td>40k req/s of polling</td><td>near-instant change, ~1,333 req/s</td><td>held connections / push = stateful plane (L26)</td></tr>
+  <tr><td>Local cache + fail-static</td><td>a per-request network hop</td><td>a microsecond memory read, always available</td><td>the read is as stale as the last successful delivery</td></tr>
+  <tr><td>Bucketing / targeting</td><td>"25% of users"</td><td>a deterministic, stateless per-user decision</td><td>needs a stable id + a good hash; monotone ramps only</td></tr>
+</table>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Follow the one flag through a staged rollout, an emergency kill, and a config-plane outage.</p>
+
+<h3>Path A — staged rollout: 1% → 25%</h3>
+<div class="diagram"><pre>
+   operator: set checkout_v2 = 25%   (was 1%)
+
+   [1] STORE   config plane validates the value, writes v1201
+               {checkout_v2: 25%}, keeps v1200 immutable.
+   [2] DELIVER every server is holding a long-poll open. The write
+               wakes them: the plane returns the DELTA {checkout_v2:25%, v1201}.
+               ~1,333 idle reconnects/s become ~40,000 delta responses,
+               fanned out over ~1-2 s.
+   [3] SWAP    each server validates, atomically swaps its in-memory
+               config v1200 -> v1201, writes local disk, re-opens long-poll.
+   [4] EVAL    next user request: bucket = hash(uid) mod 10000;
+               ON if bucket &lt; 2500. 25% of users now see checkout_v2.
+               No deploy. No restart. Elapsed: ~2 seconds.
+</pre></div>
+
+<h3>Path B — the kill-switch: 25% → 0% in seconds</h3>
+<div class="diagram"><pre>
+   checkout_v2 is throwing errors at 25%. Undo it NOW.
+
+   operator: set checkout_v2 = 0%   ->  v1202
+   -> same delivery path: long-polls wake, delta {checkout_v2:0%, v1202},
+      servers swap, next request buckets everyone to OFF.
+   -> feature gone from the whole fleet in ~2 s. No redeploy.
+
+   Compare Lesson 31's rollback = ship the old build = MINUTES + a
+   capacity dip. A flag flip is the same undo at ~100x the speed,
+   because the code was already there -- we only changed a VALUE.
+</pre></div>
+
+<h3>Path C — the config plane goes down</h3>
+<div class="diagram"><pre>
+   The config service is unreachable (deploy gone wrong, network blip).
+
+   long-poll fails -> server does NOT block, does NOT blank config.
+   -> keeps serving the last-known-good cache (v1201, checkout_v2:25%).
+   -> retries with backoff + jitter (L7) until the plane returns.
+
+   a server that BOOTS during the outage:
+   -> reads the baked-in default snapshot from its image, serves that,
+      catches up when the plane is back.
+
+   The fleet keeps running on slightly-stale config. FAIL-STATIC:
+   the config plane is a delivery channel, never a hot-path dependency.
+</pre></div>
+
+<p>Path A is the everyday win: a behavior change reaches 40,000 servers in seconds through connections that were already held open, costing one small delta each — no deploy, no restart, watched at each ramp step. Path B is why flags exist at all: the kill-switch is the same delivery path in the "off" direction, and it's the fastest undo you own precisely because the code already shipped and only a <i>value</i> moved (Lesson 31's decouple-deploy-from-release, now with the delivery mechanism that makes "instant" real across a fleet). Path C is the safety net that makes the whole thing acceptable: because reads are local and fail-static, the config plane can be slow or briefly dead without the fleet noticing. <span class="key">The first three moves make config delivery look like a solved pipe. Move 4 is where the speed turns into the danger.</span></p>
+
+<h2>Move 4 — Find the first bottleneck: "everyone on the same flag" is never exactly true</h2>
+<p>The whole design delivers a change fast. But <i>fast</i> is not <i>instant</i>, and <i>instant</i> is not <i>atomic</i>. Across 40,000 servers there is always a moment when some have the new value and some have the old — and the same speed that makes the kill-switch great makes a mistake catastrophic.</p>
+
+<div class="card calc">
+  <p><b>The first bottleneck — the mixed-version window: the flip isn't atomic.</b> During Path A's ~2 s propagation, the fleet is <b>split</b>: some servers are on <code>v1200</code> (1%), some on <code>v1201</code> (25%). Delivery is <b>eventually consistent</b> (Lesson 6/11), not a global switch. So one user's two requests, load-balanced to two different servers mid-window, can hit <i>off</i> on one and <i>on</i> on the other — a flickering UI, or worse, a workflow that half-sees a new feature. <span class="key">You cannot make the flip atomic across 40,000 machines; you make the mixed state <i>safe</i>.</span> Two tools: <b>(1)</b> evaluate the flag <i>once</i> per user session at the edge and pin the result for the session's life (sticky decision, so a user doesn't oscillate); <b>(2)</b> keep every feature <b>backward/forward compatible</b> so a fleet running two versions at once is fine — the exact same rule as Lesson 24/31's expand→contract, because a config change <i>is</i> a rolling deploy of behavior and old+new must coexist. The window is unavoidable; design it to be harmless.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — a bad value propagates as fast as a good one.</b> The kill-switch's speed cuts both ways. A fat-fingered <code>100%</code> where you meant <code>10%</code>, or a malformed value that crashes every server on parse, reaches all 40,000 machines in ~2 s — <i>faster than any human can react</i>. The config plane is a channel that changes running behavior fleet-wide in seconds, which is precisely the blast radius Lesson 31 built canaries to contain — only now even faster, because there's no build to slow it down. Fixes, all Lesson 31 applied to config: <b>schema-validate</b> every value before the plane accepts it (reject a string where a percent belongs, a percent &gt; 100); <b>fail-static on the client</b> so a garbage delta is dropped, not applied (a bad config should never be able to empty a good cache); and — the big one — <b>stage the config change itself</b>: canary the new value to 1% of <i>servers</i>, watch error rate/p99 (Lesson 17), then fan out. A config push deserves the same guardrails as a deploy, because that's what it is.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — the config plane is a new always-on dependency (a correlated SPOF).</b> Every one of the 40,000 servers now depends on this one service. A single bad or empty config it serves doesn't fail one server — it fails <i>all of them at once</i>, a correlated outage worse than any single-machine failure (Lesson 7/34). This is the price the trade names: you bought change-speed and paid in a shared dependency. You pay it down, not away: <b>fail-static</b> makes an <i>unreachable</i> plane a non-event (Path C); the store must be <b>HA + replicated</b> — strongly-consistent for the source-of-truth write (Lesson 10/62 consensus, so there's one agreed version), but the read/delivery path served from an <b>AP cache/CDN tier</b> (Lesson 14/48: config is the same bytes for everyone, so it's trivially cacheable and should be read from a fan-out tier, never all 40k hitting the primary). The plane can be strongly consistent about <i>what</i> the config is and still deliver it eventually-consistently to the edge — the write is CP, the delivery is AP.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The fourth wall — the publish thundering herd.</b> A change wakes <i>all</i> 40,000 held long-polls at once, and they all re-fetch and re-connect in the same instant (Lesson 2/26's herd). Even a 100-byte delta × 40,000 simultaneous is a spike, and the reconnect storm hammers the plane just when it's doing real work. Fixes are the herd playbook: <b>jitter</b> the notify and the reconnect so the 40k spread over a window; serve the delta from a <b>cache/CDN tier</b> so the primary isn't the thing being stampeded (config is identical for everyone — a perfect cache hit); and for very large fleets, fan out through a <b>tree of relays</b> (the plane pushes to ~100 relays, each pushes to ~400 servers) so no single node holds 40,000 connections — the same fan-out shape as Lesson 15's feed and Lesson 26's gateways.</p>
+</div>
+
+<p>So the honest picture of config &amp; flag delivery: you can't <b>poll</b> your way to freshness (40k servers × fast polling = 400k req/s of "are we there yet?" carrying ~346 million pointless checks per real change), so a <b>config plane</b> holds a <b>versioned</b> source of truth and <b>delivers deltas</b> via <b>long-poll</b> (near-instant at ~1,333 req/s, ~300× cheaper than 100 ms short-polling) or <b>push</b> (faster, but a stateful plane holding 40k connections); every server keeps a <b>local fail-static cache</b> so a flag read is a microsecond memory lookup that survives the plane being down, and <b>bucketing</b> (<code>hash(uid) mod 10000 &lt; pct×100</code>) makes "25% of users" a deterministic, stateless, flicker-free decision you can ramp like a canary. The first bottleneck is that the flip is <b>never atomic</b> — a mixed-version window is unavoidable, so you make it <i>safe</i> (sticky per-session evaluation + backward/forward-compatible features, Lesson 24/31); around it, a <b>bad value propagates as fast as a good one</b> (→ validate, fail-static, canary the config change itself), the plane is a <b>correlated SPOF</b> (→ fail-static + CP source-of-truth with AP cached delivery, Lesson 10/14/34), and a publish is a <b>thundering herd</b> (→ jitter + CDN the delta + relay-tree fan-out). Every choice names its price: long-poll is cheap but holds connections; push is instant but stateful; a local cache is fast and available but as stale as the last delivery; instant delivery is a superpower and a loaded gun.</p>
+
+<p><span class="key">The deepest point: a config plane is a tiny, extreme database whose writes change the behavior of every other system in seconds — so it must be the most boring component you own.</span> Lesson 31 said flags decouple deploy from release. Delivering them at scale reveals that "release" is now its own distributed system, with all the problems you've spent 73 lessons on — versioning (L25), eventual consistency and a mixed window (L6/11), blast radius and staged rollout (L31), fail-static availability (L34), thundering herds (L2/26), stateless assignment by hash (L4) — just compressed into seconds. The engineering isn't the store (it's trivial) or the delivery (long-poll is old); it's respecting that <b>the speed you built is the risk you took on</b>. A deploy is slow enough to catch a mistake; a config push isn't, so every guardrail a deploy has — validation, canary, instant revert to an immutable prior version, an audit log of who changed what — has to be rebuilt around the value. The standing tension: <span class="key">change speed &amp; safety vs a new always-on dependency.</span></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>Freshness vs load of polling</td><td>Long-poll / push (L26)</td><td>near-instant at ~1,333 req/s / held connections; push = stateful</td></tr>
+  <tr><td>Re-downloading unchanged bytes</td><td>ETag/304 + delta</td><td>4 GB/s → 8 MB/s check, 4 MB delta / needs versioning</td></tr>
+  <tr><td>Config on the hot path</td><td>Local cache, read from memory</td><td>microsecond reads / as stale as last delivery</td></tr>
+  <tr><td>Plane unreachable</td><td>Fail-static + baked default (L34)</td><td>fleet runs on last-good / silently stale</td></tr>
+  <tr><td>"25% of users," no state</td><td>Bucket by hash(uid) (L4)</td><td>deterministic, flicker-free ramp / needs a stable id</td></tr>
+  <tr><td>Exact undo</td><td>Immutable versions + revert (L25/38)</td><td>roll back to a known-good snapshot / keep history</td></tr>
+  <tr><td>Flip isn't atomic</td><td>Sticky eval + compatible features (L24/31)</td><td>mixed window made safe / can't be truly instant</td></tr>
+  <tr><td>Bad value spreads instantly</td><td>Validate + canary the config (L17/31)</td><td>contains blast radius / a config push is a deploy</td></tr>
+  <tr><td>Correlated SPOF</td><td>CP store + AP cached delivery (L10/14/34)</td><td>one agreed version, cheap fan-out / two consistency models</td></tr>
+  <tr><td>Publish herd</td><td>Jitter + CDN delta + relay tree (L2/15/26)</td><td>no 40k-way stampede / more delivery tiers</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — reading the config plane per request.</b> Perfectly fresh, and a 40,000-way hot-path dependency whose hiccup stalls the fleet. Read from a local fail-static cache a background loop keeps fresh; delivery ≠ evaluation.</li>
+  <li><b>Trap 2 — treating a config push as safer than a deploy.</b> It's faster <i>and</i> unguarded, so it's more dangerous. Give it the deploy's guardrails: schema validation, a canary to 1% of servers, instant revert to an immutable prior version, an audit log.</li>
+  <li><b>Trap 3 — assuming the flip is atomic.</b> There's always a mixed-version window; pretending otherwise ships flicker and half-applied workflows. Evaluate sticky per session and keep features backward/forward compatible so a two-version fleet is safe.</li>
+  <li><b>Trap 4 — ignoring the herd and the SPOF.</b> A publish wakes all 40k at once, and one bad config fails them all. Jitter + CDN the delta, fan out through relays, and fail-static so an unreachable or garbage config is a non-event.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We took Lesson 31's hand-wave — "just flip the flag" — and built the machine that makes it real on <b>40,000 servers</b>. <b>Estimate</b> killed the obvious answer: polling for freshness is a load-vs-staleness trap (100 ms freshness = <b>400,000 req/s</b>; the fleet does <b>3.46 billion</b> polls/day to carry <b>10</b> changes ≈ <b>346 million</b> pointless polls per change), and re-downloading a 100 KB blob is 4 GB/s — so <b>long-poll</b> delivers near-instant at <b>~1,333 req/s</b> (~300× cheaper than 100 ms short-poll) and you ship a <b>delta</b>, not the blob. <b>Model</b> gave the <b>config plane</b>: a <b>versioned</b> source of truth (exact rollback), <b>long-poll vs push</b> delivery (latency vs a stateful plane), a <b>local fail-static cache</b> so a flag read is a microsecond memory lookup that survives the plane being down, and <b>bucketing</b> (<code>hash(uid) mod 10000 &lt; pct×100</code>) that makes "25% of users" deterministic, stateless, and flicker-free. <b>Tracing</b> ramped 1%→25% in ~2 s with no deploy, killed a bad feature 25%→0% in ~2 s (Lesson 31's rollback at ~100× the speed), and kept the fleet running on last-known-good through a config-plane outage. The <b>first bottleneck</b>: the flip is <b>never atomic</b> — a mixed-version window is unavoidable (eventual consistency, Lesson 6/11), so you make it <i>safe</i> (sticky per-session evaluation + backward/forward-compatible features, Lesson 24/31); around it, a <b>bad value spreads as fast as a good one</b> (→ validate + fail-static + canary the config change, Lesson 17/31), the plane is a <b>correlated SPOF</b> (→ CP source-of-truth + AP cached delivery, Lesson 10/14/34), and a publish is a <b>thundering herd</b> (→ jitter + CDN the delta + relay-tree fan-out, Lesson 2/15/26). The deepest point: a config plane is a tiny extreme database whose writes change every other system's behavior in seconds, so "release" becomes its own distributed system — and the speed you built is the risk you took on. The standing tension: <span class="key">change speed &amp; safety vs a new always-on dependency.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we've made behavior changeable in seconds. Now make the RECORD of what changed impossible to forge.</b></p>
+  <p style="margin:.2rem 0">• <b>Append-only audit logs &amp; tamper evidence (Lesson 75):</b> an immutable, verifiable record of "who did what when" (Lesson 38/56) — including who flipped which flag. <b>Hash-chain</b> each entry to the last (a mini-blockchain) so altering any past entry breaks every hash after it; <b>Merkle proofs</b> that a single entry is present and unaltered without re-reading the whole log; and <b>write-once</b> storage. Trade: verifiability &amp; compliance vs write cost and the impossibility of edits.</p>
+  <p style="margin:.2rem 0">Say <b>next</b> and we'll make the audit trail tamper-evident.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">config / feature flag</span>
+    <span class="pill">control plane vs data plane</span>
+    <span class="pill">config plane</span>
+    <span class="pill">version / monotonic version</span>
+    <span class="pill">short poll</span>
+    <span class="pill">long poll / hanging GET</span>
+    <span class="pill">push / streaming</span>
+    <span class="pill">delta</span>
+    <span class="pill">ETag / If-None-Match / 304</span>
+    <span class="pill">fail-static</span>
+    <span class="pill">percentage rollout / bucketing</span>
+    <span class="pill">kill-switch</span>
+    <span class="pill">mixed-version window</span>
+    <span class="pill">sticky evaluation</span>
+    <span class="pill">canary the config</span>
+    <span class="pill">relay-tree fan-out</span>
+  </p>
+  <p>That's Lesson 74. It builds on: Lesson 31 (deployments &amp; feature flags — decouple deploy from release; this is the delivery mechanism and the canary applied to config), Lesson 26 (real-time delivery — long-poll/push, held connections, reconnect storms), Lesson 27 (autoscaling — the 40,000-server fleet), Lesson 4 (consistent hashing — stable-hash bucketing for stateless, flicker-free rollout), Lesson 6/11 (consistency &amp; CAP — eventual consistency and the mixed-version window), Lesson 34 (service discovery — fail-static, AP delivery vs CP source of truth), Lesson 14/48 (CDN &amp; caching — config is identical bytes, fan it out from a cache tier), Lesson 25/38 (ledgers &amp; event sourcing — immutable versions, exact rollback), and Lesson 2/15 (thundering herd &amp; fan-out). <b>Ask me follow-ups</b> — e.g. "how do targeting rules get more complex than a percentage (cohorts, allow-lists, dependencies between flags)?", "when is push actually worth the stateful plane over long-poll?", "how do I canary a config change to a fraction of <i>servers</i> when the plane doesn't hold per-server state?", "what does an audit trail for flag changes need to capture?", or "how do off-the-shelf systems (LaunchDarkly, etcd/Consul watches, ZooKeeper) map onto this model?" When you're ready, say <b>next</b> and we'll make the audit log of all these changes tamper-evident with hash-chains and Merkle proofs.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "You need a flag value to reach 40,000 servers within seconds. A teammate proposes: every server polls the config service every 100 ms so it's always fresh. What's wrong, and what's the standard fix?",
+    options: [
+      {t:"100 ms polling is 40,000 × 10 = 400,000 req/s against your most critical service — to carry maybe 10 config changes a day (~346 million pointless polls per real change). Polling forces a bad trade: slow = stale (a 30 s kill-switch isn't a kill-switch), fast = a self-inflicted DDoS. Fix = LONG-POLL: the server asks once and the plane HOLDS the request open until the value changes or a ~30 s timeout, then answers. Near-instant delivery at ~40,000/30 ≈ 1,333 req/s — ~300× less load AND fresher, because the plane replies the moment there's news instead of the client guessing when to ask.",
+       ok:true,
+       fb:"Right. Polling makes you pick between load and freshness and both are bad; long-poll removes the 'when to ask' guesswork, giving near-instant delivery at a fraction of the request rate. Send a delta, not the whole blob."},
+      {t:"Nothing's wrong — 400,000 req/s is fine, and 100 ms polling is the simplest way to guarantee every server is always perfectly in sync with no mixed-version window.",
+       ok:false,
+       fb:"Two errors. 400k req/s against your single most-critical service is a self-inflicted DDoS for almost-always-unchanged data, and polling does NOT eliminate the mixed-version window — servers still poll at different instants, so some get the new value before others. Freshness of delivery and atomicity of the flip are different problems."},
+      {t:"The fix is to make each server read the config service directly while handling each user request, so the value is exactly current at the moment it's used.",
+       ok:false,
+       fb:"That's the tempting disaster: it puts the config plane on the hot path of all 40k req/s of real traffic — a latency tax on every request and a 40,000-way dependency whose hiccup stalls the fleet. Config must be read from a local fail-static cache a background loop keeps fresh; delivery ≠ evaluation."}
+    ]
+  },
+  {
+    stem: "During a 1%→25% rollout, users complain the new checkout 'flickers' — appearing and disappearing on refresh — for about two seconds after you make the change. What's happening, and what's the right fix?",
+    options: [
+      {t:"The flip is NOT atomic. For the ~2 s it takes the change to propagate to all 40,000 servers, the fleet is split — some on v1200 (1%), some on v1201 (25%) — so a user's successive requests, load-balanced to different servers, get different answers (eventual consistency, not a global switch). You can't make 40k machines flip instantly, so make the mixed window SAFE: evaluate the flag once per session and pin it (sticky), and keep features backward/forward compatible so a two-version fleet is fine (the same expand→contract rule as a rolling deploy).",
+       ok:true,
+       fb:"Exactly. The mixed-version window is unavoidable; the design job is to make it harmless — sticky per-session evaluation stops the oscillation, and forward/backward compatibility makes a split fleet safe."},
+      {t:"The bucketing hash is broken — a correct percentage rollout would never show the feature to a user one moment and hide it the next. Re-seed the hash and the flicker disappears.",
+       ok:false,
+       fb:"The hash is fine and deterministic — the same user gets the same bucket on every server. The flicker isn't from the hash; it's from different servers being on different config VERSIONS during propagation. A user near the 25% cutoff can be ON per a v1201 server and OFF per a v1200 one. Fix the window, not the hash."},
+      {t:"Poll faster (every 10 ms) so all servers update at the same instant and the window closes.",
+       ok:false,
+       fb:"Faster polling shrinks but never closes the window — 40k servers still update at slightly different instants — and it explodes load to 4M req/s. The window is inherent to a distributed flip; you make it safe (sticky eval + compatible features), not vanishingly small."}
+    ]
+  },
+  {
+    stem: "Someone points out that flags are wonderful because a config push is instant and needs no deploy — 'much safer than a risky deployment.' Why is that backwards, and what do you add?",
+    options: [
+      {t:"It's backwards because the SPEED is the danger: a fat-fingered value or a malformed config reaches all 40,000 servers in ~2 s — faster than any human can react — and unlike a deploy there's no build step to slow it down. A config push IS a deploy of behavior, so give it a deploy's guardrails: schema-validate every value before the plane accepts it (reject 150% or a string where a percent belongs), fail-static on the client so a garbage delta is dropped not applied, CANARY the config change to ~1% of servers and watch error rate before fanning out, and keep immutable versions so revert is one click to a known-good snapshot.",
+       ok:true,
+       fb:"Right. A flag push has a deploy's blast radius at higher speed and less friction, so it needs the same guardrails: validation, fail-static, staged/canary rollout, and instant revert to an immutable prior version."},
+      {t:"It's correct — because no code changes, a config push genuinely can't cause an outage, so validation and canaries would just slow down an inherently safe operation.",
+       ok:false,
+       fb:"A config value changes running behavior fleet-wide; a bad one (a wrong percentage, an unparseable value that crashes on load) is a fleet-wide outage in seconds — no code change required. 'No deploy' means less friction, not less risk. Treat it with a deploy's caution."},
+      {t:"It's backwards only because config pushes are slower than deploys, so you should batch config changes into the normal release train to pick up its testing.",
+       ok:false,
+       fb:"Config pushes are FASTER than deploys, not slower — that's the whole point (and the whole danger). Folding them into the release train would destroy the seconds-not-minutes kill-switch you built the config plane for. Keep the speed; add the guardrails."}
+    ]
+  },
+  {
+    stem: "Your config plane must serve 40,000 servers. What's the right consistency and availability shape for the store and its delivery, and why?",
+    options: [
+      {t:"Split the two concerns. The SOURCE OF TRUTH (the write that mints a new version) should be strongly consistent / CP — one agreed version number, via a consensus-backed store (L10/62) — so there's never ambiguity about what the current config IS. But DELIVERY to the fleet should be AP: config is identical bytes for everyone, so fan it out from a cached/CDN tier (never 40k hitting the primary), and each server keeps a local FAIL-STATIC cache so an unreachable plane is a non-event (serve last-known-good, L34). The write is CP; the read path is AP and eventually consistent.",
+       ok:true,
+       fb:"Exactly. One agreed version (CP write) removes ambiguity; cached AP delivery + client fail-static removes the correlated-SPOF risk. The plane can be authoritative about what the config is and still deliver it eventually-consistently and highly-availably."},
+      {t:"Make everything strongly consistent end to end: every server must confirm it has the exact latest version synchronously before serving any request, so the fleet is always perfectly in sync.",
+       ok:false,
+       fb:"That re-creates the hot-path dependency and makes the config plane a synchronous blocker on all 40k req/s — one blip stalls the fleet, and you still can't achieve a truly atomic flip. Reads must be local and fail-static; perfect global sync is neither achievable nor worth the availability cost."},
+      {t:"Make everything AP including the source of truth — let any node accept a config write and reconcile later — since config is small and speed matters most.",
+       ok:false,
+       fb:"An AP source of truth means two operators could mint conflicting 'current' versions that later diverge — ambiguity about what the config even is, on the one component whose value changes the whole fleet's behavior. The WRITE needs one agreed version (CP); only the DELIVERY should be AP."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
