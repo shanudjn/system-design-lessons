@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 75 — Append-Only Audit Logs &amp; Tamper Evidence: Prove Nobody Rewrote History</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 75 · Worked Example</div>
+  <h1>Append-Only Audit Logs &amp; Tamper Evidence: Prove Nobody Rewrote History</h1>
+  <p class="lead">Lesson 74 made behavior changeable in seconds — anyone with the console can flip a flag, and Lesson 25's ledger can move money. So the next question is unavoidable: <b>who did that, and can they cover it up?</b> An <b>audit log</b> is the record of "who did what, when, to what" — every refund, every permission grant, every flag flip, every data deletion. This lesson builds one, and its whole point is a property most storage doesn't have: <span class="key">tamper <i>evidence</i> — you may not be able to stop someone from editing the record, but you can make any edit <i>impossible to hide</i>.</span> We'll <b>estimate</b> and find the surprise: the volume is trivial, so scale is not the enemy — <i>trust</i> is, because the person you most need to catch is often the one holding the database. We'll <b>model</b> the log in layers — append-only storage, then a <b>hash chain</b> that links every entry to the one before it, then a <b>Merkle tree</b> that proves a single entry among billions, then an <b>external anchor</b> that turns "detectable in principle" into "detectable in fact." We'll <b>trace</b> a write, a full verification, a one-entry proof to an auditor, and a rogue admin trying to erase their own refund. And we'll find <span class="key">the first bottleneck: the chain is strictly sequential — each entry needs the previous entry's hash — so a verifiable global order fights write throughput,</span> plus the deeper truths that tamper-evident is not tamper-proof, and that "you can never edit it" collides head-on with the right to be forgotten. The trade under all of it: <b>verifiability &amp; compliance vs write cost and the impossibility of edits.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0075-audit-logs-tamper-evidence.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>One log for one platform's privileged actions. Every sensitive event is appended: <code>admin_42 issued REFUND $9,400 on order_88f… at 14:02:07 from IP 10.2.…</code>, <code>admin_42 flipped checkout_v2 → 100% at 14:05:01</code> (Lesson 74), <code>system deleted user U-8842 at 03:00:00</code> (Lesson 56). Auditors and regulators will later ask two questions, and the system must be able to <i>prove</i> the answers, not just assert them: (1) <b>"show me everything admin_42 did last March"</b> and (2) <b>"prove this specific entry is real and hasn't been altered or deleted."</b> The adversary is not a traffic spike. It's a <b>rogue insider</b> — an admin who does something they shouldn't, or an attacker who has stolen an admin's access — who then wants to <b>edit or delete the log entry that would expose them.</b> The data is tiny; the hardness is that the record must survive being attacked by someone with legitimate power over it.</p>
+
+<div class="diagram"><pre>
+  ONE audit log. Every privileged action appended, NEVER edited.
+
+   e = { who=admin_42  what=REFUND $9,400  when=14:02:07  target=order_88f.. }
+        |
+        v   each entry stores a hash of ITSELF and the entry before it:
+   +----------+    +-----------+    +-----------+    +-----------+
+   | entry 1  |<---| entry 2   |<---| entry 3   |<---| entry 4   | .. tip
+   | H1=h(e1) |    | H2=       |    | H3=       |    | H4=       |
+   |          |    | h(e2:H1)  |    | h(e3:H2)  |    | h(e4:H3)  |
+   +----------+    +-----------+    +-----------+    +-----------+
+       change ANY past entry -> its hash changes -> every hash
+       after it changes -> the TIP hash changes. No silent edit.
+                                                         |
+   MERKLE TREE over all entries -> one ROOT summarizing  | publish the tip
+   them; prove ONE entry with ~log2(N) sibling hashes,   v  hash out of reach
+   not by re-reading the whole log.                +------------------+
+                                                   |  EXTERNAL ANCHOR |
+   To forge silently you must rewrite the tail     |  notary / another|
+   AND every anchor you already published --        |  org / a chain   |
+   and you do not control the anchor.              +------------------+
+</pre></div>
+
+<p class="note"><span class="key">The one idea the whole lesson turns on:</span> you cannot assume you control the bytes. Whoever holds the disk can flip them. So an audit log's job is not to make editing <i>impossible</i> — that's a promise about storage you can't keep against a privileged attacker — but to make any edit <b>leave a mark you can't erase.</b> Every layer below exists to shrink the attacker's options: append-only makes editing against policy, the hash chain makes a <i>single</i> silent edit break everything after it, and the external anchor makes even a full rewrite detectable — because it commits a fingerprint of the log somewhere the attacker can't reach.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Audit log</b> — an append-only record of privileged/sensitive actions: who, what, when, to what, from where. The evidence trail for security and compliance.</li>
+  <li><b>Tamper-evident vs tamper-proof</b> — <i>tamper-proof</i> = editing is impossible (a promise you can't keep against a privileged insider). <i>Tamper-evident</i> = editing is <i>detectable</i>. We build the second and stop pretending we have the first.</li>
+  <li><b>Append-only / write-once (WORM)</b> — storage that permits inserts but no updates or deletes (Write-Once-Read-Many). A policy, not a proof — an attacker under the policy can still rewrite bytes.</li>
+  <li><b>Cryptographic hash</b> — a function (e.g. SHA-256) that maps any input to a fixed 32-byte fingerprint; change one bit of input and the output changes unpredictably, and you can't work backward or find two inputs with the same output. Our tamper detector.</li>
+  <li><b>Hash chain</b> — each entry stores <code>H_n = hash(entry_n ‖ H_{n-1})</code>, folding the previous entry's hash into its own. Links entries into an order where changing one breaks all that follow.</li>
+  <li><b>Tip / head</b> — the hash of the most recent entry. Because of the chain, the tip is a fingerprint of the <i>entire</i> log so far.</li>
+  <li><b>Merkle tree</b> — a tree of hashes: leaves are entry hashes, each parent = hash of its two children, up to one <b>root</b> that summarizes everything.</li>
+  <li><b>Merkle / inclusion proof</b> — the <code>log₂(N)</code> sibling hashes along the path from one leaf to the root, letting anyone verify "this entry is in the log" without seeing the other N−1 entries.</li>
+  <li><b>Consistency proof</b> — a proof that a newer Merkle root contains everything the older root did (the log only grew, nothing was rewritten). Proves append-only cryptographically.</li>
+  <li><b>Anchor / notarize</b> — periodically publishing the current tip (or root) somewhere outside your control — a second security domain, an external notary, another org, a public chain — so a fingerprint of the log exists where the attacker can't rewrite it.</li>
+  <li><b>Crypto-shredding</b> — storing sensitive fields encrypted and "deleting" them by destroying the key (Lesson 30). Lets an immutable log honor a deletion request without breaking the chain.</li>
+</ul>
+
+<h2>Move 1 — Estimate: the surprise is that scale is not the problem</h2>
+<p>Start with the numbers, because they overturn the instinct. This is a big platform: <b>50 million</b> privileged/audited actions a day, each entry ~<b>500 bytes</b> (who, what, when, target, IP, request id), kept <b>7 years</b> for compliance.</p>
+
+<div class="card calc">
+  <p><b>The volume is trivial.</b></p>
+  <ul>
+    <li>Rate: <code>50,000,000 / 86,400 s = <b>579 writes/s</b></code> — a rounding error next to Lesson 27's 40,000 req/s.</li>
+    <li>Storage: <code>50M × 500 B = <b>25 GB/day</b></code> → <code>× 365 = <b>9.1 TB/yr</b></code> → <code>× 7 = <b>~64 TB</b></code> for the full retention window. One box, or a cheap object store (Lesson 20).</li>
+  </ul>
+  <p><span class="key">So the audit log is not a scale problem.</span> 579 writes/s and 64 TB are boring. If scale were the whole story, a single Postgres table with an index on <code>(actor, timestamp)</code> would be the entire design. The reason it isn't is the next paragraph.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The real cost is the cost of forgery.</b> In that plain table, what does it take to erase the evidence of a fraudulent refund? <b>One statement:</b> <code>DELETE FROM audit WHERE id = …</code> or <code>UPDATE audit SET amount = 0 …</code>. It leaves <b>no trace</b>, runs in <b>milliseconds</b>, and the very person you're trying to catch — a rogue admin, or an attacker who owns an admin account — is exactly the person with the access to run it. The log's answer to "who did what" is only as trustworthy as your trust in whoever holds the database, and in an audit context <i>that's the assumption you can't make.</i></p>
+  <p>So the design goal is to change the <b>cost of forgery</b> from "one silent statement" to "computationally rewrite everything after the entry <i>and</i> alter every fingerprint you already published to the outside world" — the second half of which the attacker cannot do. <span class="key">We're not optimizing throughput; we're raising the price of a lie until it can't be paid silently.</span></p>
+</div>
+
+<p class="note why"><b>Why "just lock down the table permissions" isn't enough:</b> tightening who can <code>DELETE</code> is real defense-in-depth and you should do it — but it's <i>prevention</i>, and prevention assumes the controls themselves aren't bypassed. An attacker who reaches the disk, the backups, or a DBA account is under, or around, your permissions. Tamper-<i>evidence</i> is the layer that still works <i>after</i> prevention fails: even if someone does edit the bytes, the edit is detectable. You want both — locks on the door <i>and</i> a seal that shows if the door was forced.</p>
+
+<h2>Move 2 — Model: four layers, each raising the price of a lie</h2>
+
+<h3>Layer 1 — append-only storage: make editing against the rules</h3>
+<div class="card calc">
+  <p>First, remove the easy path. The log is <b>append-only</b>: the application role can <code>INSERT</code> but has no <code>UPDATE</code>/<code>DELETE</code> grant; better still, store on <b>WORM</b> media or an object store with an immutability/retention lock (Lesson 20) so even an admin can't overwrite an object until its retention expires. This turns a silent one-statement edit into "go around the storage system." It is necessary and cheap — but it is a <b>policy, not a proof</b>: someone who compromises the storage layer itself is no longer bound by it. Append-only raises the bar; the next layers make crossing the bar <i>visible</i>.</p>
+</div>
+
+<h3>Layer 2 — the hash chain: one silent edit breaks everything after it</h3>
+<div class="card calc">
+  <p>When you append entry <code>n</code>, compute and store <code>H_n = SHA-256(entry_n ‖ H_{n-1})</code> — the entry's content <i>plus the previous entry's hash</i>, folded together. Each entry now carries proof of everything before it. The consequence is the whole trick:</p>
+  <div class="diagram" style="margin:.6rem 0"><pre>
+   Attacker edits entry 3 (change $9,400 -> $0):
+     H3 = h(entry3 | H2)  ->  entry3 changed  ->  H3 is now DIFFERENT
+     H4 = h(entry4 | H3)  ->  H3 changed      ->  H4 is now DIFFERENT
+     ... every hash from 4 to the tip changes.  The TIP no longer matches.
+  </pre></div>
+  <p>A cryptographic hash makes this unavoidable: you can't tweak <code>entry_3</code> and keep <code>H_3</code> the same (that would be a hash collision, infeasible for SHA-256). So a <b>single silent edit is impossible</b> — altering any past entry forces you to recompute every hash after it, all the way to the tip. <span class="key">This is the honest limit of the chain, and the reason Layer 4 exists:</span> recomputing that tail is <i>cheap</i> — SHA-256 runs at millions of hashes/second, and the algorithm is public — so an attacker with full write access to the log <i>can</i> rewrite the whole tail into a fresh, internally-consistent chain. The chain converts "edit one entry silently" into "rewrite the entire tail," which is progress but not victory. What it buys on its own: anyone who <i>remembers a later hash</i> can catch the edit, because the rewritten chain won't match the hash they remember.</p>
+</div>
+
+<h3>Layer 3 — the Merkle tree: prove ONE entry among billions</h3>
+<div class="card calc">
+  <p>An auditor rarely wants the whole log; they want to verify <b>one</b> entry — "prove <i>this</i> refund record is genuinely in the log and unchanged." Re-reading all entries to check the chain is a full scan. A <b>Merkle tree</b> fixes this: hash the entries into leaves, hash each pair up into parents, to a single <b>root</b>. To prove entry <code>X</code> is included, you hand over only the <b>sibling hashes along its path to the root</b> — <code>log₂(N)</code> of them — and the verifier recomputes the root from <code>X</code> + those siblings and checks it equals the trusted root.</p>
+  <div class="diagram" style="margin:.6rem 0"><pre>
+                         ROOT = h(H12 | H34)
+                        /                   \
+                H12 = h(H1|H2)        H34 = h(H3|H4)
+                 /       \              /       \
+               H1        H2          H3        H4
+              e1        e2          e3       [e4 = the entry to prove]
+   Inclusion proof for e4 = { H3, H12 }  (the siblings on the path up).
+   Verifier: h(H1..? ) no -> computes h(H3 | h(e4)) = H34, then
+             h(H12 | H34) = ROOT.  Matches trusted root -> e4 is genuine.
+  </pre></div>
+  <p><b>The number that makes this matter.</b> Over 7 years the log holds <code>50M × 365 × 7 = <b>127.75 billion</b></code> entries (≈ 1.28×10¹¹). A tree over them is <code>⌈log₂(1.28×10¹¹)⌉ = <b>37</b></code> levels deep. So an inclusion proof is <b>37 sibling hashes × 32 bytes ≈ 1,184 bytes</b>: <span class="key">you prove that one specific entry, out of 128 <i>billion</i>, is present and unaltered — with about 1.2 KB and 37 hash computations, not by shipping or re-reading terabytes.</span> The chain gives order and completeness; the Merkle tree gives cheap, targeted proof. A <b>consistency proof</b> (also <code>O(log N)</code>) additionally proves a new root is a pure <i>extension</i> of an old one — nothing earlier was rewritten — which is append-only proven with math instead of trusted by policy.</p>
+</div>
+
+<h3>Layer 4 — the external anchor: turn "detectable in principle" into "detectable in fact"</h3>
+<div class="card calc">
+  <p>Layer 2 left a hole: an attacker who controls the log can rewrite the whole tail into a clean chain, and no one who only looks <i>at the log</i> can tell. The fix is to make sure the log's fingerprint also lives <b>somewhere the attacker doesn't control.</b> Periodically — every block, or every minute (~1,440 times/day) — publish the current <b>tip / Merkle root</b> to an <b>external anchor</b>: a separate security domain, an independent notary service, a partner org, or a public blockchain. Now the attacker's rewritten tail would produce a <i>different</i> root than the one already anchored, and they can't go back and change the anchor — it's outside their reach, possibly witnessed by thousands of parties.</p>
+  <p><span class="key">The anchor is where the trust actually comes from.</span> Append-only is policy; the chain links; the Merkle tree proves membership — but it's the anchor that makes forgery <i>detectable in fact</i>, because it externalizes the fingerprint. The cadence is a dial: anchor more often → a smaller window of entries an attacker could rewrite before the next anchor pins them (they can still rewrite everything <i>since</i> the last anchor); anchor less often → cheaper, but a larger un-pinned tail. This is the same shape as every freshness-vs-cost dial in the course (Lesson 2/14/74), now applied to "how recent is the last fingerprint we can trust."</p>
+</div>
+
+<table>
+  <tr><th>Layer</th><th>Raises forgery cost to…</th><th>Its price</th></tr>
+  <tr><td>Append-only / WORM</td><td>"go around the storage system"</td><td>policy only; no edits/fixes ever, even legit ones</td></tr>
+  <tr><td>Hash chain</td><td>"rewrite the whole tail, not one entry"</td><td>strictly sequential writes (the Move-4 wall)</td></tr>
+  <tr><td>Merkle tree</td><td>—</td><td>proves ONE entry in ~1.2 KB / build+store the tree</td></tr>
+  <tr><td>External anchor</td><td>"also rewrite every anchor you published — impossible"</td><td>a dependency on an out-of-reach witness; cadence dial</td></tr>
+</table>
+
+<p class="note"><b>Where signatures fit (and don't):</b> you can also <b>digitally sign</b> each entry (Lesson 30) so its <i>author</i> is provable and it can't be forged by a third party. Signatures protect a single entry's content and authorship — but a signature on entry 3 does nothing to stop someone <b>deleting</b> entry 3 entirely, or reordering entries. Signatures protect <i>content</i>; the chain protects <i>order and completeness</i>; the anchor protects against a <i>full rewrite</i>. They compose — use all three — but don't mistake one for another.</p>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Follow one refund entry through a write, a full verification, a one-entry proof, and an attack.</p>
+
+<h3>Path A — append an entry</h3>
+<div class="diagram"><pre>
+   admin_42 issues REFUND $9,400 on order_88f..
+
+   [1] BUILD   e = {who, what, when, target, ip, req_id, seq=n}
+   [2] CHAIN   read current tip H_{n-1};  H_n = SHA-256(e | H_{n-1})
+   [3] APPEND  write (e, H_n) to append-only storage; advance tip to H_n
+   [4] TREE    add leaf hash(e) to the Merkle tree; update the root
+   [5] ANCHOR  (periodically, e.g. every minute) publish the current
+               root/tip to the EXTERNAL anchor.
+   Cost: one hash + one append. ~579/s is trivial. Note step 2 needs the
+   PREVIOUS tip -> writes are serialized (the Move-4 bottleneck).
+</pre></div>
+
+<h3>Path B — verify the whole log</h3>
+<div class="diagram"><pre>
+   Auditor: "prove the log wasn't rewritten."
+   -> re-walk from genesis: recompute H_i = h(e_i | H_{i-1}) for every i,
+      check each stored H_i matches. Any mismatch = the first tampered entry.
+   -> compare the final tip to the LAST EXTERNAL ANCHOR. Match => the whole
+      history is intact AND matches an out-of-reach fingerprint.
+   Full re-walk of 128B entries is a big scan -> in practice verify only
+   SINCE the last trusted anchor + use a Merkle CONSISTENCY proof (O(log N)).
+</pre></div>
+
+<h3>Path C — prove one entry to an auditor</h3>
+<div class="diagram"><pre>
+   Auditor: "prove THIS refund entry is in the log, unaltered."
+   -> server returns the entry + its Merkle INCLUSION proof:
+      37 sibling hashes (~1,184 bytes) on the path leaf -> root.
+   -> auditor recomputes the root from the entry + siblings, checks it
+      equals the trusted (anchored) root. Match => genuine & present.
+   No need to read the other 127,749,999,999 entries.
+</pre></div>
+
+<h3>Path D — the attack: a rogue admin erases their refund</h3>
+<div class="diagram"><pre>
+   admin_42 wants entry 3 (their $9,400 refund) GONE.
+
+   Attempt 1: DELETE the row       -> seq gap (2,4 present, 3 missing) AND
+                                      H4 = h(e4|H3) no longer verifies. CAUGHT.
+   Attempt 2: EDIT amount to $0    -> H3 changes -> H4..tip all break. CAUGHT.
+   Attempt 3: rewrite the WHOLE tail 3..tip into a clean new chain
+              -> internally consistent, BUT the new tip != the root already
+                 ANCHORED externally at 14:03. Can't alter the anchor. CAUGHT.
+   The only "success" = tamper entries newer than the last anchor, before the
+   next anchor fires -> shrink that window by anchoring more often.
+</pre></div>
+
+<p>Path A shows the cost is one hash and one append — nothing about tamper-evidence is expensive at 579/s. Path B and C show the two ways to trust the log: re-walk everything against the anchor (thorough, a scan) or prove one entry with a ~1.2 KB Merkle proof (targeted, <code>O(log N)</code>). Path D is the payoff: every silent edit an insider might try is turned into a mismatch that verification catches, and the only edits that escape are the ones newer than your most recent external anchor — which is exactly the window the anchor cadence controls. <span class="key">The mechanism looks airtight. Move 4 is where the honest limits live.</span></p>
+
+<h2>Move 4 — Find the first bottleneck: the chain is sequential, and evidence isn't prevention</h2>
+
+<div class="card calc">
+  <p><b>The first bottleneck — a hash chain is strictly sequential.</b> Every append needs the <i>previous</i> entry's hash (Path A step 2), so writes can't be parallelized the way a normal sharded table can — they form a single ordered line, each waiting on the one before. At 579/s that's a non-issue. But point this at a firehose — say Lesson 74's 100,000 events/s, or per-request logging — and the single global chain becomes the serializer: every writer, on every machine, must agree on and extend one shared tip. Two fixes, each naming its trade:</p>
+  <ul>
+    <li><b>Batch into blocks.</b> Don't chain single entries; collect N entries into a <b>block</b>, build a Merkle tree over the block (its root in one pass), and chain the <i>block roots</i>. One sequential step per block instead of per entry — the same amortization as a group commit. Cost: an entry isn't provable until its block closes (a small latency, the Lesson 29 batch-window trade).</li>
+    <li><b>Shard into independent chains.</b> Give each partition (per region, per service) its <i>own</i> chain and its own anchor, exactly like Lesson 3/9's partition-for-throughput. You regain parallel writes but <b>lose a single global total order</b> — you can prove each shard's integrity, but "the exact order of two events on different shards" now needs logical clocks (Lesson 35) or a merge at read. <span class="key">The trade named:</span> a single verifiable global order vs write throughput.</li>
+  </ul>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — tamper-<i>evident</i> is not tamper-<i>proof</i>, and it can't see what was never written.</b> Everything above <i>detects</i> tampering after the fact; none of it <i>prevents</i> the edit, and none of it catches an action that <b>bypassed the logger entirely.</b> If an admin can do something <i>without</i> a log entry ever being created, no chain will show a gap, because there was never a link to break. So the log is only as complete as its <b>choke point</b>: the audited action and its log entry must be written <b>together, atomically</b> — the Lesson 33 outbox / same-transaction pattern — so "it happened but wasn't logged" is impossible, not merely unlikely. Add <b>monotonic sequence numbers</b> so a deletion shows up as a <i>gap</i> even before you check hashes. Detection also depends on someone actually <b>verifying</b> and on the anchor being real: an unwatched tamper-evident log is just a log with extra steps.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — the anchor is the true root of trust, so it must be genuinely out of reach.</b> If you "anchor" the tip into another table in the <i>same</i> database, you've moved the trust, not removed it — the attacker who owns the DB owns the anchor too. The anchor only works if it lives in a <b>different security domain</b>: a separate account with different credentials, an external notarization/transparency service, a partner who counter-signs, or a public chain witnessed by many. <span class="key">The trade named:</span> the stronger the independence (more parties, further out of reach), the more <b>operational coupling and latency</b> you take on — you now depend on an outside witness being available and honest. Weaker anchors (a second internal account) are cheaper but a determined insider with broad access can still reach them. Choose the anchor's independence to match the adversary you actually fear.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The fourth wall — "you can never edit it" collides with the right to be forgotten.</b> Lesson 56's GDPR erasure says a user can demand you delete their personal data. An append-only, hash-chained log says you can <b>never</b> delete anything — and if you did, you'd break the chain and destroy the very integrity you built. Both are legal/ethical requirements; they look irreconcilable. The escape is <b>crypto-shredding</b> (Lesson 30): store the personal fields of each entry <b>encrypted</b> under a per-subject key, and honor "delete" by <b>destroying the key</b>, not the entry. The entry — and its hash, and the whole chain — stays byte-for-byte intact and still verifies; the sensitive content is now <b>unrecoverable ciphertext.</b> You keep the tamper-evident structure <i>and</i> make the data unreadable. <span class="key">The trade named:</span> immutability vs erasability, reconciled by making the bytes <i>present but meaningless</i> rather than gone.</p>
+</div>
+
+<p>So the honest picture of a tamper-evident audit log: <b>scale is not the enemy</b> (579 writes/s, 64 TB/7yr — a plain table could hold it), <b>trust is</b> — the attacker is a privileged insider who can edit the very store you'd rely on, and in a plain table erasing evidence costs one silent statement. You raise the price of that lie in layers: <b>append-only/WORM</b> makes editing against the rules (policy, not proof); a <b>hash chain</b> (<code>H_n = h(e_n ‖ H_{n-1})</code>) makes a <i>single</i> silent edit impossible by breaking every hash after it (forcing a full-tail rewrite, which is cheap for the attacker — the chain alone isn't enough); a <b>Merkle tree</b> proves one entry among 128 billion in ~1.2 KB / 37 hashes and proves append-only via consistency proofs; and an <b>external anchor</b> — the real root of trust — makes even a full rewrite detectable by committing the tip somewhere the attacker can't reach. The first bottleneck is that the chain is <b>strictly sequential</b> (→ batch into blocks, or shard into independent chains and give up a single global order for throughput); around it, <b>tamper-evident ≠ tamper-proof and can't see un-logged actions</b> (→ atomic log-with-the-action at a choke point, monotonic sequence numbers, and someone who actually verifies), <b>the anchor must be genuinely out of reach</b> (→ a separate security domain, priced in coupling), and <b>immutability fights erasure</b> (→ crypto-shred: keep the bytes, destroy the key). Every choice names its price.</p>
+
+<p><span class="key">The deepest point: an audit log inverts the usual goal. Everywhere else in this course we made systems fast, elastic, and easy to change; here we deliberately make one part <i>impossible to change</i> and prove it.</span> The value isn't storing the data — a table does that — it's producing <b>evidence</b>: a record whose integrity a hostile auditor can verify with math instead of trusting your word. And evidence has a cost the rest of the system doesn't pay: strict order (the sequential chain), permanence (no edits, colliding with privacy law), and an external witness you now depend on. Notice the whole thing is built from pieces you already own — hashing, Merkle proofs, an outbox choke point (L33), envelope encryption (L30), partition-for-throughput (L3/9), a freshness-vs-cost dial on the anchor (L2/14/74). The new idea is only the <i>goal</i>: not availability, not latency, but <b>verifiable history</b>. The standing tension: <span class="key">verifiability &amp; compliance vs write cost and the impossibility of edits.</span></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>Silent one-statement edit/delete</td><td>Hash chain <code>h(e‖H_{n-1})</code></td><td>one edit breaks all after it / writes serialize</td></tr>
+  <tr><td>Editing is the easy path</td><td>Append-only / WORM (L20)</td><td>editing against policy / policy, not proof; no legit fixes</td></tr>
+  <tr><td>Prove ONE entry among billions</td><td>Merkle inclusion proof</td><td>~1.2 KB, 37 hashes / build + store the tree</td></tr>
+  <tr><td>Prove nothing earlier was rewritten</td><td>Merkle consistency proof</td><td>append-only proven, O(log N) / more proof machinery</td></tr>
+  <tr><td>Attacker rewrites the whole tail</td><td>External anchor / notarize</td><td>full rewrite detectable / an out-of-reach dependency</td></tr>
+  <tr><td>Prove authorship of an entry</td><td>Digital signatures (L30)</td><td>can't be forged by others / keys to manage; not order</td></tr>
+  <tr><td>Sequential-write ceiling</td><td>Block batching / shard chains (L3/9)</td><td>throughput / batch latency; lose global order</td></tr>
+  <tr><td>Un-logged actions leave no gap</td><td>Atomic log-with-action (L33) + seq #</td><td>completeness / the action path must go through the logger</td></tr>
+  <tr><td>Immutable log vs right-to-be-forgotten</td><td>Crypto-shredding (L30/56)</td><td>erase content, keep the chain / lose the plaintext forever</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — thinking append-only storage is enough.</b> WORM and locked-down permissions are policy; a privileged attacker goes around them. Add the chain + external anchor so any edit is <i>detectable</i>, not just against the rules.</li>
+  <li><b>Trap 2 — a hash chain with no external anchor.</b> An attacker with the data and the (public) hash function can rewrite the entire tail into a clean chain. Without a fingerprint committed somewhere out of reach, no one looking at the log alone can tell. The anchor is the actual root of trust.</li>
+  <li><b>Trap 3 — logging <i>after</i> the action, off the critical path.</b> If an action can complete without its entry being written, tamper-evidence protects a log with holes. Write the entry atomically with the action (L33 outbox) at a choke point, and use monotonic sequence numbers so gaps show.</li>
+  <li><b>Trap 4 — assuming immutable means you can ignore privacy law.</b> "Never delete" collides with the right to be forgotten. Don't break the chain to comply and don't ignore the law — crypto-shred: encrypt the personal fields, destroy the key on request, keep the entry and its hash intact.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We built the record that keeps every other system honest: a log of "who did what, when" that a hostile auditor can <b>verify</b> instead of trust. <b>Estimate</b> flipped the usual instinct — the volume is trivial (<b>579 writes/s</b>, <b>~64 TB</b> over 7 years), so scale isn't the problem; <i>trust</i> is, because in a plain mutable table erasing evidence of a fraudulent refund costs <b>one silent statement</b> run by the very insider you're trying to catch. <b>Model</b> raised the price of that lie in four layers: <b>append-only/WORM</b> (editing against policy), a <b>hash chain</b> <code>H_n = h(e_n ‖ H_{n-1})</code> (a single silent edit breaks every hash after it, so forgery means rewriting the whole tail — but that's cheap, so the chain alone isn't enough), a <b>Merkle tree</b> (prove one entry out of <b>128 billion</b> with <b>37 hashes ≈ 1.2 KB</b>, and prove append-only via consistency proofs), and an <b>external anchor</b> — the true root of trust — that makes even a full rewrite detectable by committing the tip somewhere the attacker can't reach. <b>Tracing</b> showed the write is one hash + one append, verification runs against the anchor (full re-walk or a targeted <code>O(log N)</code> proof), and every attack a rogue admin tries — delete, edit, full-tail rewrite — becomes a caught mismatch, leaving only the window newer than the last anchor. The <b>first bottleneck</b>: the chain is <b>strictly sequential</b> (→ batch into blocks or shard into independent chains, trading a single global order for throughput, L3/9/29); around it, <b>tamper-evident ≠ tamper-proof and can't see un-logged actions</b> (→ atomic log-with-the-action at a choke point + sequence numbers, L33), <b>the anchor must be genuinely out of reach</b> (→ a separate security domain, priced in coupling), and <b>immutability fights the right to be forgotten</b> (→ crypto-shred: keep the bytes, destroy the key, L30/56). The deepest point: an audit log deliberately makes one thing <i>impossible to change</i> and proves it — trading the speed and flexibility we prized everywhere else for <b>verifiable history</b>, and built almost entirely from pieces you already own. The standing tension: <span class="key">verifiability &amp; compliance vs write cost and the impossibility of edits.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we've made the record of failures and actions trustworthy. Now decide, in real time, whether the system is even healthy enough to keep taking traffic.</b></p>
+  <p style="margin:.2rem 0">• <b>Health checks &amp; graceful degradation (Lesson 76):</b> the difference between "up" and "useful." <b>Shallow vs deep</b> health checks, why a check that probes a <b>shared dependency</b> can fail the whole fleet at once (Lesson 34), <b>load-shedding tiers</b> and <b>feature degradation</b> (turn off recommendations to keep checkout alive, Lesson 28), and the <b>fail-open vs fail-closed</b> choice per dependency. Trade: availability of the core vs completeness of the experience.</p>
+  <p style="margin:.2rem 0">Say <b>next</b> and we'll teach a system how to admit it's sick without falling over.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">audit log</span>
+    <span class="pill">tamper-evident vs tamper-proof</span>
+    <span class="pill">append-only / WORM</span>
+    <span class="pill">cryptographic hash</span>
+    <span class="pill">hash chain</span>
+    <span class="pill">tip / head</span>
+    <span class="pill">Merkle tree</span>
+    <span class="pill">inclusion proof</span>
+    <span class="pill">consistency proof</span>
+    <span class="pill">external anchor / notarize</span>
+    <span class="pill">digital signature</span>
+    <span class="pill">choke point / atomic log-with-action</span>
+    <span class="pill">monotonic sequence number</span>
+    <span class="pill">crypto-shredding</span>
+  </p>
+  <p>That's Lesson 75. It builds on: Lesson 74 (config &amp; feature-flag delivery — who flipped which flag; this log records those changes), Lesson 25/38 (ledgers &amp; event sourcing — immutable, append-only records as the source of truth), Lesson 30 (secrets &amp; encryption — hashes, digital signatures, and crypto-shredding to reconcile immutability with deletion), Lesson 56 (data deletion / GDPR — the right-to-be-forgotten collision), Lesson 33 (CDC/outbox — write the log entry atomically with the action at a choke point), Lesson 20 (object storage — WORM/immutable retention), Lesson 3/9 (partitioning — shard the chain for throughput at the cost of global order), Lesson 35 (logical clocks — recover ordering across sharded chains), and Lesson 2/14/74 (freshness-vs-cost dials — the anchor cadence). <b>Ask me follow-ups</b> — e.g. "how does a real Certificate Transparency / Trillian log implement Merkle inclusion and consistency proofs?", "when is anchoring to a public blockchain worth the cost over a private notary?", "how do you verify a 128-billion-entry chain incrementally without a full re-walk?", "what exactly goes in a good audit entry (and what must never)?", or "how do witness/gossip protocols (Lesson 43) let many parties co-sign a log's tip?" When you're ready, say <b>next</b> and we'll teach the system to tell "up" from "useful" with health checks and graceful degradation.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your audit log handles only ~579 writes/s and ~64 TB over 7 years — trivial for a single indexed database table. So why isn't 'a plain Postgres table with an index on (actor, timestamp)' the whole design?",
+    options: [
+      {t:"Because the audit log's job isn't storage, it's TRUST, and the adversary is a privileged insider. In a plain mutable table, erasing evidence of a fraudulent action costs one silent statement (DELETE/UPDATE), runs in milliseconds, leaves no trace, and is available to exactly the person you're trying to catch — the admin (or attacker who stole an admin's access) who holds the database. The design goal is to raise the cost of forgery from 'one silent statement' to 'rewrite everything after the entry AND alter every fingerprint you already published externally' — the second half of which the attacker can't do. Scale is trivial; tamper-evidence is the point.",
+       ok:true,
+       fb:"Right. The volume overturns the instinct that this is a scale problem. The hard requirement is that the record survives being attacked by someone with legitimate power over the store — so you build detectability of edits, not just storage."},
+      {t:"Because 579 writes/s and 64 TB will overwhelm a single table's write throughput and disk, so you need sharding and a distributed database first.",
+       ok:false,
+       fb:"579 writes/s and 64 TB over seven years are genuinely trivial — a single node handles both easily. The lesson's whole opening is that scale is NOT the problem here. The reason a plain table fails is trust: it can be silently edited by the insider you most need to catch."},
+      {t:"Because SQL databases can't store 500-byte rows efficiently, so you need a specialized time-series or object store for audit data.",
+       ok:false,
+       fb:"500-byte rows are completely ordinary and store fine. The issue isn't the row format or the engine; it's that any mutable store — SQL or not — lets a privileged actor edit or delete an entry without leaving evidence. You need tamper-evidence layered on top, not a different storage engine."}
+    ]
+  },
+  {
+    stem: "You hash-chain every entry as H_n = hash(entry_n ‖ H_{n-1}). A colleague says 'great, now the log can't be tampered with at all.' What's the precise limit of the chain alone, and what closes it?",
+    options: [
+      {t:"The chain makes a SINGLE silent edit impossible — changing entry k changes H_k, which breaks H_{k+1} … up to the tip — but it does NOT stop a full rewrite. Hashing is cheap and public, so an attacker with write access to the log can recompute the ENTIRE tail into a fresh, internally-consistent chain, and anyone looking only at the log can't tell. What closes it is an EXTERNAL ANCHOR: periodically publish the tip/root somewhere out of the attacker's control (a separate security domain, notary, or public chain). The rewritten tail won't match the already-published anchor, and they can't change the anchor.",
+       ok:true,
+       fb:"Exactly. The chain converts 'edit one entry silently' into 'rewrite the whole tail' — real progress, but the tail rewrite is cheap. The anchor is the true root of trust: it externalizes a fingerprint so even a full rewrite is detectable."},
+      {t:"There's no limit — a hash chain is cryptographically tamper-proof, so once entries are chained, no one can alter the log in any way. No anchor is needed.",
+       ok:false,
+       fb:"Not quite. The chain stops a silent single-entry edit, but an attacker who controls the store can recompute every hash from the edited entry to the tip — the hash function is public and fast. Looking only at the log, the rewritten chain is self-consistent. You need a fingerprint committed OUTSIDE the attacker's reach (an anchor) to detect a full rewrite."},
+      {t:"The limit is performance: hashing every entry is too slow, so the fix is to hash only every 1,000th entry to keep up.",
+       ok:false,
+       fb:"Hashing is fast (millions/sec) — performance isn't the limit, and skipping entries would leave gaps an attacker could exploit. The real limit is that the chain alone can't detect a full-tail rewrite; the fix is an external anchor, not fewer hashes. (Batching into blocks is a throughput technique for a different bottleneck — the sequential write, not hash speed.)"}
+    ]
+  },
+  {
+    stem: "An auditor wants you to prove that one specific refund entry — out of ~128 billion entries in the 7-year log — is genuinely present and unaltered, without you shipping them the whole log. How, and roughly how big is the proof?",
+    options: [
+      {t:"A Merkle INCLUSION proof: give the auditor the entry plus the sibling hashes along its path from leaf to the tree's root — about ⌈log₂(128 billion)⌉ = 37 hashes × 32 bytes ≈ 1.2 KB. They recompute the root from the entry + siblings and check it equals the trusted (anchored) root. If it matches, the entry is present and unaltered — verified against 128 billion entries with ~37 hash computations and ~1.2 KB, not by reading terabytes.",
+       ok:true,
+       fb:"Right. The Merkle tree turns 'prove membership in a huge set' into an O(log N) proof. That ~1.2 KB / 37-hash figure is why transparency logs can prove single-entry inclusion cheaply against enormous logs."},
+      {t:"Re-read and re-hash all 128 billion entries in order and show the auditor the final tip matches — there's no way to prove one entry without walking the entire log.",
+       ok:false,
+       fb:"That's the full-verification path (Path B), useful for checking the whole log against the anchor, but it's a massive scan and unnecessary to prove ONE entry. A Merkle inclusion proof does it with ~log₂(N) ≈ 37 sibling hashes (~1.2 KB) — no need to touch the other ~128 billion entries."},
+      {t:"Digitally sign just that one entry and send the signature — a signature proves the entry is in the log and in the right position.",
+       ok:false,
+       fb:"A signature proves authorship/content of that entry, but by itself it doesn't prove the entry is INCLUDED in the log at a position, and it can't show the entry wasn't deleted or reordered. Inclusion/position is exactly what a Merkle proof against the anchored root gives you. Signatures and Merkle proofs solve different problems; use both."}
+    ]
+  },
+  {
+    stem: "Legal sends two requirements that look contradictory: (1) the audit log must be immutable and append-only for compliance, and (2) under the right to be forgotten, a user can demand deletion of their personal data — which appears in some audit entries. How do you satisfy both without breaking the chain?",
+    options: [
+      {t:"Crypto-shredding: store the personal fields of each entry ENCRYPTED under a per-subject key, and honor a deletion request by destroying that key — not by deleting the entry. The entry stays byte-for-byte intact, so its hash, the chain, and every Merkle proof still verify; the personal content becomes unrecoverable ciphertext. You keep the tamper-evident structure AND make the data unreadable — 'present but meaningless' instead of gone.",
+       ok:true,
+       fb:"Exactly. Crypto-shredding (Lesson 30) reconciles immutability with erasure: destroy the key, keep the bytes. The chain's integrity is untouched because nothing was removed or altered — only rendered undecryptable."},
+      {t:"Delete the specific entries the user asks about and recompute all the downstream hashes so the chain stays internally consistent. Compliance beats integrity.",
+       ok:false,
+       fb:"That's precisely the attack the design exists to detect — and doing it yourself destroys the property you built (and would mismatch the external anchor). It also normalizes rewriting the log, defeating its purpose. Crypto-shredding lets you honor deletion without removing or altering any entry: encrypt the PII, destroy the key."},
+      {t:"Tell legal it's impossible — an append-only log and the right to be forgotten genuinely cannot coexist, so you must choose one requirement and drop the other.",
+       ok:false,
+       fb:"They can coexist. The trick is to make the personal data unreadable rather than absent: store it encrypted per subject and destroy the key on request (crypto-shredding). The entry — and thus the hash chain and all proofs — remains intact while the sensitive content is irrecoverable."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

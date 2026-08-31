@@ -1500,9 +1500,28 @@
     seconds → "release" becomes its own distributed system (versioning/consistency/blast-radius/fail-static/herd/
     stateless-hash), and the speed you built is the risk you took on → rebuild every deploy guardrail around the value.
     Trade: change speed & safety vs a new always-on dependency. (Lesson 0074)
-75. Append-only audit logs & tamper evidence — an immutable, verifiable record of "who did what when" (L38/56):
-    hash-chaining each entry to the last (a mini-blockchain), Merkle proofs a single entry is present & unaltered, and
-    write-once storage. Trade: verifiability & compliance vs write cost & the impossibility of edits.
+75. ✅ **Append-only audit logs & tamper evidence** — one platform's privileged-action log (refunds L25, flag flips
+    L74, deletions L56): 50M events/day = only 579 writes/s, ~64 TB/7yr, so scale is NOT the enemy — TRUST is (a plain
+    mutable table lets a rogue insider erase a fraudulent refund with one silent DELETE). Raise the cost of forgery in
+    four layers: append-only/WORM (editing against policy, not a proof, L20); a HASH CHAIN `H_n = h(e_n ‖ H_{n-1})` so a
+    single silent edit breaks every hash after it → forces a full-tail rewrite (cheap for the attacker: hashing is fast &
+    public → chain ALONE is insufficient); a MERKLE TREE proving ONE entry among 128B with ⌈log₂⌉=37 hashes ≈ 1.2 KB
+    (+ consistency proofs = append-only proven, not trusted); and an EXTERNAL ANCHOR (notary/other org/public chain) = the
+    TRUE root of trust, making even a full rewrite detectable by committing the tip out of the attacker's reach.
+    Signatures (L30) prove authorship/content but not order/completeness — chain protects order, anchor protects vs
+    rewrite; compose all three. Trace append (one hash+append, sequential), full verify (re-walk vs anchor), one-entry
+    Merkle inclusion proof (~1.2 KB), and a rogue admin's delete/edit/rewrite (all caught; only the window newer than the
+    last anchor escapes → anchor-cadence dial L2/14/74). First bottleneck = the chain is STRICTLY SEQUENTIAL (each append
+    needs the prev hash) → batch into blocks (group-commit, L29 batch window) or shard into independent chains (L3/9
+    throughput, lose a single global order → L35 clocks to merge). Walls: tamper-EVIDENT ≠ tamper-PROOF and can't see an
+    action that BYPASSED the logger (→ write the entry atomically WITH the action at a choke point, L33 outbox; monotonic
+    seq # so a delete shows a gap; someone must actually verify); the anchor must be a genuinely separate security domain
+    (independence vs operational coupling); immutability vs the right-to-be-forgotten (L56) → CRYPTO-SHREDDING (L30:
+    encrypt PII per-subject, destroy the key on delete → entry & chain stay byte-intact, content unrecoverable). Deepest
+    point: an audit log INVERTS the course's usual goal — it deliberately makes one part impossible to change and PROVES
+    it, trading speed/flexibility for verifiable history, built almost entirely from pieces you already own (hashing,
+    Merkle, outbox L33, envelope encryption L30, partition L3/9, freshness dial L2/14/74). Trade: verifiability &
+    compliance vs write cost & the impossibility of edits. (Lesson 0075)
 
 ### Advanced topics (next batch — queued so the course never runs dry)
 76. Health checks & graceful degradation — the difference between "up" and "useful": shallow vs deep health checks,
