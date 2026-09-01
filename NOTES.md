@@ -1524,10 +1524,32 @@
     compliance vs write cost & the impossibility of edits. (Lesson 0075)
 
 ### Advanced topics (next batch — queued so the course never runs dry)
-76. Health checks & graceful degradation — the difference between "up" and "useful": shallow vs deep health checks,
-    dependency health vs self health (a check probing a shared DB fails the whole fleet, L34), load-shedding tiers
-    and feature degradation (turn off recommendations to keep checkout alive, L28), and the "fail open vs fail closed"
-    choice per dependency. Trade: availability of the core vs completeness of the experience.
+76. ✅ **Health checks & graceful degradation** — one product-page/checkout fleet (286 servers, 40k req/s, L27)
+    behind an LB (L42) that probes `/health` every 2s: the OPENING outage = a naive DEEP check that pings the
+    SHARED recommendations service (worth ~2% of revenue) → a 10s latency blip makes all 286 fail the probe AT ONCE
+    (correlated failure) → LB empties the pool → 100% checkout outage, ~480,000 failed requests; an HONEST local
+    check yields 0. The one rule: a health check reports ONLY local, instance-unique state — because ejecting an
+    instance helps ONLY when "bad" is uncorrelated (one wedged box of 286); the moment the answer depends on a
+    shared dep, all fail together and the safety mechanism BECOMES the outage. Two checks for two decisions
+    (L34): LIVENESS (shallow, local only, no downstream calls → RESTART a wedged process; deep liveness crash-loops
+    healthy boxes on a dep blip) vs READINESS (this instance's own pool/warm-up/draining → REMOVE-don't-restart;
+    shallow readiness routes to a thread-pool-wedged box, L7). Shared/critical deps handled at REQUEST time —
+    timeout + circuit breaker (L7) + DEGRADE — never in `/health`. Graceful degradation needs a FEATURE RANKING
+    (core checkout > cart > inventory > reviews > recs garnish) so you shed TOP-DOWN under load (L28), by tier
+    then by request class (retries<first-tries, free<paid, LIFO for stale). FAIL-OPEN vs FAIL-CLOSED is a
+    per-dependency correctness/security call = "which mistake can I survive?": recs → open (lost widget vs lost
+    sale), payment auth → closed (else ship unpaid goods), auth/session → closed (else unauth treated as auth),
+    fraud → risk-based. Trace: healthy (health check makes 0 downstream calls), recs blip (200ms timeout+breaker →
+    omit widget, health stays green, 0 ejections), critical DB down for ONE box (readiness red → eject just it,
+    local+unique) vs for the WHOLE fleet (DON'T eject — nowhere to route; fleet stays ready, writes fail closed,
+    reads degrade open; LB PANIC MODE routes to all when >X% unhealthy = L34 fail-static / L42), overload (shed by
+    tier). First bottleneck = the health check is a CORRELATED-FAILURE AMPLIFIER (too deep couples to shared
+    failures, too shallow routes to a dead box → narrow-but-real). Walls: ejecting a fleet-wide failure is useless
+    (fail-static + panic mode), fail-open/closed per dep (money/auth closed, garnish open), degraded modes ROT if
+    untested (chaos-test them, L51) and HIDE if silent ("up" masks "quietly broken" → alarm on degradation rate,
+    L17). Deepest point: "up" ≠ "useful"; resilience = a SPECTRUM of degraded-but-serving states, not one
+    all-or-nothing switch — drop the garnish, keep the meal — built from pieces already owned (L7/17/28/34/42/51).
+    Trade: availability of the core vs completeness of the experience. (Lesson 0076)
 77. Blob/media processing pipelines (transcoding at scale) — one uploaded 4K video (L20 object storage) fanned into
     every resolution/codec/thumbnail: a DAG of transcode jobs, priority queues (viewer-waiting vs background), the
     cost of re-encoding vs storing all variants, and idempotent/resumable jobs (L70). Trade: storage vs compute vs

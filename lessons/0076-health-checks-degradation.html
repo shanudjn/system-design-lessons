@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 76 — Health Checks &amp; Graceful Degradation: Tell "Up" From "Useful"</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 76 · Worked Example</div>
+  <h1>Health Checks &amp; Graceful Degradation: Tell "Up" From "Useful"</h1>
+  <p class="lead">Lesson 75 made the record of what happened trustworthy. Now the live question: is the system even healthy enough to keep taking traffic — and who decides? A <b>load balancer</b> (Lesson 42) constantly asks each server "are you OK?" and routes only to the ones that say yes. That single yes/no answer — the <b>health check</b> — is one of the most dangerous lines of code in the whole system, because it decides whether a server gets traffic or gets pulled out of rotation. Get it wrong and you turn a papercut into a beheading: we'll open with a real outage where <span class="key">a recommendations service worth ~2% of revenue took down 100% of checkout — because the health check <i>asked the wrong question.</i></span> We'll <b>estimate</b> exactly how a shared dependency's blip becomes a fleet-wide outage in seconds. We'll <b>model</b> the two health checks that answer two different questions (shallow "am I alive?" vs deep "can I serve right now?", Lesson 34's liveness vs readiness), the rule for what a check may and may not touch, and <b>graceful degradation</b> — ranking features so you can drop the garnish to save the meal (Lesson 28). We'll <b>trace</b> a healthy request, a non-critical dependency dying, a critical one dying, and an overload. And we'll find <span class="key">the first bottleneck: a health check that depends on a <i>shared</i> dependency converts a partial failure into a total one,</span> plus the per-dependency <b>fail-open vs fail-closed</b> choice that is really a question about which mistake you can live with. The trade under all of it: <b>availability of the core vs completeness of the experience.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0076-health-checks-degradation.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>One product-page + checkout service, the same fleet from Lesson 27: <b>286 servers</b> behind a load balancer, serving <b>40,000 requests/second</b>. Rendering a product page pulls from several backends: the <b>orders/checkout database</b> (place an order, read a cart), an <b>inventory</b> service (stock counts), a <b>reviews</b> service, and a <b>recommendations</b> service ("customers also bought…"). Some of these are essential — no checkout DB, no sale. Some are garnish — no recommendations, the page is a hair less rich but still sells. The load balancer probes each server's <code>/health</code> endpoint every couple of seconds and removes any server that fails. Our job: define what <code>/health</code> should answer, and what the service should do when a backend is sick, so that <span class="key">the failure of a non-essential part never takes down the essential part.</span> The adversary here isn't an attacker or a traffic spike — it's a well-meaning health check that's too eager to say "no."</p>
+
+<div class="diagram"><pre>
+  Load balancer probes every server's /health every 2s.
+  Says "unhealthy" twice in a row -> pulled from rotation.
+
+     40,000 req/s
+         |
+    +----v----------------------------------------+
+    | LOAD BALANCER   routes only to healthy boxes |
+    +--+----------+----------+----------+----------+
+       | /health  | /health  | /health  |  ... x286
+       v          v          v          v
+    [ svc 1 ]  [ svc 2 ]  [ svc 3 ]  [ svc 286 ]
+       \___________\__________|__________/
+                              |  the FATAL question a deep
+                              v  check might ask:
+                    "is RECOMMENDATIONS up?"  <-- SHARED by all 286
+                              |
+              one blip here -> ALL 286 answer "unhealthy"
+              -> LB empties the pool -> 100% outage, from a
+                 feature worth ~2% of revenue.
+</pre></div>
+
+<p class="note"><span class="key">The one idea the whole lesson turns on:</span> "up" and "useful" are different questions, and a health check must answer only about <i>this one instance's</i> ability to serve — never about a dependency that every instance shares. The moment a check's answer depends on something shared, a single blip makes all instances answer "no" at the same time, and a mechanism designed to <i>protect</i> availability (route away from a bad box) instead <i>destroys</i> it (route away from every box at once). Everything below is about keeping the health signal honest about the right thing, and about degrading feature-by-feature instead of failing all-or-nothing.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Health check</b> — an endpoint (e.g. <code>GET /health</code>) a load balancer or orchestrator probes periodically to decide whether to send an instance traffic (or restart it).</li>
+  <li><b>Liveness check (shallow)</b> — "is this process alive and responsive?" Answered from local state only, no downstream calls. A failure means <b>restart the process</b> (Lesson 34).</li>
+  <li><b>Readiness check (deep)</b> — "can this instance serve a real request <i>right now</i>?" May check local critical resources. A failure means <b>remove from the traffic pool</b> — but do NOT restart (Lesson 34).</li>
+  <li><b>Critical vs non-critical dependency</b> — <i>for a given request</i>, a critical dependency is one you cannot serve the core function without (checkout DB); a non-critical one only enriches the response (recommendations).</li>
+  <li><b>Correlated failure</b> — when many instances fail at the same moment for the same reason (a shared dependency), instead of independently. The thing health checks must not amplify.</li>
+  <li><b>Graceful degradation</b> — serving a reduced-but-useful response when a part is unavailable, instead of failing the whole request. The opposite of all-or-nothing.</li>
+  <li><b>Load shedding / feature tiers</b> — under stress, dropping the least-important work first (turn off recommendations to keep checkout alive, Lesson 28).</li>
+  <li><b>Fail-open vs fail-closed</b> — when a dependency is unavailable: <i>fail open</i> = proceed without it (serve degraded); <i>fail closed</i> = refuse the request. A per-dependency choice.</li>
+  <li><b>Panic mode / fail-open LB</b> — a load balancer that, when too large a fraction of the pool is "unhealthy," routes to everyone anyway — because a stale route beats no route (Lesson 34's fail-static).</li>
+</ul>
+
+<h2>Move 1 — Estimate: how a 2%-of-revenue blip becomes a 100% outage</h2>
+<p>Numbers first, because they show the disaster is fast and total, not gradual. The load balancer probes each of the <b>286</b> servers every <b>2 s</b>, and marks a server unhealthy after <b>2 consecutive failed probes</b> (~4 s). Now suppose the recommendations service has a <b>10-second latency blip</b> — its p99 jumps to ~4 s (a GC pause, a deploy, a hot shard; Lesson 27's knee).</p>
+
+<div class="card calc">
+  <p><b>The naive deep health check.</b> Someone wrote <code>/health</code> to be "thorough": it verifies the service can reach <i>all</i> its backends, including a <code>GET recommendations/ping</code> with a 5 s timeout, and returns <code>503</code> if any backend is unreachable. Watch what the blip does:</p>
+  <ul>
+    <li>The recommendations service is <b>shared by all 286 servers</b>. During the blip, every server's probe to it hangs and fails — <b>at the same time</b>, because it's the same backend.</li>
+    <li>Within ~2 probe cycles (~4–6 s), <b>all 286</b> servers have failed twice → the LB marks <b>every one</b> unhealthy → the healthy pool is <b>empty</b>.</li>
+    <li>An empty pool means the LB has nowhere to route: <b>100% of 40,000 req/s</b> now get <code>502/503</code>. Over the ~12 s it takes the blip to clear and servers to be re-added, that's <code>40,000 × 12 = <b>480,000 failed requests</b></code> — including every in-progress <i>checkout.</i></li>
+  </ul>
+  <p><span class="key">A feature that contributes ~2% of revenue just caused a 100% checkout outage.</span> The recommendations service never went down for its own users in a way that mattered — it got slow for 10 seconds. The health check <i>manufactured</i> the outage by asking a question whose answer was the same "no" on all 286 boxes at once.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The honest health check.</b> Now <code>/health</code> answers only "is <i>this process</i> able to serve?" — it checks local liveness and, at most, that this instance can get a connection from its <i>own</i> checkout-DB pool. It does <b>not</b> call recommendations. Recommendations is instead a <i>request-time</i> call with a <b>200 ms timeout + circuit breaker</b> (Lesson 7); on failure the page simply omits the widget.</p>
+  <ul>
+    <li>During the same blip: every request's recommendation call times out at 200 ms (or the breaker is already open, returning instantly), the widget is hidden, and the page renders in ~150 ms.</li>
+    <li>Health checks never touched recommendations → <b>0 servers removed</b> → <b>0 failed requests.</b> The blast radius is "100% of pages missing one widget for 10 s" instead of "100% of pages failing."</li>
+  </ul>
+  <p>The scoreboard: <b>480,000 failed requests vs 0.</b> Same underlying blip. The entire difference is <i>what the health check asked</i> and <i>what the request did</i> when a non-critical part was slow.</p>
+</div>
+
+<p class="note why"><b>Why "check everything to be safe" is exactly backwards:</b> a thorough deep check <i>feels</i> safer — surely a server that can't reach a backend shouldn't get traffic? But "thorough" quietly assumes each server's failures are <i>independent.</i> A shared dependency makes them <b>correlated</b>: all 286 fail together, so removing "the bad ones" removes all of them, and you've amplified a partial degradation into a total outage. Safety comes from the check being <i>narrow and local</i> — reporting only what makes <i>this</i> instance uniquely unable to serve — plus handling shared-dependency trouble at request time with timeouts, breakers, and degradation.</p>
+
+<h2>Move 2 — Model: two questions, one rule, and a feature ranking</h2>
+
+<h3>Two checks, because there are two decisions</h3>
+<div class="card calc">
+  <p>A load balancer or orchestrator makes two <i>different</i> decisions about an instance, so it needs two <i>different</i> answers (Lesson 34's liveness-vs-readiness, now on the serving path):</p>
+  <ul>
+    <li><b>Liveness (shallow):</b> "Is this process alive and its event loop responsive?" Answer from pure local state — return <code>200</code> if the process can run a trivial handler. Deps are <b>off-limits.</b> A failure means the process is wedged (deadlock, OOM spiral) → <b>restart it.</b> If liveness probed a dependency, a dependency blip would trigger a <i>restart storm</i> of healthy processes — the worst possible reaction (Lesson 26's reconnect storm).</li>
+    <li><b>Readiness (deep, but disciplined):</b> "Can this instance serve a real request right now?" It may check <i>local, instance-specific</i> critical state: is my DB connection pool exhausted? am I still warming a cache? am I draining for shutdown (Lesson 31)? A failure means <b>take me out of the pool — but don't restart me,</b> because there's nothing to fix by restarting; I'll say ready again when I recover.</li>
+  </ul>
+  <p><span class="key">Swap the two and you get classic outages:</span> a liveness check that fails on a slow dependency crash-loops warm servers; a readiness check that never fails routes traffic to a server whose thread pool is wedged (accepting connections, answering nothing — Lesson 7). Two questions, two answers, two reactions.</p>
+</div>
+
+<h3>The one rule: what a health check may touch</h3>
+<div class="card calc">
+  <p>Here is the rule that would have prevented the Move-1 outage, stated plainly:</p>
+  <p class="note"><b>A health check may only report on state that is <i>local and unique to this instance.</i> It must never let its answer depend on a dependency shared by the rest of the fleet.</b></p>
+  <p>Because: if the failing thing is <i>unique to one instance</i> (its own wedged pool, its own bad disk), removing that instance <b>helps</b> — traffic shifts to the healthy majority. If the failing thing is <i>shared</i> (the recommendations service, a common database, a downstream everyone calls), removing "the unhealthy instances" removes <b>all</b> of them, and you've converted a degradation into an outage while giving the LB nowhere to route. So classify every dependency per endpoint, and handle the shared/critical ones at <i>request time</i>, not in the health check.</p>
+</div>
+
+<h3>Rank the features: core vs garnish</h3>
+<div class="card calc">
+  <p>Graceful degradation needs a priority order — you can only "drop the least important thing" if you've decided what that is. Rank the product page's parts by how much of the goal (a completed purchase) depends on them:</p>
+  <table>
+    <tr><th>Feature</th><th>Tier</th><th>If its backend is down…</th><th>Fail-open or -closed?</th></tr>
+    <tr><td>Place order / charge</td><td>Core</td><td>the sale itself; cannot proceed without it</td><td><b>fail closed</b></td></tr>
+    <tr><td>Cart / price</td><td>Core</td><td>essential to a correct purchase</td><td><b>fail closed</b></td></tr>
+    <tr><td>Inventory count</td><td>Important</td><td>show item, allow order, reconcile later (Lesson 32)</td><td>fail open, carefully</td></tr>
+    <tr><td>Reviews</td><td>Nice</td><td>hide the reviews section, page still sells</td><td>fail open</td></tr>
+    <tr><td>Recommendations</td><td>Garnish</td><td>omit the widget entirely</td><td>fail open</td></tr>
+  </table>
+  <p><span class="key">The ranking makes the trade explicit:</span> recommendations add maybe 2% incremental revenue; checkout <i>is</i> the revenue. Trading a total checkout outage to keep recommendations rendering is the worst deal in the building. Degrade top-down: shed garnish first, core last (ideally never).</p>
+</div>
+
+<h3>Fail-open vs fail-closed: which mistake can you live with?</h3>
+<div class="card calc">
+  <p>When a dependency is unavailable you must pick a default, and the choice is a correctness/security question, not a technical one: <b>fail open</b> (proceed without it) when proceeding-wrong is cheap and refusing is expensive; <b>fail closed</b> (refuse) when proceeding-wrong is catastrophic — money moved, security bypassed, data corrupted.</p>
+  <ul>
+    <li><b>Recommendations down → fail open.</b> Worst case of proceeding: a slightly plainer page. Worst case of refusing: a lost sale. Open wins.</li>
+    <li><b>Payment authorization down → fail closed.</b> Worst case of proceeding: you ship goods that were never paid for. Never fail open on money — refuse and retry (Lesson 7/13).</li>
+    <li><b>Fraud / risk check down → usually fail closed</b> (or risk-based: fail open for a $5 order, fail closed for a $5,000 one). Proceeding without a fraud check is exactly the hole fraud walks through.</li>
+    <li><b>Auth / session service down → fail closed, always.</b> A security check that fails <i>open</i> treats unauthenticated users as authenticated — the most dangerous default there is.</li>
+  </ul>
+  <p><span class="key">The rule:</span> default to the side whose worst case you can survive. Get it backwards and you either cause needless outages (fail-closed on garnish) or hand out free goods and open security holes (fail-open on money/auth).</p>
+</div>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Follow four situations through the fleet: a normal request, a garnish dependency dying, a core one dying, and an overload.</p>
+
+<h3>Path A — a healthy request</h3>
+<div class="diagram"><pre>
+   GET /product/88f      LB routes to a READY server
+   [1] server assembles page: cart + inventory + reviews + recs
+   [2] each backend call has its own timeout + circuit breaker (L7)
+   [3] all return -> full page in ~150 ms
+   Meanwhile /health (readiness) answers only: "my process is live,
+   my checkout-DB pool has free connections, I'm not draining." 200 OK.
+   -> health check made ZERO downstream calls.
+</pre></div>
+
+<h3>Path B — recommendations dies (non-critical, shared)</h3>
+<div class="diagram"><pre>
+   Recommendations p99 -> 4 s for 10 s (the Move-1 blip).
+   Request time: rec call hits its 200 ms timeout; after a few
+     failures the CIRCUIT BREAKER opens -> instant "no recs" (L7).
+   Response: page renders WITHOUT the widget (fail OPEN). ~150 ms.
+   Health check: never calls recommendations -> stays 200 OK
+     -> 0 servers removed -> 0 failed requests.
+   Blast radius: 100% of pages miss one widget for 10 s. Nobody
+     notices they didn't get a "you may also like."
+</pre></div>
+
+<h3>Path C — the checkout DB dies (core)</h3>
+<div class="diagram"><pre>
+   Case C1: ONE instance can't get a DB connection (its pool wedged).
+     -> readiness on THAT box goes red -> LB removes just it ->
+        its ~140 req/s shift to the healthy 285. Correct: local + unique.
+
+   Case C2: the DB is unreachable for EVERYONE (primary down).
+     -> if readiness ejects on DB-unreachable, ALL 286 go red ->
+        empty pool -> total outage AND nowhere to route (the Move-1
+        shape again, now on a CRITICAL dep).
+     Better: readiness reflects "this box's own pool," not the shared
+       DB's health. Fleet stays "ready"; requests that NEED writes
+       fail CLOSED (honest 503 for checkout), while reads served from
+       cache/replica degrade OPEN. The LB's PANIC MODE also helps:
+       if >50% of the pool is unhealthy, route to all anyway --
+       a stale route beats no route (L34 fail-static, L42).
+</pre></div>
+
+<h3>Path D — overload: shed by tier</h3>
+<div class="diagram"><pre>
+   Traffic spikes past capacity (L27 knee, L28 backpressure).
+   Don't fail whole requests randomly. Shed by feature TIER:
+     tier 3 (recs)     -> stop computing first (frees CPU)
+     tier 2 (reviews)  -> then drop
+     tier 1 (core)     -> protect: checkout keeps working
+   Also shed by request CLASS (L28): drop retries before first-tries,
+     free-tier before paid, stale-in-queue via LIFO. Never shed the
+     health check itself, or you eject the fleet under load.
+</pre></div>
+
+<p>Path A shows the discipline: request-time calls are individually guarded; the health check stays local and silent. Path B is the payoff — a shared, non-critical blip degrades one widget instead of failing everything. Path C is the subtle one: eject a <i>uniquely</i>-broken instance (C1), but never eject the <i>whole</i> fleet for a <i>shared</i> failure (C2) — there's nowhere to route, so serve what you can and fail the truly-impossible parts closed. Path D shows degradation as a dial you turn under load, tier by tier. <span class="key">Move 4 names why the health check is the fulcrum of all of it.</span></p>
+
+<h2>Move 4 — Find the first bottleneck: the health check is a correlated-failure amplifier</h2>
+
+<div class="card calc">
+  <p><b>The first bottleneck — a shared dependency in the health check converts a partial failure into a total one.</b> This is the whole outage in one sentence. A health check exists to <i>protect</i> availability by steering traffic away from a bad instance. But that only works when "bad" is <b>uncorrelated</b> across instances — one wedged box out of 286. The instant the check's answer depends on something <b>shared</b> (a common service, a common DB, a downstream everyone calls), a single blip makes all 286 answer "unhealthy" simultaneously, the LB empties the pool, and the safety mechanism becomes the outage. The fix is the Move-2 rule: <b>a health check reports only local, instance-unique state.</b> Shared and critical dependencies are handled at <i>request time</i> — timeout, circuit breaker (Lesson 7), and degrade — never by fleet ejection. Restated as the trade: a check that's <i>too deep</i> couples you to shared failures; a check that's <i>too shallow</i> ("process is up") routes traffic to a box that accepts connections but can't actually serve (its thread pool wedged, Lesson 7). The sweet spot is narrow-but-real: check what's local and uniquely yours, nothing more.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — when a critical dependency fails for everyone, ejecting the fleet is useless.</b> Health checks assume there's a <i>healthy majority</i> to route to. When the failure is genuinely fleet-wide (the primary DB is down), removing all instances doesn't route around the problem — there's no "around." Worse, the empty pool is now a second failure of its own. Two defenses: (1) keep readiness reporting <i>this instance's own</i> resources so the fleet doesn't self-eject on a shared outage; let individual requests fail closed only for the parts that truly can't proceed, while degrading the rest open (serve cached reads, queue writes for later — Lesson 32/33). (2) A load balancer <b>panic mode</b> (Lesson 42): when more than some fraction (say 50%) of the pool reports unhealthy, the LB assumes the health signal itself is lying and routes to <i>everyone</i> — <span class="key">a stale route beats no route</span> (Lesson 34's fail-static, chosen here for exactly the same reason). <span class="key">The trade named:</span> aggressive ejection (great for isolated faults) vs fail-static tolerance (survives correlated faults) — you want both, gated on how much of the fleet is affected.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — fail-open vs fail-closed is a per-dependency decision you must make on purpose.</b> There is no global default that's right. Fail-open on recommendations saves a sale; fail-open on <b>payment auth</b> ships free goods; fail-open on <b>the auth service</b> lets anyone in. Conversely, fail-<i>closed</i> on a garnish feature re-creates the Move-1 outage voluntarily. So for every dependency, ask: <b>which mistake can I survive — proceeding wrongly, or refusing?</b> Default to the survivable side. <span class="key">The trade named:</span> completeness of the experience (fail open, keep serving) vs correctness/security (fail closed, refuse) — decided dependency by dependency, never fleet-wide.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The fourth wall — degraded modes that are never exercised rot, and silent degradation hides real problems.</b> A "serve the page without recommendations" path that only ever runs during a real incident is code you're testing <i>in production during your worst hour.</i> It will have the bug you didn't catch. So <b>exercise degradation deliberately</b> — Lesson 51's chaos engineering: regularly kill the recommendations dependency in a controlled way and confirm the page still sells. And degradation must be <b>observable, not silent</b>: emit a metric every time you drop a feature or trip a breaker, and alarm on the <i>rate</i> (Lesson 17). A system that degrades quietly looks healthy on the "is checkout up?" dashboard while quietly serving a worse product to everyone — you've traded a loud outage for a silent, invisible one, which is sometimes worse because nobody fixes what nobody sees. <span class="key">The trade named:</span> the resilience of graceful degradation vs the risk that "still up" masks "quietly broken."</p>
+</div>
+
+<p>So the honest picture of health checks and degradation: a health check is the tiny yes/no that decides whether an instance gets traffic, and its danger is that it can <b>amplify a correlated failure into a total outage</b> — a recommendations blip worth 2% of revenue removing 100% of the fleet, <b>480,000 failed requests vs 0</b>, decided entirely by whether the check asked about local state or about a shared dependency. You keep it honest with two checks for two decisions (<b>liveness</b> → restart, <b>readiness</b> → remove-don't-restart, Lesson 34), one rule (<b>report only local, instance-unique state</b>; handle shared/critical deps at request time with timeouts + breakers, Lesson 7), a <b>feature ranking</b> (core vs garnish) that lets you shed top-down (Lesson 28), and a per-dependency <b>fail-open/closed</b> choice made on the "which mistake can I survive?" question. The first bottleneck is the correlated-failure amplifier itself; around it, <b>ejecting the fleet is useless when the failure is fleet-wide</b> (→ fail-static + LB panic mode, Lesson 42/34), <b>fail-open/closed must be chosen per dependency</b> (money and auth fail closed, garnish fails open), and <b>degraded modes rot and hide unless exercised and alarmed</b> (Lesson 51/17). Every choice names its price.</p>
+
+<p><span class="key">The deepest point: "up" is not "useful," and a resilient system is one that can tell the difference about itself in real time — and admit it's sick without falling over.</span> A brittle system has one state (working) and one failure (down); everything is all-or-nothing, so any part's failure is the whole system's failure. A resilient system has a <i>spectrum</i>: fully healthy, missing recommendations, missing reviews, read-only, checkout-only — each a deliberate, tested, observable step down that keeps the <i>core</i> alive while the edges wobble. The health check is where the system decides which step it's on, and the degradation tiers are the steps. Notice this is assembled from pieces you already own — timeouts and circuit breakers (L7), load shedding and backpressure (L28), liveness/readiness and fail-static (L34), the load balancer's routing and panic mode (L42), chaos testing (L51), observability (L17). The new idea is only the <i>stance</i>: design for the failure of your parts, and rank them so that when — not if — one fails, you drop the garnish and keep serving the meal. The standing tension: <span class="key">availability of the core vs completeness of the experience.</span></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>Shared-dep blip ejects the whole fleet</td><td>Check only local, instance-unique state</td><td>correlated failure can't remove everyone / must classify deps</td></tr>
+  <tr><td>Restart vs remove are different reactions</td><td>Liveness vs readiness (L34)</td><td>right reaction per problem / two endpoints to maintain</td></tr>
+  <tr><td>Slow non-critical dependency</td><td>Timeout + circuit breaker (L7) + degrade</td><td>fast fail, page still renders / a tested degraded path</td></tr>
+  <tr><td>Which part to drop under stress</td><td>Feature tiers / load shedding (L28)</td><td>shed garnish, keep core / must rank features up front</td></tr>
+  <tr><td>Critical dep down fleet-wide</td><td>Fail-static + LB panic mode (L34/42)</td><td>stale route beats no route / serves some stale/degraded data</td></tr>
+  <tr><td>Proceed or refuse without a dep</td><td>Fail-open vs fail-closed, per dep</td><td>survive the tolerable mistake / wrong choice = free goods or outage</td></tr>
+  <tr><td>Degraded path is buggy / invisible</td><td>Chaos-test it (L51) + alarm on it (L17)</td><td>works when needed, visible / cost of exercising + metrics</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — a health check that probes a shared dependency.</b> One blip makes all instances fail together and the LB empties the pool. Keep the check local and instance-unique; guard shared deps at request time with timeouts and breakers.</li>
+  <li><b>Trap 2 — conflating liveness and readiness.</b> A liveness check that fails on a slow dependency crash-loops healthy processes; a readiness check that never fails routes traffic to a wedged box. Liveness → restart on local wedge only; readiness → remove (don't restart) when this instance can't serve.</li>
+  <li><b>Trap 3 — getting fail-open/closed backwards.</b> Fail-open on payments or auth ships free goods and opens security holes; fail-closed on garnish causes needless outages. Decide per dependency by which mistake you can survive.</li>
+  <li><b>Trap 4 — a degraded mode that's never tested or never alarmed.</b> The path you only run during an incident has the bug you didn't catch, and silent degradation makes "quietly broken" look like "up." Chaos-test degradation regularly and emit a metric every time you shed or trip a breaker.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We taught one fleet to tell "up" from "useful." <b>Estimate</b> exposed the danger: with 286 servers probed every 2 s, a naive deep health check that pings a <b>shared</b> recommendations service turns a 10-second latency blip into an empty pool and <b>480,000 failed requests</b> — a 100% checkout outage caused by a feature worth ~2% of revenue — while an honest local check yields <b>0 failures</b> for the same blip. <b>Model</b> gave the discipline: two checks for two decisions (<b>liveness</b> → restart a wedged process, <b>readiness</b> → remove-but-don't-restart an instance that can't serve, Lesson 34); one rule (<b>a health check reports only local, instance-unique state</b> — shared and critical deps are handled at request time with timeout + circuit breaker, Lesson 7); a <b>feature ranking</b> (core checkout vs garnish recommendations) so you can shed top-down (Lesson 28); and a per-dependency <b>fail-open vs fail-closed</b> choice made on "which mistake can I survive?" (garnish fails open; money and auth fail closed). <b>Tracing</b> showed a healthy request making zero health-check calls, a non-critical blip degrading one widget instead of failing the page, a critical dependency ejecting one uniquely-broken box (good) but never the whole fleet on a shared outage (fail-static + panic mode instead), and an overload shed tier by tier. The <b>first bottleneck</b>: the health check is a <b>correlated-failure amplifier</b> — depend on something shared and one blip removes everyone; around it, <b>ejecting a fleet-wide failure is useless</b> (→ fail-static + LB panic mode, L42/34), <b>fail-open/closed is a per-dependency correctness/security call</b>, and <b>degraded modes rot and hide unless exercised and alarmed</b> (L51/17). The deepest point: "up" is not "useful," and resilience is having a <i>spectrum</i> of degraded-but-serving states instead of one all-or-nothing switch — dropping the garnish to keep serving the meal, built almost entirely from pieces you already own. The standing tension: <span class="key">availability of the core vs completeness of the experience.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we've kept the core serving when a part fails. Now the heavy part: one giant blob of work fanned into many jobs without melting the fleet.</b></p>
+  <p style="margin:.2rem 0">• <b>Blob/media processing pipelines — transcoding at scale (Lesson 77):</b> one uploaded 4K video (Lesson 20's object storage) fanned into every resolution, codec, and thumbnail. A <b>DAG</b> of transcode jobs, <b>priority queues</b> (a viewer waiting vs a background re-encode), the cost of <b>re-encoding on demand vs storing every variant</b>, and <b>idempotent, resumable</b> jobs (Lesson 70). Trade: storage vs compute vs time-to-first-play.</p>
+  <p style="margin:.2rem 0">Say <b>next</b> and we'll turn one upload into a hundred jobs — and get the first frame playing before the rest finishes.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">health check</span>
+    <span class="pill">liveness (shallow)</span>
+    <span class="pill">readiness (deep)</span>
+    <span class="pill">critical vs non-critical dependency</span>
+    <span class="pill">correlated failure</span>
+    <span class="pill">graceful degradation</span>
+    <span class="pill">load shedding / feature tiers</span>
+    <span class="pill">fail-open vs fail-closed</span>
+    <span class="pill">panic mode / fail-open LB</span>
+    <span class="pill">circuit breaker</span>
+    <span class="pill">fail-static</span>
+  </p>
+  <p>That's Lesson 76. It builds on: Lesson 34 (service discovery &amp; health checking — liveness vs readiness, restart-vs-remove, fail-static, and the shared-dependency trap that ejects a whole fleet), Lesson 7 (designing for failure — timeouts and circuit breakers that let a non-critical call fail fast at request time), Lesson 28 (backpressure &amp; load shedding — shedding the least-important work first), Lesson 42 (load balancing — the probe/eviction mechanics and panic/fail-open mode), Lesson 27 (autoscaling — the fleet and the latency knee a blip pushes you past), Lesson 51 (chaos engineering — deliberately exercising degraded paths so they work when needed), Lesson 17 (observability — alarming on degradation rate so "up" doesn't mask "quietly broken"), and Lesson 32/33 (sagas/outbox — reconcile-later and queue-the-write as degradation strategies for a down critical dependency). <b>Ask me follow-ups</b> — e.g. "how do Kubernetes liveness/readiness/startup probes map onto this?", "how exactly does Envoy's panic threshold decide when to fail open?", "how do you pick timeouts for a request-time non-critical call so it can't drag your p99?", "what belongs in a good readiness check vs what must never?", or "how do you load-test a degraded mode without a real outage?" When you're ready, say <b>next</b> and we'll fan one 4K upload into a hundred transcode jobs.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "A recommendations service (worth ~2% of revenue) has a 10-second latency blip. Within seconds, 100% of your 286-server checkout fleet is out of rotation and 40,000 req/s are failing. What did the health check almost certainly do wrong?",
+    options: [
+      {t:"Its /health endpoint made a downstream call to the recommendations service — a dependency SHARED by all 286 servers — and returned unhealthy when that call failed. Because the dependency is shared, every server's probe failed at the same moment (correlated failure), so the load balancer marked all 286 unhealthy and emptied the pool. A health check must report only LOCAL, instance-unique state; a shared/non-critical dependency like recommendations should be handled at request time with a short timeout + circuit breaker and simply degraded (omit the widget), never checked in /health.",
+       ok:true,
+       fb:"Exactly. A shared dependency in the health check turns a partial degradation into a total outage — the safety mechanism (route away from a bad box) removes every box at once. Keep the check narrow and local; guard shared deps at request time."},
+      {t:"The health check interval (every 2 s) was too aggressive; slowing it to every 30 s would have prevented the outage.",
+       ok:false,
+       fb:"A longer interval only delays the same outcome — if the blip lasts 10 s and the check probes a shared dependency, all servers still fail together and the pool still empties (just a bit later). The root cause isn't the interval; it's that the check's answer depended on a shared dependency at all. Fix WHAT it checks, not how often."},
+      {t:"The recommendations service should have been made more reliable so it never has latency blips; the health check was fine.",
+       ok:false,
+       fb:"Every dependency has blips eventually (GC, deploys, hot shards) — you can't engineer them to zero, and a 2%-of-revenue garnish doesn't deserve checkout-grade reliability. The design flaw is that a garnish failure could take down the core at all. The health check must not couple the fleet's fate to a shared, non-critical dependency."}
+    ]
+  },
+  {
+    stem: "You're defining two probes: a LIVENESS check (LB/orchestrator restarts the process if it fails) and a READINESS check (LB removes the instance from the traffic pool if it fails). What should each be allowed to check?",
+    options: [
+      {t:"Liveness checks ONLY local process health (is the event loop responsive?) with no downstream calls — because a failure triggers a RESTART, and you must never restart healthy processes just because a dependency blipped. Readiness may check local, instance-unique resources (my own DB connection pool, cache warm-up, am-I-draining) — because a failure REMOVES the instance without restarting it, and it'll report ready again once it recovers. Neither should depend on a fleet-shared dependency.",
+       ok:true,
+       fb:"Right. Two decisions (restart vs remove) need two answers. Liveness stays shallow so a dependency blip can't crash-loop the fleet; readiness reflects this instance's own ability to serve — and remove-don't-restart is the correct reaction because there's nothing a restart fixes."},
+      {t:"Both should be deep checks that verify every backend the service depends on, so the load balancer has the most complete picture of health.",
+       ok:false,
+       fb:"That's the exact trap from question 1, applied to both probes. A deep liveness check crash-loops healthy processes on a dependency blip; a deep readiness check ejects the whole fleet when a shared backend hiccups. 'Most complete picture' quietly assumes independent failures — shared dependencies make failures correlated and turn thoroughness into a fleet-wide outage."},
+      {t:"Liveness should be deep (check dependencies) and readiness should be shallow (just confirm the process is up), since restarting is the more thorough fix.",
+       ok:false,
+       fb:"This is backwards on both. A deep liveness check restarts healthy processes over a dependency blip — the worst possible reaction. A shallow readiness check routes traffic to a box whose thread pool is wedged (accepts connections, serves nothing). Liveness = local only; readiness = this instance's own ability to serve."}
+    ]
+  },
+  {
+    stem: "For each dependency you must choose a default when it's unavailable: FAIL OPEN (proceed without it) or FAIL CLOSED (refuse the request). Which set of choices is correct for a checkout service?",
+    options: [
+      {t:"Recommendations → fail open (worst case: a plainer page; refusing would lose a sale). Payment authorization → fail closed (worst case of proceeding: you ship goods never paid for). Auth/session → fail closed (failing open treats unauthenticated users as authenticated). The rule: default to the side whose worst case you can survive — open when proceeding-wrong is cheap, closed when it's catastrophic (money, security, correctness).",
+       ok:true,
+       fb:"Exactly. Fail-open/closed is a per-dependency correctness/security decision, not a global switch. Garnish fails open to protect the sale; money and auth fail closed because proceeding wrongly is unrecoverable."},
+      {t:"Fail open on everything — the priority is always to keep serving the user, so never refuse a request no matter which dependency is down.",
+       ok:false,
+       fb:"Fail-open on payment authorization ships unpaid goods; fail-open on the auth service lets anyone in. 'Always keep serving' is right for garnish and catastrophic for money and security. The choice must be made per dependency by asking which mistake you can survive."},
+      {t:"Fail closed on everything — if any dependency is unavailable, refuse the request, because a partial response is never trustworthy.",
+       ok:false,
+       fb:"Fail-closed on recommendations re-creates the whole Lesson-76 outage voluntarily: a garnish outage becomes a checkout outage. A partial response is perfectly trustworthy when the missing part is non-essential. Fail closed only where proceeding-wrong is catastrophic; fail open where the experience is merely less complete."}
+    ]
+  },
+  {
+    stem: "Your critical primary database becomes unreachable for the ENTIRE fleet at once. Your readiness check currently ejects any instance that can't reach the DB. What happens, and what's the better design?",
+    options: [
+      {t:"All 286 instances fail readiness simultaneously → the LB empties the pool → total outage AND there's nowhere to route, since the failure is fleet-wide (ejecting doesn't help when there's no healthy majority). Better: readiness should reflect THIS instance's own resources (its own pool), not the shared DB's health, so the fleet doesn't self-eject; individual requests then fail closed only for the parts that truly need the DB (writes/checkout) while degrading reads open (cache/replica). A load-balancer PANIC MODE also helps: when >X% of the pool is unhealthy, route to everyone anyway — a stale route beats no route.",
+       ok:true,
+       fb:"Right. Ejection assumes a healthy majority to route to; a fleet-wide failure has none, so ejecting just adds an empty-pool outage on top. Fail-static (panic mode) plus request-time fail-open/closed keeps you serving whatever is still possible."},
+      {t:"That's correct behavior — if servers can't reach the database they genuinely can't serve, so removing all of them and returning errors is the honest, safe response.",
+       ok:false,
+       fb:"Removing all of them is not safer — it adds a second failure (empty pool, nowhere to route) and kills even the requests that DON'T need the DB (cached reads). Ejection only helps when a healthy majority exists to absorb the traffic. For a shared, fleet-wide failure, degrade and fail-static instead."},
+      {t:"Restart every instance — a restart will reconnect them to the database and clear the problem.",
+       ok:false,
+       fb:"The instances aren't broken; the shared database is. Restarting 286 healthy processes fixes nothing (they still can't reach a down DB) and adds a reconnect/cold-start storm on top (Lesson 26/34). This is also why readiness must REMOVE, not restart — and why it should track local state, not a shared dependency."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
