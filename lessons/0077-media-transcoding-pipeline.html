@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 77 — Media Transcoding Pipelines: One 4K Upload Into a Hundred Jobs</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 77 · Worked Example</div>
+  <h1>Media Transcoding Pipelines: One 4K Upload Into a Hundred Jobs</h1>
+  <p class="lead">Lesson 20 gave us a place to <i>put</i> a 4K video — a durable object store. This lesson is what happens the instant the upload lands: that one 3.3 GB file is useless to almost everyone until we <b>transcode</b> it into a whole ladder of smaller versions — 240p for a phone on a train, 1080p for a laptop, an efficient AV1 copy to cut delivery cost — each cut into short segments a player can stream. We open on the number that decides the whole design: <span class="key">encoded top-to-bottom, the 4K version alone takes ~20 minutes before anyone can press play</span>, and re-encoded across the ladder, one upload explodes into <b>1,200 separate jobs.</b> We'll <b>estimate</b> that fan-out and the 20-minutes-to-8-seconds gap. We'll <b>model</b> the fix — stop treating the video as one file: cut it into keyframe-aligned <b>segments</b>, and every hard problem (slow encode, crashed worker, viewer waiting, wasted storage) turns into a job over a small independent chunk, arranged as a <b>DAG</b> and drained through <b>priority lanes.</b> We'll <b>trace</b> an upload becoming watchable, a viral burst, a cold video nobody has requested yet, and a worker dying mid-encode. And we'll find <span class="key">the first bottleneck: the fan-out itself — 1,200 jobs per upload flooding a shared encoder fleet, where a batch re-encode can starve the viewer who's waiting right now.</span> The trade under all of it: <b>storage vs compute vs time-to-first-play</b> — you can pay in disk, in CPU, or in the viewer's patience, but you always pay.</p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0077-media-transcoding-pipeline.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>A video platform. A creator uploads one <b>10-minute 4K video</b> — a single <b>~3.3 GB</b> H.264 file — into the object store from Lesson 20. Before it can be watched well on every device and network, we must produce an <b>ABR ladder</b>: several resolutions (2160p, 1080p, 720p, 480p, 360p, 240p) so a player can pick the one that fits the viewer's bandwidth, in two codecs (H.264 for universal compatibility, AV1 because it's ~35% smaller and cuts our delivery bill, Lesson 14/59), each cut into short <b>segments</b> the player streams one at a time. Plus thumbnails, plus a manifest that lists it all. Our job: turn that one upload into all those outputs <span class="key">fast enough that the creator's video is live in seconds, cheaply enough that we don't drown in storage or CPU, and reliably enough that a crashed machine doesn't restart a 20-minute job from zero.</span> The adversary here isn't an attacker — it's the sheer <i>size</i> of the work, and the fact that the naive way to do it makes the viewer wait.</p>
+
+<div class="diagram"><pre>
+  ONE 4K UPLOAD  (3.3 GB)  ->  the pipeline is a DAG of jobs
+
+        [upload lands in object store]  (L20)
+                 |
+                 v
+              [probe]   read duration, resolution, fps, codec
+                 |
+                 v
+              [split]   cut into 100 keyframe-aligned 6-second
+                 |      segments  <-- THE FAN-OUT POINT
+     +-----------+-----------+-----------------+
+     |           |           |                 |
+     v           v           v                 v
+  seg0->1080p  seg0->720p  seg1->1080p   ...  (6 renditions x 2 codecs)
+  seg0->720p   seg1->720p  seg1->720p         x (100 segments)
+     \          |            |               /   = 1,200 transcode jobs
+      \         v            v              /
+       +--> [package] per rendition: stitch segments + write
+       |        manifest (HLS/DASH)         |
+       v                                    v
+  [thumbnails]                         [publish -> CDN]  (L14)
+
+  ONE upload -> 1,200 transcode jobs + probe + split + package + thumbs
+</pre></div>
+
+<p class="note"><span class="key">The one idea the whole lesson turns on:</span> stop thinking of the video as <i>one file and one job.</i> Cut it into short, independent <b>segments</b>, and every hard problem becomes tractable at once. A segment is small, so it encodes in seconds (fast time-to-first-play). Segments are independent, so thousands encode in parallel (throughput) and a crashed one just re-runs (resumability). Each segment's output path is deterministic, so re-running produces the same bytes (idempotency, Lesson 13). And segments are exactly what an adaptive player streams, switching quality per segment as bandwidth changes. The segment is the unit of <i>parallelism, priority, resumability, and streaming</i> — one idea that unlocks four. Everything below is about producing segments, ordering the work so the waiting viewer wins, and deciding which segments to keep on disk versus make on demand.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Transcode</b> — decode a video and re-encode it into a different resolution, bitrate, or codec. CPU-heavy; often <i>slower</i> than real time.</li>
+  <li><b>Rendition / variant</b> — one output version of the video (e.g. "720p, H.264"). The set of them is the <b>ABR ladder</b>.</li>
+  <li><b>ABR (adaptive bitrate)</b> — the player picks a rendition per segment to match the viewer's current bandwidth, stepping up or down without stalling.</li>
+  <li><b>Codec</b> — the compression algorithm (H.264, VP9, AV1). Newer codecs make smaller files but cost far more CPU to encode.</li>
+  <li><b>Keyframe (IDR) / GOP</b> — a keyframe is a self-contained frame decodable without any other; a GOP ("group of pictures") is a keyframe plus the frames that depend on it. Cuts must land <i>on</i> keyframes.</li>
+  <li><b>Segment / chunk</b> — a few seconds of video (we use 6 s), starting at a keyframe so it decodes and encodes on its own. The unit everything is built from.</li>
+  <li><b>DAG (directed acyclic graph)</b> — the job graph: probe → split → (fan-out of transcodes) → package → publish. Edges are "must finish before."</li>
+  <li><b>Fan-out</b> — one input spawning many jobs (here 1 upload → 1,200 transcodes).</li>
+  <li><b>Priority lane / queue</b> — separate queues so <i>viewer-waiting</i> work jumps ahead of <i>background</i> batch work (Lesson 9/28).</li>
+  <li><b>Time-to-first-play (TTFP)</b> — time from "upload finished" to "someone can press play and it works." The number we optimize.</li>
+  <li><b>JIT (just-in-time) transcoding</b> — make a rendition the <i>first time</i> it's requested and cache it, instead of pre-making everything (Lesson 48).</li>
+  <li><b>Idempotent / resumable job</b> — safe to re-run and produces the same result; a crash resumes from the last finished segment, not from zero (Lesson 13/70).</li>
+  <li><b>Straggler / speculative execution</b> — one slow job holding up a barrier; re-issue it on a second worker and take whichever finishes first (Lesson 29/64).</li>
+  <li><b>Packaging / manifest</b> — stitching a rendition's segments and writing the HLS/DASH playlist the player reads.</li>
+</ul>
+
+<h2>Move 1 — Estimate: the fan-out and the 20-minutes-to-8-seconds gap</h2>
+<p>Two numbers set the whole design. First, <b>how much work is it?</b> Second, <b>how long until the viewer can watch?</b> Get these and the architecture almost writes itself.</p>
+
+<div class="card calc">
+  <p><b>The fan-out: one upload → 1,200 jobs.</b> Our ladder is 6 resolutions × 2 codecs = <b>12 renditions.</b> The video is 10 minutes = 600 s; cut into 6-second segments that's <code>600 / 6 = <b>100 segments</b></code>. Every rendition needs every segment:</p>
+  <ul>
+    <li><code>12 renditions × 100 segments = <b>1,200 transcode jobs</b></code>, plus 1 probe, 1 split, 12 package jobs, and a handful of thumbnail extractions.</li>
+    <li>Now scale it: at a modest steady <b>2 uploads/second</b>, that's <code>2 × 1,200 = <b>2,400 transcode jobs/second</b></code> arriving forever. Each segment job averages ~5 core-seconds of CPU (cheap 240p is fast; 4K and AV1 are brutal), so steady-state you need roughly <code>2,400 × 5 = <b>12,000 CPU cores</b></code> just to keep pace — and a launch-day burst can multiply that 10×.</li>
+  </ul>
+  <p><span class="key">One upload is not one unit of work — it's a small storm of it.</span> That single fact forces queues, a worker fleet, and a way to decide <i>which</i> of the 1,200 jobs matters most right now.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Time-to-first-play: 20 minutes vs ~8 seconds.</b> Transcoding is often slower than real time. Suppose 4K encodes at <b>0.5× real time</b> (a 600 s video takes 1,200 s of CPU) and 720p at <b>2× real time</b> (600 s → 300 s). Do it the naive, monolithic way — encode a whole rendition end-to-end before publishing — and:</p>
+  <ul>
+    <li>The 4K rendition alone takes <code>600 / 0.5 = 1,200 s = <b>20 minutes.</b></code> Even a single 720p copy is <code>600 / 2 = 300 s = <b>5 minutes.</b></code> The creator's video sits dark that whole time.</li>
+    <li>Now the segmented way: to let playback <i>start</i>, we only need <b>segment 0</b> of one sane rendition. Encode just the first 6-second chunk at 720p: <code>6 / 2 = <b>3 s of CPU</b></code>. Add probe + split + queue overhead and <b>TTFP ≈ 8 seconds.</b> The remaining 99 segments encode in parallel behind the playhead — the player only needs to stay a few seconds ahead.</li>
+  </ul>
+  <p>The scoreboard: <b>~20 minutes → ~8 seconds</b> to watchable, for the exact same total work. Nothing got cheaper; we just <i>reordered</i> it so the piece the viewer needs first gets made first. That reordering is only <i>possible</i> because we cut the video into independent segments.</p>
+</div>
+
+<p class="note why"><b>Why the segment size is a real trade, not a free win:</b> smaller segments mean finer parallelism, faster TTFP, and quicker quality switches for the player — but every segment must <i>start</i> with a keyframe, and keyframes are the most expensive frames to encode, so tiny segments waste bytes and bloat the manifest. Larger segments compress better and carry less overhead but parallelize coarsely and slow TTFP. <b>6 seconds</b> is the common compromise. The trade named: <span class="key">parallelism &amp; latency vs compression efficiency &amp; overhead</span> — the same tension you'll meet again in the next few walls.</p>
+
+<h2>Move 2 — Model: a DAG of segment jobs, drained through priority lanes</h2>
+
+<h3>The pipeline is a DAG, and the split is where it fans out</h3>
+<div class="card calc">
+  <p>Model the work as a <b>directed acyclic graph</b> of jobs — each node a unit of work, each edge a "must finish before." The shape:</p>
+  <ul>
+    <li><b>probe → split</b>: read the file's metadata, then cut it into 100 keyframe-aligned segments. The split is the <b>fan-out point</b>: one input, 1,200 downstream transcodes.</li>
+    <li><b>transcode</b> (the fan-out): each job takes <i>one source segment</i> and produces <i>one output segment</i> for one rendition. These 1,200 jobs are mutually independent — the graph is wide and shallow here, which is exactly what lets a big fleet chew through them in parallel.</li>
+    <li><b>package</b> (the fan-in / barrier): for each rendition, once all 100 of its segments exist, stitch them and write the HLS/DASH manifest. This is a <b>join</b> — it can't start until its inputs finish, which we'll see is where a single slow segment (a <i>straggler</i>) can hurt.</li>
+    <li><b>publish</b>: push segments + manifests to the CDN (Lesson 14) and mark the rendition live.</li>
+  </ul>
+  <p><span class="key">Why a DAG and not a script?</span> Because jobs fail, and a graph lets you re-run <i>only</i> the failed node and everything downstream of it — not the whole pipeline. The split done once feeds 1,200 transcodes; if transcode #814 dies, you re-run #814, not the split and not the other 1,199.</p>
+</div>
+
+<h3>Two lanes, because "make this" and "make this NOW" are different jobs</h3>
+<div class="card calc">
+  <p>The same encoder fleet serves work of wildly different urgency. Put it in separate <b>priority lanes</b> (Lesson 9/28) and let workers always drain the urgent one first:</p>
+  <table>
+    <tr><th>Lane</th><th>Example work</th><th>Deadline</th></tr>
+    <tr><td><b>Interactive</b> (highest)</td><td>segment 0 of a just-uploaded video; a JIT rendition a viewer is waiting on</td><td>seconds — someone is staring at a spinner</td></tr>
+    <tr><td><b>Standard</b></td><td>the other 99 segments of a new upload's popular renditions</td><td>a minute or two — fill in behind the playhead</td></tr>
+    <tr><td><b>Background</b> (lowest)</td><td>re-encoding the whole back-catalog to AV1; making the 240p nobody has asked for yet</td><td>hours/days — pure throughput, no one waiting</td></tr>
+  </table>
+  <p>Within a single upload we also order the ladder: encode a middle rung (say 720p) segment 0 first so playback can start, then widen out. <span class="key">The trade named:</span> <b>latency of the waiting viewer vs throughput/fairness of batch work.</b> Without lanes, a million-video AV1 backfill (all "background") sits in the same FIFO queue as the segment 0 a viewer needs <i>now</i>, and the viewer waits behind the backfill — the classic <b>priority-inversion</b> starvation from Lesson 28, now measured in the seconds a person will actually tolerate.</p>
+</div>
+
+<h3>Store every variant, or make it on demand?</h3>
+<div class="card calc">
+  <p>Here's the money question. Do you <b>pre-transcode</b> the full ladder for every upload and store it, or store only the source and <b>JIT-transcode</b> a rendition the first time it's requested (Lesson 48), caching the result?</p>
+  <ul>
+    <li><b>Storage cost of pre-encoding everything.</b> Our ladder is ~1.9 GB (H.264) + ~1.2 GB (AV1) ≈ <b>3.1 GB of variants</b> on top of the 3.3 GB source — variants nearly <i>double</i> the footprint to ~6.4 GB/video. Fine for one video. But views are brutally skewed (Lesson 2): ~90% of views hit ~1% of the catalog. So for a 100M-video library, <b>~99M videos are cold</b> — and if each carried our full ladder that's <code>3.1 GB × 99M ≈ <b>~300 PB</b></code> of renditions almost nobody ever streams.</li>
+    <li><b>JIT instead.</b> Keep the source (or a high-quality <i>mezzanine</i>) and make the rare 480p-AV1 only when someone first asks, then cache it. You spend compute on the first viewer (a few seconds if you JIT just the needed segments) and re-spend it if the cache evicts, but you don't warehouse 300 PB of cold variants.</li>
+  </ul>
+  <p><span class="key">The trade named — this is the lesson's headline:</span> <b>storage vs compute vs time-to-first-play.</b> Pre-encode = pay storage, instant play. JIT = pay compute + a first-view wait, save storage. The right answer is a <b>hybrid keyed on popularity</b>: pre-encode the top rungs for hot content, JIT the cold tail, and tier the bytes hot/warm/cold (Lesson 39). You're not choosing one corner of the triangle — you're placing each <i>video</i> in it by how much it's watched.</p>
+</div>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Follow four situations through the DAG: a fresh upload going live, a burst of uploads, a cold video's first-ever viewer, and a worker dying mid-encode.</p>
+
+<h3>Path A — upload → watchable in ~8 seconds</h3>
+<div class="diagram"><pre>
+   [0s]  3.3 GB upload lands in object store (L20)
+   [+1s] probe: 10 min, 4K, 30fps, H.264
+   [+2s] split: 100 keyframe-aligned 6s segments (streamed, not
+           whole-file -- start splitting as bytes arrive)
+   [+2s] ENQUEUE seg0 -> 720p on the INTERACTIVE lane; the other
+           1,199 jobs go to STANDARD/BACKGROUND by rung popularity
+   [+5s] a worker encodes seg0->720p (6s / 2x = 3s CPU)
+   [+6s] package writes a 1-segment manifest -> publish to CDN
+   [~8s] VIDEO IS LIVE. Player can press play on 720p.
+   [8s..~60s] remaining 99 segments + higher rungs fill in behind
+           the playhead; ladder widens to 1080p/4K/AV1 as they finish
+</pre></div>
+
+<h3>Path B — a burst: 10× uploads at launch</h3>
+<div class="diagram"><pre>
+   Scheduled drop: uploads spike 2/s -> 20/s for 10 minutes.
+   New transcode jobs: 20 x 1,200 = 24,000 jobs/s flooding in.
+   Queue depth explodes; encoder fleet is saturated.
+     - Priority lanes hold: seg0 (INTERACTIVE) still clears in
+       seconds; the AV1 backfill (BACKGROUND) is what waits.
+     - Autoscale the encoder fleet on QUEUE DEPTH, not CPU (L27):
+       depth is the leading signal; CPU is already pegged.
+     - Backpressure (L28): if even the interactive lane backs up,
+       admit uploads more slowly / shed the lowest rungs first,
+       and tell creators "processing" honestly.
+   Result: TTFP stretches from ~8s to maybe ~30s under load, but
+     never to 20 min, and NOTHING is dropped -- just deferred.
+</pre></div>
+
+<h3>Path C — a cold video's first viewer (JIT)</h3>
+<div class="diagram"><pre>
+   A 3-year-old video, only its 720p-H.264 rung pre-encoded.
+   A viewer on a slow phone needs 240p-AV1 -- never made.
+     [1] CDN miss -> origin miss -> JIT request enqueued on the
+         INTERACTIVE lane (a viewer is waiting).
+     [2] Transcode ONLY the segments the player needs next, from
+         the mezzanine, starting at the current segment (not seg0).
+     [3] First needed segment ready in ~3-5s; cache it in CDN +
+         object store so the SECOND viewer pays nothing (L48).
+   Trade lived out: we saved 3.1 GB x years of cold storage and
+     paid ~4s of compute, once, only because someone actually asked.
+</pre></div>
+
+<h3>Path D — a worker dies 15 minutes into a big job</h3>
+<div class="diagram"><pre>
+   A 2-hour 4K movie: ~1,200 segments x ladder = ~14,000 jobs.
+   Worker encoding segment 812->AV1 crashes at minute 15.
+     Monolithic world: restart the whole 20-min+ encode from 0.
+     Segmented world:
+       - Job output path is deterministic:
+           s3://.../vid/av1/1080p/seg00812.m4s   (idempotent, L13)
+       - The queue's visibility timeout expires (L9): the message
+         reappears; another worker re-runs ONLY seg812.
+       - Segments 0..811 are already written -> skipped. Resume
+         from 812, not from 0 (L70).
+     Re-running a finished segment is SAFE (same bytes) and re-running
+     the crashed one is CHEAP (one 6s chunk, ~12s of CPU).
+</pre></div>
+
+<p>Path A is the payoff: segment-level ordering turns 20 minutes into 8 seconds. Path B shows the lanes earning their keep — a burst delays <i>background</i> work, never the waiting viewer, and you scale on queue depth. Path C lives out the storage/compute trade: don't warehouse what nobody watches; make it on demand and cache it. Path D shows why segments + determinism = resumability: a crash costs one chunk, not the whole movie. <span class="key">Move 4 names why the fan-out is the wall all of this is built around.</span></p>
+
+<h2>Move 4 — Find the first bottleneck: the fan-out floods a shared fleet</h2>
+
+<div class="card calc">
+  <p><b>The first bottleneck — one upload becomes 1,200 jobs, and they all land on the same encoder fleet.</b> This is the wall the whole design bends around. Encoding is expensive and shared: every upload's fan-out competes for the same cores. Two failure modes fall out. (1) <b>Volume:</b> a burst of uploads multiplies an already-large job count until the queue and the fleet can't keep up (Path B). (2) <b>Priority inversion:</b> without lanes, the segment 0 a viewer needs <i>right now</i> waits in the same FIFO behind a million-video background backfill — the batch work starves the interactive work (Lesson 28). The fix is the Move-2 model: <b>separate priority lanes</b> so viewer-waiting jobs always jump ahead, an <b>autoscaled worker fleet</b> sized on <b>queue depth</b> (the leading signal — CPU is already pegged, Lesson 27), and <b>backpressure</b> that defers the lowest rungs and admits uploads honestly when even the interactive lane backs up (Lesson 28). <span class="key">The trade named:</span> the latency of the person waiting vs the throughput and cost-efficiency of the batch — you protect the first by being willing to defer the second.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — storing every variant wastes a fortune on a tail nobody watches.</b> Pre-encoding the full ladder for all 100M videos is ~300 PB of renditions, and with 90% of views on 1% of videos, almost all of it is cold (Lesson 2's skew). But the opposite extreme — JIT <i>everything</i> — makes the popular video's every viewer wait for an encode, and re-burns compute each time a cache evicts. Neither corner is right. <span class="key">The answer is a popularity-keyed hybrid:</span> pre-encode the top rungs for hot content (pay storage where it's watched), JIT the cold tail and cache it (pay compute only when asked), and tier the bytes across hot/warm/cold storage (Lesson 39). <span class="key">The trade named:</span> <b>storage vs compute vs first-play latency</b> — the same triangle from Move 2, now resolved per-video by how much each is actually streamed rather than globally.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — the package step is a barrier, and one straggler segment blocks a whole rendition.</b> Packaging a rendition can't start until <i>all</i> 100 of its segments exist (the fan-in join). So if 99 segments finish in 3 s and segment 47 lands on a slow or flaky worker and takes 60 s, the entire rendition is stuck for 60 s — the pipeline moves at the speed of its slowest chunk. This is the classic <b>straggler</b> problem (Lesson 29/64). The fix leans directly on segments being <b>idempotent</b>: <b>speculative execution</b> — once most segments are done, re-issue the laggards on a second worker and take whichever output lands first. Because re-running a segment produces the identical bytes (Lesson 13), running it twice is harmless; you're spending a little extra compute to buy back tail latency. <span class="key">The trade named:</span> redundant compute vs the tail latency of a join — spend the first to shrink the second.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The fourth wall — the codec/quality ladder itself is a cost you're choosing, not a given.</b> Every rung and every codec you add multiplies both encode compute and storage. AV1 is ~35% smaller on the wire — a real CDN saving at scale (Lesson 14/59) — but costs several times more CPU to encode than H.264. A denser ladder streams more smoothly (the player has more rungs to pick from) but costs more to make and keep. So the ladder is a <b>portfolio decision</b>: encode the rungs and codecs your <i>actual audience's</i> devices and networks use, in the proportion they use them — not a maximal set "to be safe." A rung nobody selects is pure waste in both compute and storage; a codec your delivery volume can't amortize doesn't pay for its encode bill. <span class="key">The trade named:</span> delivery bandwidth &amp; playback smoothness (more/better renditions) vs the encode compute and storage to produce them — measured against who's really watching, on what.</p>
+</div>
+
+<p>So the honest picture of a media pipeline: one upload is a <i>storm</i> of work — <b>1,200 jobs</b> from a single 4K file — and the naive monolithic encode makes the viewer wait <b>~20 minutes</b> for what segment-level ordering delivers in <b>~8 seconds.</b> The move that unlocks everything is to stop treating the video as one file and cut it into keyframe-aligned <b>segments</b>: independent units of parallelism (thousands encode at once), priority (segment 0 first), resumability (a crash costs one chunk), and streaming (an ABR player's native unit). Arrange the jobs as a <b>DAG</b>, drain them through <b>priority lanes</b> so the waiting viewer beats the background backfill, and place each video in the <b>storage/compute/TTFP triangle</b> by how much it's watched — pre-encode the hot, JIT the cold, tier the rest. The first bottleneck is the fan-out flooding a shared fleet (→ lanes + autoscale on queue depth + backpressure, Lesson 27/28); around it, <b>storing every variant wastes a cold-tail fortune</b> (→ popularity-keyed hybrid + tiering, Lesson 2/39), <b>the package barrier lets one straggler block a rendition</b> (→ speculative execution on idempotent segments, Lesson 29/64/13), and <b>the ladder is a portfolio cost</b> you match to your real audience (→ delivery bytes vs encode compute, Lesson 14/59). Every choice names its price.</p>
+
+<p><span class="key">The deepest point: transcoding is one big number you can pay in three currencies — disk, CPU, or the viewer's patience — and the whole craft is deciding, per video and per rung, which currency to spend.</span> A hot video justifies spending <i>storage</i> (pre-encode the full ladder) to spend the least <i>patience</i> (instant play). A cold video justifies spending a little <i>patience</i> (a first-view JIT wait) to save <i>storage</i>. A launch-day burst justifies spending <i>patience</i> on background work (defer the backfill) to protect the patience of the person actually watching. Segmentation is what makes those trades <i>possible</i> — it turns one indivisible 20-minute job into a thousand tiny ones you can schedule, prioritize, resume, and place independently. Notice the whole thing is assembled from pieces you already own: object storage (L20), queues and visibility timeouts (L9), priority and backpressure (L28), autoscaling on the right signal (L27), idempotency (L13), resumable jobs (L70), the straggler/speculative-execution pattern (L29/64), popularity skew and caching (L2/48), and storage tiering (L39). The new idea is only the <i>framing</i>: a blob is not a unit of work — its segments are. The standing tension: <span class="key">storage vs compute vs time-to-first-play.</span></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>Monolithic encode makes the viewer wait 20 min</td><td>Segment + prioritize segment 0</td><td>~8s TTFP / manifest + keyframe overhead</td></tr>
+  <tr><td>One upload = 1,200 jobs on a shared fleet</td><td>Priority lanes + autoscale on queue depth (L27/28)</td><td>waiting viewer beats batch / defers background work</td></tr>
+  <tr><td>Bursts flood the encoder fleet</td><td>Backpressure + shed lowest rungs (L28)</td><td>nothing dropped, TTFP degrades gracefully / slower processing</td></tr>
+  <tr><td>Storing every variant for a cold tail</td><td>JIT transcode + popularity hybrid (L2/48/39)</td><td>saves ~300 PB / first-view wait + recompute on evict</td></tr>
+  <tr><td>Package barrier blocked by one slow segment</td><td>Speculative execution on idempotent segments (L29/64/13)</td><td>cuts tail latency / redundant compute</td></tr>
+  <tr><td>Crash mid-job restarts 20 min from zero</td><td>Deterministic paths + resume from last segment (L13/70)</td><td>a crash costs one chunk / bookkeeping per segment</td></tr>
+  <tr><td>More codecs/rungs = more cost</td><td>Match ladder to real audience (L14/59)</td><td>smaller CDN bill, smooth playback / encode + storage per rung</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — encoding the whole video before publishing.</b> A monolithic encode makes TTFP equal the full encode time (minutes to tens of minutes). Segment the video and publish segment 0 first; fill in the rest behind the playhead.</li>
+  <li><b>Trap 2 — one queue for everything.</b> A background back-catalog backfill and a viewer's segment 0 in the same FIFO means the viewer waits behind the batch. Separate priority lanes; interactive always wins.</li>
+  <li><b>Trap 3 — pre-encoding the full ladder for every video.</b> Views are ~90/1 skewed, so most variants are never watched — you warehouse a cold-tail fortune. Pre-encode hot content, JIT the cold tail, tier the storage.</li>
+  <li><b>Trap 4 — non-idempotent, non-resumable jobs.</b> A crash then restarts the whole encode from zero, and a straggler can't be safely duplicated. Make each segment's output path deterministic so re-runs are safe and cheap, and speculation is free of side effects.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We turned one 4K upload into a whole streaming ladder without melting the fleet or making the viewer wait. <b>Estimate</b> set the stakes: a single 10-minute 4K file fans out to <b>1,200 transcode jobs</b> (6 resolutions × 2 codecs × 100 segments), and encoded monolithically the 4K rung alone takes <b>~20 minutes</b> to first play — where segmenting and prioritizing segment 0 gets there in <b>~8 seconds</b> for the identical total work. <b>Model</b> gave the structure: a <b>DAG</b> (probe → split → 1,200 transcodes → package → publish) whose split is the fan-out and whose package is a barrier; <b>priority lanes</b> (interactive / standard / background) so the waiting viewer beats the batch; and the <b>storage/compute/TTFP triangle</b> resolved per-video by popularity — pre-encode the hot, JIT the cold, tier the rest. <b>Tracing</b> showed an upload live in ~8 s, a 10× burst that defers background work but never drops it (autoscale on queue depth, backpressure), a cold video's first viewer served by JIT-and-cache, and a crashed worker that re-runs one idempotent segment instead of a whole movie. The <b>first bottleneck</b>: the fan-out floods a shared encoder fleet (→ lanes + autoscale + backpressure, L27/28); around it, <b>storing every variant wastes ~300 PB on a tail nobody watches</b> (→ popularity hybrid + tiering, L2/39), <b>the package barrier lets one straggler block a rendition</b> (→ speculative execution on idempotent segments, L29/64/13), and <b>the codec ladder is a portfolio cost</b> matched to the real audience (→ delivery bytes vs encode compute, L14/59). The deepest point: transcoding is one big number paid in three currencies — disk, CPU, or the viewer's patience — and segmentation is what lets you choose which to spend, per video and per rung. The standing tension: <span class="key">storage vs compute vs time-to-first-play.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we just leaned hard on "make it once, then cache it" (JIT + CDN). Now open the cache itself: when you have layers of them, what does a write do?</b></p>
+  <p style="margin:.2rem 0">• <b>Multi-level caching — write-through vs write-back (Lesson 78):</b> a cache hierarchy (a local in-process cache, then Redis, then the CDN). On a write, do you push it all the way down synchronously (<b>write-through</b>: safe, slow), acknowledge fast and flush later (<b>write-back</b>: fast, loses data on crash), or skip the cache on writes entirely (<b>write-around</b>)? Plus keeping the tiers <b>coherent</b> so a stale layer doesn't serve yesterday's value. Trade: read/write latency vs durability &amp; coherence.</p>
+  <p style="margin:.2rem 0">Say <b>next</b> and we'll trace one write down three cache layers and watch where it can lie to you.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">transcode</span>
+    <span class="pill">rendition / variant</span>
+    <span class="pill">ABR ladder</span>
+    <span class="pill">codec (H.264 / AV1)</span>
+    <span class="pill">keyframe / GOP</span>
+    <span class="pill">segment / chunk</span>
+    <span class="pill">DAG</span>
+    <span class="pill">fan-out</span>
+    <span class="pill">priority lane</span>
+    <span class="pill">time-to-first-play</span>
+    <span class="pill">JIT transcoding</span>
+    <span class="pill">idempotent / resumable job</span>
+    <span class="pill">straggler / speculative execution</span>
+    <span class="pill">packaging / manifest</span>
+  </p>
+  <p>That's Lesson 77. It builds on: Lesson 20 (object storage — where the upload and every rendition live), Lesson 9 (message queues — the job queue, visibility timeout, and the lanes that carry the fan-out), Lesson 28 (backpressure &amp; load shedding — protecting interactive work and shedding the lowest rungs under load), Lesson 27 (autoscaling — sizing the encoder fleet on queue depth, the leading signal), Lesson 13 (idempotency — deterministic output paths that make re-runs and speculation safe), Lesson 70 (resumable jobs — resume from the last finished segment, not from zero), Lesson 29/64 (the straggler / speculative-execution pattern from batch and stream processing), Lesson 2 (read skew — why 90% of views hit 1% of videos and the cold tail is mostly unwatched), Lesson 48 (caching &amp; invalidation — JIT-and-cache the cold rendition), Lesson 39 (tiered storage — hot/warm/cold for the bytes), and Lesson 14/59 (CDN &amp; cost — why AV1's smaller bytes are worth its heavier encode). <b>Ask me follow-ups</b> — e.g. "how do you pick the segment length and the ABR ladder for a real audience?", "how does per-title encoding tune bitrate per video instead of a fixed ladder?", "how would you do near-live (low-latency) transcoding where the source is still arriving?", "how do you decide the JIT vs pre-encode cutover by popularity?", or "how do you keep the manifest and segments consistent while a rendition is still filling in?" When you're ready, say <b>next</b> and we'll trace a write down three cache layers.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "A creator uploads a 10-minute 4K video. Encoded the naive way — a whole rendition end-to-end before publishing — the 4K copy takes ~20 minutes before anyone can press play. What change gets time-to-first-play down to seconds without doing less total work?",
+    options: [
+      {t:"Cut the video into short keyframe-aligned segments (e.g. 100 × 6s), then encode and publish segment 0 of one sane rendition FIRST, letting the remaining segments fill in behind the playhead. To start playback you only need the first chunk — a 6s segment at 720p is ~3s of CPU — so TTFP drops to ~8s. The remaining segments encode in parallel; the player only needs to stay a few seconds ahead. The total work is unchanged; it's reordered so the piece the viewer needs first is made first.",
+       ok:true,
+       fb:"Exactly. Segmenting turns one indivisible 20-minute job into a thousand tiny independent ones, so you can make the first-needed piece first. Same total compute, radically better latency — and the same segments also give you parallelism, resumability, and ABR streaming."},
+      {t:"Buy faster machines so the monolithic 4K encode finishes in 2 minutes instead of 20.",
+       ok:false,
+       fb:"Faster hardware helps the bill but not the fundamental shape: you're still encoding the whole rendition before publishing, so TTFP is still the full (now shorter) encode time — minutes, not seconds. And it does nothing for the OTHER problems (a crash still restarts from zero, you still can't parallelize across a fleet). The win comes from segmenting, which also unlocks resumability and streaming."},
+      {t:"Encode only the 240p rendition first since it's the fastest, and skip the higher resolutions entirely.",
+       ok:false,
+       fb:"Dropping the higher rungs isn't 'the same total work' — it's a worse product (no HD for anyone), and it still encodes the chosen rendition monolithically, so a 10-minute 240p is still minutes to first play. The fix isn't fewer renditions; it's segmenting so segment 0 of a reasonable rung publishes in seconds while the full ladder fills in behind it."}
+    ]
+  },
+  {
+    stem: "Your encoder fleet runs both viewer-facing work (segment 0 of new uploads, JIT renditions someone is watching) and a huge background job re-encoding the entire back-catalog to AV1. Viewers start seeing multi-second spinners. What's the core fix?",
+    options: [
+      {t:"Put the work in separate PRIORITY LANES — interactive (viewer-waiting), standard, background — and have workers always drain the urgent lane first. The AV1 backfill is 'background': it should wait behind a viewer's segment 0, not the other way around. Size the fleet by autoscaling on QUEUE DEPTH (the leading signal; CPU is already pegged), and under real overload apply backpressure — defer or shed the lowest rungs — so nothing is dropped, just deferred.",
+       ok:true,
+       fb:"Right. A single FIFO lets a million-video backfill starve the segment 0 a person is waiting on — classic priority inversion. Lanes make the waiting viewer always win; autoscaling on queue depth and backpressure keep the whole thing from tipping over under a burst."},
+      {t:"Pause the AV1 backfill completely until traffic is low, then resume it overnight.",
+       ok:false,
+       fb:"That's a manual, brittle version of the real fix and it under-uses the fleet: whenever there's spare capacity during the day, background work SHOULD run — it just must yield instantly to interactive work. Priority lanes give you exactly that automatically, without a human deciding when to pause. Pausing also doesn't help a burst of genuine viewer work."},
+      {t:"Give every job the same priority but make the queue LIFO so the newest jobs run first.",
+       ok:false,
+       fb:"LIFO doesn't distinguish a viewer's segment 0 from a background backfill chunk enqueued a moment later — urgency isn't about arrival order. A fresh background job would still jump ahead of a slightly older viewer-waiting job. You need lanes that encode ACTUAL priority (who is waiting), not a reordering of one undifferentiated queue."}
+    ]
+  },
+  {
+    stem: "You have 100M videos. Views are heavily skewed — ~90% of views hit ~1% of videos. Should you pre-transcode the full ABR ladder for every upload and store it?",
+    options: [
+      {t:"No — pre-encoding the full ladder for all 100M videos is ~300 PB of renditions, and with that skew ~99M videos are cold, so almost all of it is stored and never streamed. Use a popularity-keyed hybrid: pre-encode the top rungs for hot content (instant play where people actually watch), JIT-transcode the cold tail on first request and cache it (pay compute only when asked), and tier the bytes hot/warm/cold. You place each video in the storage/compute/latency triangle by how much it's watched.",
+       ok:true,
+       fb:"Exactly. Storage, compute, and time-to-first-play are three currencies; the skew means the cold tail shouldn't spend storage it'll never earn back. Hot videos justify pre-encoding (spend storage to save patience); cold ones justify JIT (spend a little patience to save storage)."},
+      {t:"Yes — always pre-encode everything, because storage is cheap and you never want a viewer to wait for a transcode.",
+       ok:false,
+       fb:"At 100M videos 'cheap storage' still adds up to ~300 PB of renditions that are almost never streamed — you're paying to warehouse a cold tail nobody watches. And you don't need instant play on a video no one requests. Pre-encode where views justify it; JIT the tail. Storage is cheap per GB but not free at catalog scale."},
+      {t:"No — JIT-transcode EVERYTHING on demand and never pre-encode, so you only ever spend compute on what's actually watched.",
+       ok:false,
+       fb:"The opposite extreme is also wrong: JIT-everything makes every viewer of a POPULAR video wait for an encode, and re-burns compute every time a cache evicts a hot rendition. The point isn't to pick a corner of the triangle — it's to place each video by popularity: pre-encode hot, JIT cold. A blanket policy loses either way."}
+    ]
+  },
+  {
+    stem: "Packaging a rendition can't start until all 100 of its segments are encoded (a fan-in barrier). 99 finish in ~3s but segment 47 lands on a slow worker and takes 60s, stalling the whole rendition. What's the clean fix, and why is it safe?",
+    options: [
+      {t:"Speculative execution: once most segments are done, re-issue the laggard(s) on a second worker and take whichever output lands first. It's safe because each segment's output is written to a deterministic path and re-encoding the same input produces the same bytes (idempotent), so running segment 47 twice is harmless — you just spend a little redundant compute to buy back the tail latency of the join.",
+       ok:true,
+       fb:"Right. This is the straggler pattern from batch/stream processing (L29/64): the barrier moves at the speed of its slowest chunk, so you duplicate the stragglers. Idempotent, deterministically-named segment outputs are exactly what make that duplication free of side effects."},
+      {t:"Skip segment 47 and publish the rendition with a 6-second gap where it should be; most viewers won't notice a brief glitch.",
+       ok:false,
+       fb:"A missing segment isn't a cosmetic glitch — the player stalls or errors at that point, and the manifest references a segment that doesn't exist. You can't publish an incomplete rendition. The barrier is real; the fix is to make the slow segment finish sooner (speculation), not to ship a hole."},
+      {t:"Remove the package barrier by letting packaging run on whatever segments happen to be ready, re-running it repeatedly as more arrive.",
+       ok:false,
+       fb:"Repeatedly re-packaging churns work and can publish manifests that point at not-yet-existing segments, which breaks playback — the barrier exists precisely because a rendition needs all its parts. The right move keeps the barrier but attacks the CAUSE (the straggler) with speculative re-execution, which idempotent segments make safe."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

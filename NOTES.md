@@ -1550,10 +1550,16 @@
     L17). Deepest point: "up" ≠ "useful"; resilience = a SPECTRUM of degraded-but-serving states, not one
     all-or-nothing switch — drop the garnish, keep the meal — built from pieces already owned (L7/17/28/34/42/51).
     Trade: availability of the core vs completeness of the experience. (Lesson 0076)
-77. Blob/media processing pipelines (transcoding at scale) — one uploaded 4K video (L20 object storage) fanned into
-    every resolution/codec/thumbnail: a DAG of transcode jobs, priority queues (viewer-waiting vs background), the
-    cost of re-encoding vs storing all variants, and idempotent/resumable jobs (L70). Trade: storage vs compute vs
-    time-to-first-play.
+77. ✅ **Blob/media processing pipelines (transcoding at scale)** — one 10-min 4K upload (~3.3 GB, L20 object storage)
+    fanned into an ABR ladder (6 resolutions × 2 codecs × 100 6-s segments = 1,200 transcode jobs): the estimate shows
+    monolithic encoding = ~20 min TTFP vs ~8 s if you segment + publish segment 0 first (same total work, reordered).
+    The segment is the unit of parallelism/priority/resumability/streaming (keyframe-aligned). Model = a DAG
+    (probe→split→transcodes→package→publish) drained through priority lanes (interactive vs background); the
+    storage/compute/TTFP triangle resolved per-video by popularity (pre-encode hot, JIT the cold tail + cache, tier).
+    First bottleneck = fan-out floods a shared encoder fleet → lanes + autoscale on queue depth + backpressure
+    (L27/28); walls = storing every variant wastes ~300 PB on the cold tail (L2/39/48), the package barrier lets one
+    straggler block a rendition → speculative execution on idempotent segments (L29/64/13), the codec ladder is a
+    portfolio cost matched to the real audience (L14/59). Trade: storage vs compute vs time-to-first-play. (Lesson 0077)
 78. Multi-level & write-through vs write-back caching — a cache hierarchy (L1/L2 CPU-style, then Redis, then CDN):
     write-through (safe, slow) vs write-back (fast, loses data on crash) vs write-around, cache coherence across the
     tiers, and the inclusion/exclusion trade. Reuses L2/48 invalidation. Trade: read/write latency vs durability &
