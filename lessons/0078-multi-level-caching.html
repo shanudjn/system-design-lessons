@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 78 — Multi-Level Caching: One Write Down Three Layers</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 78 · Worked Example</div>
+  <h1>Multi-Level Caching: One Write Down Three Layers</h1>
+  <p class="lead">Lesson 2 taught us <i>one</i> cache in front of the database. Real systems stack several: a tiny <b>in-process</b> cache living inside each app server (nanoseconds away), a shared <b>Redis</b> tier every server can reach (half a millisecond away), the <b>database</b> that is the actual truth (ten milliseconds away), and a <b>CDN</b> at the edge for anything public (Lesson 14). Reads are easy — you fall down the layers until something answers, and the picture from Lesson 2 mostly holds. The hard question is the one nobody asks until it bites: <span class="key">when a value <i>changes</i>, what does a write do?</span> Push it all the way down to the database before you say "done" (<b>write-through</b>: safe, slow)? Acknowledge instantly and flush to the database later (<b>write-back</b>: fast, loses data on a crash)? Or skip the cache entirely on writes (<b>write-around</b>)? We open on the number that makes this real: a "viewers watching now" counter ticking <b>2,000 times a second</b> on one hot product — write it through and you've just aimed 2,000 writes/sec at a single database row (Lesson 6's hot-row wall); write it back and it's <b>one</b> write per second, 2,000× fewer, at the price of losing up to a second of counts if the box dies. We'll <b>estimate</b> the latency of the layered read and the cost of each write policy. We'll <b>model</b> the hierarchy and the three write policies as one decision. We'll <b>trace</b> a price change, a hot counter, a crash, and a bulk import through the stack. And we'll find <span class="key">the first bottleneck: coherence — two hundred app servers each holding their own copy, and a write that updates the database but leaves 199 of them serving yesterday's price.</span> The trade under all of it: <b>read/write latency vs durability &amp; coherence.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0078-multi-level-caching.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>An e-commerce site. <b>50 million products</b>, a fleet of <b>200 app servers</b> (Lesson 27) serving <b>40,000 page-reads/second</b>. Two kinds of data flow through the same product page and behave nothing alike. A <b>price</b> is read constantly and written rarely, and it must be <i>correct</i> — showing a customer the wrong price is a real problem. A <b>"viewers watching now" counter</b> is written furiously — thousands of increments a second on a hot item — and if we lose a few of those counts nobody is harmed. Our job: put a <b>cache hierarchy</b> in front of the database so reads are fast, and decide, for each kind of write, <span class="key">how far down the stack the write must travel before we call it done</span> — because that one choice sets the write's latency, its durability if a machine crashes, and whether every server agrees on the current value. The adversary here isn't an attacker; it's <i>staleness</i> — a copy of the truth that quietly stopped being true.</p>
+
+<div class="diagram"><pre>
+  THE CACHE HIERARCHY  (fast+small at top, slow+true at bottom)
+
+   READ falls DOWN until something answers      WRITE must decide how FAR down to go
+   -------------------------------------->      &lt;-------------------------------------
+
+   [ L1  in-process cache ]  ~100 ns   per-server, NOT shared -> 200 copies
+        |  miss                                   ^  the coherence problem lives here
+        v                                         |
+   [ L2  Redis (shared)   ]  ~0.5 ms   one copy, every server sees it
+        |  miss                                   ^
+        v                                         |
+   [     Database (truth) ]  ~10 ms    durable, the source of truth
+        |
+        v
+   [ CDN edge ]  (L14) sits in FRONT of all this for PUBLIC reads
+
+   Write-through: write reaches the DB before we ACK        (safe, slow)
+   Write-back:    write stops at the cache, DB flushed later (fast, lossy)
+   Write-around:  write goes straight to the DB, skip cache  (no pollution)
+</pre></div>
+
+<p class="note"><span class="key">The one idea the whole lesson turns on:</span> a cache is a <i>copy</i> of the truth, and every copy can be wrong. Reads only ever <i>read</i> copies, so a stale copy costs you a wrong answer. But a <b>write changes the truth</b>, and now every copy of the old value is a lie waiting to be served. So the entire design is: <b>how many copies do we keep, and what does a write do to all of them?</b> Write-through, write-back, and write-around are three answers to "how far down does the write go before we say done" — and the coherence machinery (TTLs, invalidation) is the answer to "how do the <i>other</i> copies find out." Everything below is those two questions, made concrete.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Cache tier / level (L1, L2)</b> — one layer of cache. <b>L1</b> = the fastest, smallest, closest (here, in-process). <b>L2</b> = larger, slightly slower, shared (here, Redis). The names come from CPU caches, where the same idea was invented.</li>
+  <li><b>In-process cache</b> — a cache living <i>inside</i> the app server's own memory (a hash map). Nanoseconds to read, but each server has its own — so 200 servers = 200 independent copies.</li>
+  <li><b>Backing store / origin / source of truth</b> — the layer a cache sits in front of and defers to. Here the database. The one copy that is, by definition, correct.</li>
+  <li><b>Hit ratio</b> — fraction of reads a tier answers itself (Lesson 2). A tier's job is to raise its own hit ratio so the slower tier below is rarely touched.</li>
+  <li><b>Write-through</b> — a write updates the cache <i>and</i> the backing store synchronously; you don't acknowledge until the truth is updated. Safe, but you pay the slow tier's latency on every write.</li>
+  <li><b>Write-back (write-behind)</b> — a write updates only the cache, marks the entry <b>dirty</b>, acknowledges immediately, and <b>flushes</b> to the backing store later (batched/async). Fast, and it coalesces repeat writes — but un-flushed data dies with the cache.</li>
+  <li><b>Write-around</b> — a write goes straight to the backing store and <i>skips</i> the cache (the stale entry is invalidated). Avoids filling the cache with data that won't be read soon.</li>
+  <li><b>Dirty entry</b> — a cached value that has been changed but not yet written to the backing store. Only exists under write-back. It's the data you lose in a crash.</li>
+  <li><b>Flush</b> — writing dirty entries down to the backing store, on a timer or a threshold.</li>
+  <li><b>RPO (recovery point objective)</b> — how much recent data you're willing to lose in a crash, measured in time. Write-back's flush interval <i>is</i> your RPO.</li>
+  <li><b>Cache coherence</b> — all copies of a value agreeing. Broken the instant one copy changes and the others don't hear about it.</li>
+  <li><b>Invalidation</b> — telling a cache "this entry is stale, drop it" so the next read re-fetches the truth (Lesson 2/48). <b>Pub/sub invalidation</b> = broadcasting that message to every server's L1.</li>
+  <li><b>TTL (time-to-live)</b> — an expiry stamped on a cache entry; after it, the entry is discarded and re-fetched. A crude, automatic coherence knob.</li>
+  <li><b>Inclusive vs exclusive</b> — whether an item in L1 is <i>also</i> kept in L2 (inclusive: simple, duplicated) or lives in exactly one tier (exclusive: more total capacity, more complex).</li>
+</ul>
+
+<h2>Move 1 — Estimate: the layered read, and the price of each write</h2>
+<p>Three numbers set everything: how fast the layered read is, how much slower write-through is than write-back, and how many writes write-back can swallow before touching the database.</p>
+
+<div class="card calc">
+  <p><b>The read: falling down the layers.</b> Rough per-tier latencies in one datacenter: <code>L1 ≈ 100 ns = 0.0001 ms</code>, <code>Redis ≈ 0.5 ms</code>, <code>DB ≈ 10 ms</code>. Suppose L1 answers 90% of reads, Redis answers 90% of the rest, and the database catches the last sliver. The <b>average read latency</b> is each tier's latency weighted by how often you reach it:</p>
+  <ul>
+    <li><code>0.90 × 0.0001 = 0.00009 ms</code> &nbsp;(L1 hits)</li>
+    <li><code>0.09 × 0.5&nbsp;&nbsp;&nbsp; = 0.045 ms</code> &nbsp;(fall to Redis)</li>
+    <li><code>0.01 × 10&nbsp;&nbsp;&nbsp;&nbsp; = 0.100 ms</code> &nbsp;(fall to the DB)</li>
+    <li><b>Total ≈ 0.145 ms</b> per read, versus <b>10 ms</b> if every read hit the database raw — a <b>~69× speed-up</b>, and the database sees only <b>1%</b> of the read traffic (400 reads/s instead of 40,000).</li>
+  </ul>
+  <p><span class="key">Notice where the time goes:</span> the 1% of reads that reach the database contribute 0.100 ms — more than <i>two-thirds</i> of the average, from one-in-a-hundred reads. That's the tail (Lesson 17): each tier exists to shrink how often you pay the tier below it.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The write: how far down decides the latency.</b> The same tier latencies, but now a write must reach some depth before we acknowledge:</p>
+  <table>
+    <tr><th>Policy</th><th>Write reaches…</th><th>Ack latency</th><th>On crash</th></tr>
+    <tr><td><b>Write-through</b></td><td>Redis + DB, synchronously</td><td><code>0.5 + 10 ≈ <b>10.5 ms</b></code></td><td>nothing lost — DB is current</td></tr>
+    <tr><td><b>Write-back</b></td><td>Redis only; DB flushed later</td><td><code>≈ <b>0.5 ms</b></code> (21× faster)</td><td>un-flushed writes lost</td></tr>
+    <tr><td><b>Write-around</b></td><td>DB only; cache skipped</td><td><code>≈ <b>10 ms</b></code></td><td>nothing lost; next read misses</td></tr>
+  </table>
+  <p>Write-back is <b>~21× faster to acknowledge</b> than write-through, and that gap is the entire reason it exists — <span class="key">but the speed is borrowed against durability</span>, and the loan comes due in a crash.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The coalescing win: 2,000 writes become 1.</b> Take the "viewers watching now" counter on one hot product during a flash sale — <b>2,000 increments/second</b>. Under <b>write-through</b>, that's 2,000 writes/second hammering a <i>single database row</i> — exactly Lesson 6's hot-row wall, and no amount of caching in front helps because you insisted every write reach the bottom. Under <b>write-back</b>, the increments accumulate in Redis and we <b>flush the current value once per second</b>: the database sees <code>1 write/second</code> for that row — <b>2,000× fewer writes</b> — and the value it stores is just as correct one second later. Write-back didn't only make writes faster; it <b>collapsed 2,000 writes into 1</b> because a counter written twice before a flush only needs its final value persisted. <span class="key">The trade named:</span> we traded <b>up to one second of durability</b> (a crash loses that second's un-flushed increments) for surviving a write rate the database physically could not.</p>
+</div>
+
+<h2>Move 2 — Model: the hierarchy, and three answers to "how far down?"</h2>
+
+<h3>Why more than one cache tier at all?</h3>
+<div class="card calc">
+  <p>Each tier fixes a weakness of the one below and inherits a weakness of its own:</p>
+  <ul>
+    <li><b>L1 (in-process)</b> is the fastest — a memory read, no network, ~100 ns — and it takes load off Redis. Its weakness is the whole lesson: it is <b>per-server and not shared</b>, so 200 servers hold 200 independent copies that can disagree. It's also small (you can't fit 50M products in each server's heap), so it holds only the hottest keys.</li>
+    <li><b>L2 (Redis)</b> is <b>shared</b> — one logical copy every server reads, so it's the tier where "the cached value" is unambiguous — and big enough for a broad working set. Its weakness is a network hop (~0.5 ms) and being a hot dependency of its own (shard/replicate it, Lesson 4/6).</li>
+    <li><b>DB</b> is the truth: durable, correct, and slow. Its weakness is that it can't take 40,000 reads/second cheaply — which is why the tiers above exist.</li>
+    <li><b>CDN</b> (Lesson 14) sits in <i>front</i> of everything for <i>public, identical-for-everyone</i> responses (a product image, a cacheable page fragment), absorbing reads before they ever reach your datacenter.</li>
+  </ul>
+  <p><span class="key">The trade named:</span> each tier you add buys latency and offload but adds <b>one more copy to keep coherent.</b> More tiers = faster reads and less load below, paid for in more places the truth can go stale.</p>
+</div>
+
+<h3>The three write policies, as one decision</h3>
+<div class="card calc">
+  <p>Reads (from Lesson 2) come in two flavours — <b>cache-aside</b> (the app checks the cache, and on a miss loads from the DB and fills the cache) and <b>read-through</b> (the cache loads on a miss itself). Both just <i>populate</i> copies. The interesting choice is on the <b>write</b>, and it's a single question — <span class="key">how far down must the write travel before we acknowledge, and does the cache get the new value or just lose the old one?</span></p>
+  <table>
+    <tr><th>Policy</th><th>What it does</th><th>Buys</th><th>Costs</th><th>Use when</th></tr>
+    <tr><td><b>Write-through</b></td><td>update cache + DB together, ack after the DB</td><td>the truth is always current; no data loss; cache stays warm &amp; correct</td><td>every write pays the DB's latency; can't absorb write bursts on a hot row</td><td>correctness-critical, read-soon data: <b>prices</b>, profiles, balances</td></tr>
+    <tr><td><b>Write-back</b></td><td>update cache only, mark dirty, ack now, flush to DB later</td><td>tiny write latency; coalesces repeat writes (2,000→1); absorbs bursts</td><td>a crash loses un-flushed writes (RPO = flush interval); coherence is harder (truth is only in the cache)</td><td>high-frequency, loss-tolerant, reconstructable: <b>counters</b>, metrics, "last seen"</td></tr>
+    <tr><td><b>Write-around</b></td><td>write straight to the DB, skip/invalidate the cache</td><td>doesn't pollute the cache with data that won't be read; the DB is current</td><td>the just-written value is a guaranteed cache <b>miss</b> on its first read</td><td>write-once-read-rarely, or bulk writes: <b>imports</b>, logs, archival records</td></tr>
+  </table>
+  <p>These aren't global settings — you pick <b>per kind of data</b>. Our one product page uses write-through for the price and write-back for the counter, in the same request. <span class="key">The through-line:</span> write-through spends latency to buy durability; write-back spends durability to buy latency; write-around spends a first-read miss to buy a clean cache.</p>
+</div>
+
+<p class="note why"><b>Why write-back is dangerous in a way write-through never is:</b> under write-through the database is always at least as fresh as the cache, so the cache is a pure <i>accelerator</i> — lose it entirely and you've lost nothing but speed (Lesson 26's "make the fast path disposable"). Under write-back the cache briefly holds the <b>only</b> copy of the newest truth. It has stopped being an accelerator and become, for those dirty entries, the <i>source of truth</i> — an <b>un-replicated, in-memory</b> source of truth. That is why write-back is right for a view counter (lose a second of counts, shrug) and catastrophic for a bank balance (lose a deposit). The trade named: <span class="key">write latency vs durability</span> — and the currency you spend is "how much recent truth am I willing to have existed only in volatile memory."</p>
+
+<h3>Inclusive or exclusive: is an L1 entry also in L2?</h3>
+<div class="card calc">
+  <p>One more structural choice. When L1 caches a product, does L2 <i>also</i> keep it (<b>inclusive</b>), or does an item live in exactly one tier (<b>exclusive</b>)?</p>
+  <ul>
+    <li><b>Inclusive</b> — everything in L1 is also in L2. Simple: L2 is a superset, so evicting from L2 also means invalidating L1, and coherence logic has one clear place to hook. The cost is <b>duplication</b> — the hottest keys sit in both tiers, so your total distinct cached set is smaller than the raw capacity suggests.</li>
+    <li><b>Exclusive</b> — an item is in L1 <i>or</i> L2, never both. The two tiers' capacities <b>add up</b> to more distinct keys cached, which matters when memory is scarce. The cost is complexity: promoting/demoting items between tiers, and coherence has to reason about "which tier is it in right now."</li>
+  </ul>
+  <p><span class="key">The trade named:</span> effective cache capacity vs coherence simplicity. At our scale L1 is tiny (a few thousand hot keys per server) and L2 is huge, so the duplication is negligible and <b>inclusive wins</b> — we take the simpler coherence story. When the tiers are comparable in size (classic CPU L1/L2/L3), exclusivity's capacity gain is worth its complexity.</p>
+</div>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Follow four situations down the stack: a price change (write-through), a hot counter (write-back), a crash mid-flush, and a bulk import (write-around).</p>
+
+<h3>Path A — a price change, write-through</h3>
+<div class="diagram"><pre>
+   Merchant drops product #42 from $80 -> $60.
+   [1] App WRITES the DB (10 ms): truth is now $60. Durable.
+   [2] App WRITES Redis ($60): shared tier now current.
+   [3] ACK the merchant (~10.5 ms total). Slow, but the truth
+         and the shared copy agree, and NOTHING can be lost.
+   ...but 200 app servers still hold $80 in their L1 caches. (!)
+   [4] Publish "invalidate product:42" on Redis pub/sub ->
+         every server drops its L1 entry -> next read re-fetches $60.
+   Latency paid on the write; correctness bought. The price is
+     never allowed to exist only in volatile memory.
+</pre></div>
+
+<h3>Path B — the "viewers now" counter, write-back</h3>
+<div class="diagram"><pre>
+   Flash sale: product #42's counter ticks 2,000x/second.
+   [1] Each increment updates Redis ONLY (INCR, ~0.5 ms), acks now.
+         The Redis entry is "dirty": ahead of the DB.
+   [2] A flusher writes the CURRENT value to the DB once/second.
+         DB sees 1 write/s for this row, not 2,000 (L6 hot row dodged).
+   [3] Reads serve the live Redis value; the DB is up to ~1 s behind,
+         which for a "watching now" number is invisible.
+   RPO = 1 s: if Redis loses this key before a flush, up to a
+     second of increments vanish -- and nobody is harmed.
+</pre></div>
+
+<h3>Path C — a crash mid-flush (the write-back bill comes due)</h3>
+<div class="diagram"><pre>
+   A Redis node holding dirty counters dies at t = 0.7 s,
+     0.7 s after the last flush.
+     - Counters: ~0.7 s of increments across the dirty keys are
+       GONE. Correct call: these are reconstructable / loss-OK,
+       so we shrug. RPO honored.
+     - Had we (wrongly) put PRICES on write-back: a price change
+       in that 0.7 s window would VANISH -- DB still shows $80,
+       merchant thinks it's $60. That is why prices are write-through.
+   Shrink the blast radius WITHOUT going full write-through:
+     - replicate the cache (a hot standby has the dirty data), and/or
+     - append dirty writes to a small durable log before ack, and/or
+     - flush more often (smaller RPO) at the cost of more DB writes.
+   The dial: how much recent truth may live only in memory.
+</pre></div>
+
+<h3>Path D — a nightly catalog import, write-around</h3>
+<div class="diagram"><pre>
+   An overnight job rewrites 5,000,000 product descriptions.
+   Write-through here would be a disaster: it'd shove 5M rarely-read
+     descriptions into the cache, EVICTING the hot prices/counters
+     real traffic needs (cache pollution).
+   Write-AROUND: the job writes only the DB and INVALIDATES each
+     touched key (drop any stale copy). The cache is left holding
+     what's actually hot.
+   First read of an updated description = a miss -> load from DB ->
+     cache it. Fine: it's read rarely, so one miss is cheap, and
+     the hot working set was never disturbed.
+</pre></div>
+
+<p>Path A shows write-through buying correctness with latency — and hints at the wall: updating the DB and Redis still leaves 200 L1 copies stale. Path B is the coalescing headline: write-back turns an impossible write rate into a trivial one. Path C is the bill: write-back's speed was a loan against durability, and a crash calls it — survivable for counters, ruinous for prices, which is why the policy is chosen <i>per data type</i>. Path D shows write-around protecting the hot set from a bulk write that would otherwise evict it. <span class="key">Move 4 names the wall Path A exposed: keeping 200 private copies coherent.</span></p>
+
+<h2>Move 4 — Find the first bottleneck: coherence across per-server caches</h2>
+
+<div class="card calc">
+  <p><b>The first bottleneck — the L1 caches don't agree.</b> This is the wall the whole design bends around. Redis is one shared copy, so updating it is clean. But <b>each of the 200 app servers has its own in-process L1</b>, and a write that updates the DB and Redis <i>does not touch</i> those 200 private copies. Product #42 drops to $60; server #137's L1 still says $80 and will keep serving $80 to every customer who lands on it — until something tells it otherwise. Quantify the exposure: with a lazy <b>10-second TTL</b> as the only coherence mechanism, that stale price can be served for up to 10 seconds after the change, and at 40,000 reads/second a meaningful slice of traffic sees the wrong price in that window. Three ways to fix it, each a different point on one dial:</p>
+  <ul>
+    <li><b>Short TTL</b> — stamp L1 entries with, say, a 1–5 s expiry. Dead simple, no messaging, self-healing. But it's a blunt clock: it serves stale data for up to the TTL <i>and</i> re-fetches perfectly good entries the moment they expire (wasted loads). Freshness bounded by the TTL; you're always a little stale on purpose.</li>
+    <li><b>Pub/sub invalidation</b> — on every write, publish "key #42 changed" on a Redis channel; all 200 servers subscribe and evict their L1 entry within milliseconds (Lesson 26's push). Near-instant coherence, at the cost of a fan-out message per write and a new failure mode: a <b>dropped</b> invalidation leaves one server stale indefinitely (so you keep a modest TTL as a backstop — belt and suspenders).</li>
+    <li><b>Versioned keys</b> — never mutate <code>product:42</code>; write <code>product:42:v7</code> and bump a tiny version pointer. Readers that learn v7 can't be served a cached v6 (Lesson 14's immutable-URL trick). No invalidation race, but you must distribute the version and the old entries linger until evicted.</li>
+  </ul>
+  <p><span class="key">The trade named:</span> <b>freshness vs invalidation traffic &amp; complexity.</b> A pure TTL sends zero messages and is always a little stale; pub/sub is fresh but chatty and drop-sensitive; versioning sidesteps the race but adds a version to propagate. Most real stacks run <b>pub/sub for speed with a short TTL as a safety net</b> — the message makes you fresh, the TTL saves you when the message is lost.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — write-back's dirty data is un-replicated truth.</b> The moment you choose write-back, the newest value of a dirty key lives <i>only</i> in the cache's memory until the next flush, and a crash in that window loses it (Path C). The flush interval <b>is</b> your RPO. You don't fix this by abandoning write-back — you'd lose the 2,000×-write coalescing that made the hot counter possible. You shrink the blast radius: <b>replicate the cache</b> so a standby holds the dirty entries; <b>append dirty writes to a small durable log</b> before acking (a write-ahead log, so a restart replays them); or simply <b>flush more often</b> to trade a smaller RPO for more DB writes. And you reserve write-back for data whose loss is survivable or reconstructable — counters, metrics, session "last seen" — never money. <span class="key">The trade named:</span> write latency &amp; throughput vs the amount of recent truth you allow to exist only in volatile memory.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — a hot key expiring across tiers triggers a stampede.</b> Suppose a very hot product's entry expires (TTL) in Redis at the same instant across the board. Every one of the 200 servers misses L1, misses L2, and stampedes the database for the same key at once — Lesson 2's thundering herd and Lesson 48's invalidation race, now amplified by having <i>two</i> cache tiers that can miss together. One expensive DB read becomes a synchronized spike of hundreds. The fixes are the ones you already own: <b>single-flight / request coalescing</b> (only one loader fetches the key; the rest wait and share the result), <b>staggered/jittered TTLs</b> so keys don't expire in lockstep (Lesson 2), and <b>serve-stale-while-revalidate</b> (hand back the old value and refresh in the background rather than blocking). <span class="key">The trade named:</span> a tiny window of staleness (serve-stale) or a little coordination (single-flight) vs a correlated load spike on the tier below.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The fourth wall — every tier you add is another copy to keep coherent, including the CDN.</b> The hierarchy's speed comes from multiplying copies, and coherence cost grows with them. The CDN (Lesson 14) is the farthest, least controllable copy: you can't reliably reach into every edge PoP to mutate a value, so a price change that must show <i>immediately</i> can't live behind a long-TTL CDN entry. This is exactly Lesson 14's choice — <b>purge</b> (tell the CDN to drop the key: direct but eventually-consistent and stampede-prone) versus <b>versioned/immutable URLs</b> (change the URL so there's nothing to invalidate; the default for anything renameable). The general rule the whole lesson has been circling: <b>cache close and long-lived only what tolerates being stale; keep the volatile, must-be-exact values in fewer, nearer-to-truth tiers</b> (or version them). <span class="key">The trade named:</span> read latency &amp; offload (more tiers, longer TTLs) vs coherence effort and staleness risk (more copies to chase when the truth moves).</p>
+</div>
+
+<p>So the honest picture of a layered cache: reads are gloriously cheap — <b>~0.145 ms average</b>, the database touched on just <b>1%</b> of reads — because you stacked a per-server L1, a shared Redis L2, and a CDN in front of the truth. But every one of those copies is a lie the instant the truth changes, so the real design work is on the <b>write</b>. <b>Write-through</b> pays the database's ~10.5 ms on every write to keep the truth durable and current — the right call for a <b>price</b>. <b>Write-back</b> acks in ~0.5 ms and collapses <b>2,000 hot-row writes into 1</b>, at the price of losing up to a flush-interval of un-replicated truth in a crash — the right call for a <b>counter</b>, ruinous for money. <b>Write-around</b> skips the cache so a 5M-row import can't evict the hot working set. The first bottleneck is <b>coherence</b> — 200 private L1 copies a write doesn't touch (→ short TTL, pub/sub invalidation, or versioned keys, most stacks running pub/sub <i>with</i> a TTL backstop); around it, <b>write-back's dirty data is un-replicated truth</b> (→ replicate/log/flush-often, and never for money), <b>a synchronized cross-tier expiry stampedes the DB</b> (→ single-flight + jittered TTL + serve-stale, Lesson 2/48), and <b>the CDN is the farthest copy to keep coherent</b> (→ purge vs versioned URLs, Lesson 14). Every choice names its price.</p>
+
+<p><span class="key">The deepest point: a cache is a bet that the truth won't change before you read the copy again — and the whole craft of caching is managing what happens when that bet loses.</span> Reads are the easy half because a stale read costs one wrong answer; the write is the hard half because a write <i>invalidates every copy at once</i> and you must decide, for each kind of data, how urgently and how durably that change must propagate. Write-through, write-back, and write-around are three answers to "how far down does the write go before I'm done"; TTL, invalidation, and versioning are three answers to "how do the other copies find out." Notice the whole thing is assembled from pieces you already own: a single cache and its read policies (L2), invalidation and immutable URLs (L14/48), the hot-row write wall that forces coalescing (L6), the thundering herd and single-flight (L2), the disposable-fast-path idea that write-through embodies and write-back deliberately breaks (L26), and RPO/durability thinking (L7). The new idea is only the <i>stacking</i>: with more than one copy, "update the cache" stops being one action and becomes "decide how far the write travels, and how the copies you didn't touch will learn the truth moved." The standing tension: <span class="key">read/write latency vs durability &amp; coherence.</span></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>Database can't take 40k reads/s</td><td>Stack L1 + L2 + CDN in front (L2/14)</td><td>~0.145 ms reads, DB sees 1% / more copies to keep coherent</td></tr>
+  <tr><td>A price must never be lost or stale-durable</td><td>Write-through (ack after the DB)</td><td>always-current, durable truth / ~10.5 ms per write</td></tr>
+  <tr><td>2,000 writes/s on one hot row</td><td>Write-back + flush once/s (L6)</td><td>2,000→1 DB writes, ~0.5 ms ack / up to 1 s RPO on crash</td></tr>
+  <tr><td>A 5M-row import would evict the hot set</td><td>Write-around (skip the cache)</td><td>hot working set protected / first read is a miss</td></tr>
+  <tr><td>200 L1 copies a write didn't touch</td><td>Pub/sub invalidation + short-TTL backstop (L26/48)</td><td>coherent in ms / a message per write, drop-sensitive</td></tr>
+  <tr><td>Un-flushed write-back data lost in a crash</td><td>Replicate / log dirty entries / flush more often (L7)</td><td>smaller RPO / more DB writes or a standby to run</td></tr>
+  <tr><td>Hot key expires across both tiers at once</td><td>Single-flight + jittered TTL + serve-stale (L2/48)</td><td>no DB stampede / a sliver of staleness or coordination</td></tr>
+  <tr><td>The CDN copy can't be mutated in place</td><td>Purge vs versioned/immutable URLs (L14)</td><td>immediate-ish freshness / propagation cost or a version to distribute</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — write-back for data you can't afford to lose.</b> Un-flushed dirty entries live only in volatile memory; a crash erases them. Fine for a view counter, catastrophic for a price or a balance. Money and other must-not-vanish writes go write-through (or write-back with a durable log + replication).</li>
+  <li><b>Trap 2 — forgetting the per-server L1 copies exist.</b> Updating the DB and Redis feels complete, but 200 in-process caches still serve the old value until their TTL. Invalidate them (pub/sub) or bound them (short TTL) — ideally both.</li>
+  <li><b>Trap 3 — write-through on a hot row.</b> Insisting every increment reach the database turns a hot counter into 2,000 writes/s on one row (L6's wall). High-frequency, loss-tolerant writes want write-back's coalescing.</li>
+  <li><b>Trap 4 — polluting the cache with bulk or write-once data.</b> Write-through on a 5M-row import evicts the hot working set real traffic needs. Use write-around so rarely-read writes never displace the hot set.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We put a cache <i>hierarchy</i> in front of one database and made every write decide how far down it must travel. <b>Estimate</b> set the stakes: stacking a per-server L1 (~100 ns), a shared Redis L2 (~0.5 ms), and the DB (~10 ms) drops the average read to <b>~0.145 ms</b> and leaves the database only <b>1%</b> of read traffic; on the write side, write-through acks in <b>~10.5 ms</b> versus write-back's <b>~0.5 ms</b> — a 21× gap — and write-back collapses a <b>2,000 writes/s</b> hot counter into <b>1 write/s</b>. <b>Model</b> gave the structure: a hierarchy where each tier trades a weakness of the one below for one more copy to keep coherent, and three write policies as a single decision — write-through (spend latency, buy durability; for prices), write-back (spend durability, buy latency &amp; coalescing; for counters), write-around (spend a first-read miss, buy a clean cache; for imports) — plus the inclusive-vs-exclusive structural choice. <b>Tracing</b> showed a price change kept correct and durable, a hot counter surviving an impossible write rate, a crash that's a shrug for counters and would be ruin for prices, and a bulk import that leaves the hot set untouched. The <b>first bottleneck</b>: coherence across 200 private L1 copies (→ pub/sub invalidation with a short-TTL backstop, L26/48); around it, <b>write-back's dirty data is un-replicated truth</b> (→ replicate/log/flush-often, never for money, L7), <b>a synchronized cross-tier expiry stampedes the DB</b> (→ single-flight + jitter + serve-stale, L2/48), and <b>the CDN is the farthest copy to keep coherent</b> (→ purge vs versioned URLs, L14). The deepest point: a cache is a bet the truth won't change before you read the copy again, and caching is the craft of handling the moment that bet loses. The standing tension: <span class="key">read/write latency vs durability &amp; coherence.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we've been assuming the data lives on "the database," a single logical box. But at 50M products and 40k writes/s it doesn't fit on one machine. How do you split it, and split it <i>again</i> while it's serving live traffic?</b></p>
+  <p style="margin:.2rem 0">• <b>Sharding strategies &amp; resharding live (Lesson 79):</b> beyond L3/L4's hash ring — <b>directory-based</b> vs <b>range</b> vs <b>hash</b> sharding, the <b>resharding</b> problem (split a hot shard while serving traffic, the online-migration shape of L24), cross-shard queries and the <b>scatter-gather</b> tax (L19), and why the shard key is a one-way door. Trade: even load &amp; locality vs query flexibility.</p>
+  <p style="margin:.2rem 0">Say <b>next</b> and we'll trace a single hot shard being split in two without dropping a write.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">cache tier (L1/L2)</span>
+    <span class="pill">in-process cache</span>
+    <span class="pill">backing store / source of truth</span>
+    <span class="pill">hit ratio</span>
+    <span class="pill">write-through</span>
+    <span class="pill">write-back / write-behind</span>
+    <span class="pill">write-around</span>
+    <span class="pill">dirty entry</span>
+    <span class="pill">flush</span>
+    <span class="pill">RPO</span>
+    <span class="pill">cache coherence</span>
+    <span class="pill">invalidation (pub/sub)</span>
+    <span class="pill">TTL</span>
+    <span class="pill">inclusive vs exclusive</span>
+  </p>
+  <p>That's Lesson 78. It builds on: Lesson 2 (a single cache — hit ratio, TTL/eviction, read-through/cache-aside, the thundering herd and single-flight), Lesson 14 (CDN — the edge tier, purge vs versioned/immutable URLs, freshness vs speed), Lesson 48 (distributed caching &amp; invalidation — the race and pub/sub), Lesson 6 (the hot-row write wall that forces coalescing, and atomic increments), Lesson 26 (push-over-a-connection for invalidation, and "make the fast path disposable" — which write-through embodies and write-back breaks), Lesson 7 (durability/RPO thinking and backpressure), and Lesson 27 (the 200-server fleet each holding an L1). <b>Ask me follow-ups</b> — e.g. "how does a CPU's L1/L2/L3 cache handle this exact write-back/coherence problem in hardware (MESI)?", "how would you make write-back durable enough for money without giving up the coalescing?", "when is a short TTL actually better than pub/sub invalidation?", "how do you decide inclusive vs exclusive when the tiers are similar in size?", or "how does serve-stale-while-revalidate interact with write-through correctness?" When you're ready, say <b>next</b> and we'll split a hot shard live.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "A product page shows a PRICE (read constantly, written rarely, must be correct) and a 'viewers watching now' COUNTER (written ~2,000×/s on a hot item, losing a few counts is harmless). Which write policy fits each, and why?",
+    options: [
+      {t:"Price → write-through (update cache + DB synchronously, ack after the DB): correctness-critical data must never exist only in a volatile cache, and its low write rate makes the ~10.5 ms per write affordable. Counter → write-back (update the cache, ack now, flush to the DB once/second): 2,000 increments/s on one row would melt the DB under write-through (L6 hot row), and write-back coalesces them to ~1 DB write/s; losing up to a second of un-flushed counts in a crash is harmless.",
+       ok:true,
+       fb:"Exactly. The policy is chosen per DATA TYPE by the same trade both ways: the price spends latency to buy durability, the counter spends a little durability (RPO = flush interval) to buy latency AND survive a write rate the DB couldn't take. Same page, two policies."},
+      {t:"Both write-through, because write-through is always the safe default and safety should never be compromised.",
+       ok:false,
+       fb:"Write-through IS the safe default for the price — but forcing the counter through it aims 2,000 writes/second at a single database row, which is Lesson 6's hot-row wall. No cache in front helps, because you insisted every write reach the bottom. High-frequency, loss-tolerant writes need write-back's coalescing; 'always write-through' isn't safety, it's a melted database."},
+      {t:"Both write-back, because write-back has the lowest write latency and low latency is what users feel.",
+       ok:false,
+       fb:"Write-back is right for the counter but catastrophic for the price: under write-back the newest price would live ONLY in volatile cache memory until the next flush, so a crash could erase a price change entirely — the DB still shows the old price and nobody knows. Durability-critical data can't ride an un-replicated in-memory buffer. Latency isn't the only axis; durability is the one write-back trades away."}
+    ]
+  },
+  {
+    stem: "You update product #42's price in the database AND in shared Redis. Yet some customers still see the OLD price for several seconds. Nothing is 'wrong' with the DB or Redis. What's happening, and what's the standard fix?",
+    options: [
+      {t:"Each of the 200 app servers has its own in-process L1 cache, and your write touched the DB and Redis but NOT those 200 private copies — so a server whose L1 still holds the old price serves it until that entry's TTL expires. The standard fix is pub/sub invalidation: on the write, publish 'key #42 changed' on a channel every server subscribes to, so all 200 evict their L1 entry within milliseconds — kept honest by a short TTL as a backstop in case an invalidation message is dropped.",
+       ok:true,
+       fb:"Right — this is the coherence bottleneck the whole lesson bends around. A shared tier (Redis) is one copy and easy; per-server L1 caches are N copies a write doesn't reach. Pub/sub makes them fresh fast; the TTL backstop covers a lost message. Belt and suspenders."},
+      {t:"Redis is returning stale data because it hasn't finished replicating the write to its replicas; add a stronger consistency mode to Redis.",
+       ok:false,
+       fb:"The scenario says Redis IS updated — the stale reads aren't coming from Redis at all, they're coming from the app servers' own in-process L1 caches, which your write never touched. Hardening Redis fixes a layer that's already correct and leaves the 200 private copies exactly as stale. The fix has to reach L1: invalidate it or bound it with a TTL."},
+      {t:"The database write hasn't committed yet, so tune the DB to commit faster.",
+       ok:false,
+       fb:"If the DB write hadn't committed, Redis wouldn't have the new value either — but it does. The old price is being served by L1 caches holding a copy from before the change; commit speed is irrelevant. Coherence across the cache tiers, not DB commit latency, is the problem."}
+    ]
+  },
+  {
+    stem: "Your team runs a write-back cache for hot counters, flushing to the DB every 1 second. A cache node dies 0.7 s after its last flush. What actually happened, and what does it tell you about write-back?",
+    options: [
+      {t:"About 0.7 s of un-flushed increments (the 'dirty' data that lived only in the cache's memory) are permanently lost — which is acceptable BECAUSE these are counters whose loss is tolerable, so the ~1 s RPO is doing its job. The lesson: write-back's flush interval IS your recovery-point objective, so reserve it for reconstructable/loss-OK data, and shrink the blast radius (replicate the cache, log dirty writes durably before ack, or flush more often) rather than abandoning the coalescing that made the hot counter possible.",
+       ok:true,
+       fb:"Exactly. Under write-back the newest value of a dirty key is briefly un-replicated in-memory truth, so a crash's data loss is bounded by the flush interval. That's fine for counters and ruinous for money — the policy choice is really 'how much recent truth may live only in volatile memory,' and you can tighten it without giving up write-back entirely."},
+      {t:"Nothing was lost, because Redis is durable and always persists every write to disk before acknowledging.",
+       ok:false,
+       fb:"Write-back's entire point is to NOT push each write to durable storage synchronously — that's what makes it fast and lets it coalesce 2,000 writes into 1. The dirty increments since the last flush existed only in memory, so a crash loses them. If every write were durably persisted before ack, you'd have write-through and none of write-back's throughput win (or its risk)."},
+      {t:"This proves write-back is unsafe and should never be used; switch all writes to write-through.",
+       ok:false,
+       fb:"It proves write-back trades durability for latency/throughput — which is exactly right for counters and wrong for money, so you choose it per data type, not never. Switching the hot counter to write-through would put 2,000 writes/s back on one DB row (L6). The fix for the risk is to bound the RPO (replicate, log, flush more often) and only use write-back where the bounded loss is acceptable."}
+    ]
+  },
+  {
+    stem: "A nightly job rewrites 5,000,000 rarely-read product descriptions. If you run these updates write-through (into the cache and DB), what goes wrong, and what's the right policy?",
+    options: [
+      {t:"Write-through would shove 5M rarely-read descriptions into the cache, evicting the genuinely hot keys (prices, counters) that live traffic depends on — cache pollution that tanks your hit ratio right when the site is serving real users. Use write-around: write the descriptions straight to the DB and invalidate any stale cached copy, leaving the hot working set untouched. The first read of an updated description is a cache miss, but since it's read rarely that one miss is cheap.",
+       ok:true,
+       fb:"Right. Write-around exists precisely for write-once/read-rarely and bulk writes: you accept a first-read miss to avoid polluting the cache with data that won't be read soon. Forcing bulk writes through the cache evicts the hot set and is a classic self-inflicted latency spike."},
+      {t:"Nothing goes wrong — filling the cache with the new descriptions is good, because now those reads will be fast too.",
+       ok:false,
+       fb:"Those descriptions are read RARELY, so caching all 5M of them is mostly wasted space — and worse, they evict the hot prices and counters that are read constantly. You've spent your limited cache capacity on cold data and pushed the hot data back to the DB. A first-read miss on a rarely-read description is far cheaper than turning every hot read into a DB hit."},
+      {t:"Run it write-back so the 5M writes ack quickly and flush overnight.",
+       ok:false,
+       fb:"Write-back speeds the writes but STILL loads all 5M cold descriptions into the cache (they're written to the cache first), so it pollutes the hot working set just like write-through — plus it now risks losing un-flushed description updates on a crash for no benefit. The problem isn't write latency, it's cache pollution; write-around (skip the cache) is the policy that addresses it."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

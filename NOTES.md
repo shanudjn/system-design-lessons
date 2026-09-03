@@ -1560,10 +1560,26 @@
     (L27/28); walls = storing every variant wastes ~300 PB on the cold tail (L2/39/48), the package barrier lets one
     straggler block a rendition → speculative execution on idempotent segments (L29/64/13), the codec ladder is a
     portfolio cost matched to the real audience (L14/59). Trade: storage vs compute vs time-to-first-play. (Lesson 0077)
-78. Multi-level & write-through vs write-back caching — a cache hierarchy (L1/L2 CPU-style, then Redis, then CDN):
-    write-through (safe, slow) vs write-back (fast, loses data on crash) vs write-around, cache coherence across the
-    tiers, and the inclusion/exclusion trade. Reuses L2/48 invalidation. Trade: read/write latency vs durability &
-    coherence.
+78. ✅ **Multi-level & write-through vs write-back caching** — a product page with a PRICE (read-heavy, correctness-
+    critical) and a "viewers now" COUNTER (write-heavy, loss-tolerant) over a hierarchy: per-server in-process L1
+    (~100 ns, NOT shared → 200 copies), shared Redis L2 (~0.5 ms), DB truth (~10 ms), CDN edge in front (L14).
+    Estimate the layered read (0.9/0.09/0.01 hit split → 0.00009+0.045+0.100 = ~0.145 ms avg, ~69× vs 10 ms raw, DB
+    sees 1% = 400 rps) and the write policies as ONE decision "how far down before ACK": write-through (cache+DB sync,
+    ~10.5 ms → durable/current, but 2,000 incr/s on one row = L6 hot-row wall), write-back (cache-only, mark dirty,
+    ack ~0.5 ms=21×, flush 1/s → coalesces 2,000→1 DB writes, but un-flushed dirty data is un-replicated in-memory
+    TRUTH; flush interval = RPO; only for reconstructable/loss-OK data, NEVER money), write-around (DB-only, skip cache
+    → no pollution from a 5M-row import, first read misses). Inclusive (L1⊆L2, simple coherence, duplicated) vs
+    exclusive (one tier each, +capacity, complex) — inclusive wins when L1≪L2. Trace price (write-through +
+    invalidate), counter (write-back coalesce), crash-mid-flush (0.7s counters lost = shrug; prices would VANISH →
+    why per-type), bulk import (write-around, hot set untouched). First bottleneck = COHERENCE across 200 private L1
+    copies a write never touched → short TTL (blunt, self-healing) vs pub/sub invalidation (ms-fresh, drop-sensitive →
+    keep TTL backstop, L26) vs versioned keys (L14 immutable-URL, no race). Walls: write-back dirty = un-replicated
+    truth (→ replicate/durable-log/flush-often, L7 RPO), synchronized cross-tier expiry stampede (→ single-flight +
+    jitter + serve-stale, L2/48), CDN = farthest copy (→ purge vs versioned URLs, L14). Deepest point: a cache is a
+    bet the truth won't change before you read the copy again; the write invalidates every copy at once, so pick per
+    data-type how far/how durably the change propagates. Reuses L2 (single cache/herd/single-flight), L14/48
+    (invalidation/immutable URLs), L6 (hot-row/coalescing), L26 (push + disposable fast path), L7 (RPO). Trade:
+    read/write latency vs durability & coherence. (Lesson 0078)
 79. Sharding strategies & resharding live — beyond L3/L4: directory-based vs range vs hash sharding, the resharding
     problem (split a hot shard while serving traffic, L24 online-migration shape), cross-shard queries/joins and the
     scatter-gather tax (L19), and shard key choice as a one-way door. Trade: even load & locality vs query flexibility.
