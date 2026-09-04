@@ -1580,13 +1580,48 @@
     data-type how far/how durably the change propagates. Reuses L2 (single cache/herd/single-flight), L14/48
     (invalidation/immutable URLs), L6 (hot-row/coalescing), L26 (push + disposable fast path), L7 (RPO). Trade:
     read/write latency vs durability & coherence. (Lesson 0078)
-79. Sharding strategies & resharding live — beyond L3/L4: directory-based vs range vs hash sharding, the resharding
-    problem (split a hot shard while serving traffic, L24 online-migration shape), cross-shard queries/joins and the
-    scatter-gather tax (L19), and shard key choice as a one-way door. Trade: even load & locality vs query flexibility.
+79. ✅ **Sharding strategies & resharding live** — the orders table (10B rows / 10 TB / 40k writes/s, L12/25/29/78)
+    outgrows one node, so split it. Two SEPARATE ceilings (storage 10TB÷2TB=5, throughput 40k÷5k=8) → take the max +
+    headroom = 16 shards (625 GB & 2,500 w/s each). Three strategies as one question "given a key, which shard?": RANGE
+    (contiguous ranges → locality for scans, but sequential keys like order_id/created_at pile 100% of new writes on the
+    highest shard = built-in hotspot, L3/19), HASH (hash%N → even load, but destroys locality → range = scatter-gather,
+    AND %N moves ~16/17≈94% of rows to add a shard → consistent hashing L4 moves ~1/N), DIRECTORY (explicit key→shard
+    lookup → arbitrary/movable placement, but a lookup hop + a hot dependency/SPOF, L2/34). Shard key chosen against
+    cardinality + even distribution + the DOMINANT query all at once (they pull against each other = the headline trade).
+    Trace: (A) point read BY shard key → one shard, 16× capacity 1× latency; (B) query with NO shard key → scatter-gather
+    to all 16, latency=slowest (1-0.99^16≈15% hit a slow one, L17 tail), throughput=16× → fix by sharding on the filtered
+    field, a secondary copy sharded differently (L12/33), or the warehouse (L29); (C) split a hot shard LIVE = L24's
+    expand→dual-write→backfill→verify→cutover→contract on a whole range, two rules: dual-write ON *before* backfill (else
+    an in-flight write is lost on the new shard) + verify caught-up *before* cutover (keep old warm = instant rollback).
+    First bottleneck = resharding without dropping a write; walls = a single hot KEY no split can cool (sharding balances
+    RANGES not one key → decompose into sub-keys / replicate / cache, L6/21/78), cross-shard transactions lose atomicity
+    (→ co-locate the unit by shard key, else saga L32), shard key = a one-way door (change it = move 100% of data → choose
+    deliberately, soften with directory/secondary indexes L33). Deepest point: sharding makes many small DBs and asks you
+    to pretend they're one — the pretense holds ONLY for queries that name the shard key, which silently divides queries
+    into fast/one-shard vs slow/all-shards and transactions into atomic vs distributed, nearly permanently. Reuses L3
+    (two ceilings, hotspot, 94% move), L4 (consistent hashing), L24 (online migration + ordering rules), L19 (scatter-
+    gather/hot cell), L17 (tail amplification), L6/21 (hot-row/hot-key decomposition), L32 (cross-shard sagas), L33
+    (secondary copies via outbox/CDC), L29 (analytics to the warehouse). Trade: even load & locality vs query flexibility.
+    (Lesson 0079)
 80. Cost & performance of serialization formats — the wire format nobody estimates: JSON vs Protobuf/Avro vs Thrift,
     schema evolution (add/remove fields without breaking readers, L18/24), the CPU + bytes cost at 40k req/s, and
     zero-copy/columnar formats for analytics (L29). Trade: human-readability & flexibility vs size, speed & schema
     discipline.
+81. Backups, restore & point-in-time recovery — the drill nobody runs until it's too late: full vs incremental backups,
+    the WAL/binlog as a replay stream (L33/35), RPO vs RTO as two separate dials (L7/78), restoring a 10 TB sharded DB
+    (L79), and why an untested backup is not a backup. Trade: recovery guarantees vs storage & operational cost.
+82. Data modeling: normalization vs denormalization — one schema decision that ripples everywhere: 3NF for write
+    integrity vs denormalized/precomputed for read speed (L15/29), the read:write ratio as the deciding bet, embedding
+    vs referencing in document stores, and the update-anomaly tax. Trade: write correctness & storage vs read latency.
+83. Full-text & relevance pipelines end-to-end — beyond L12/16: analyzers/tokenizers, the index-build vs query-time
+    split, near-real-time indexing (L16/29 freshness), typo tolerance & synonyms, and faceted search over shards (L79).
+    Trade: index richness & freshness vs build cost & query latency.
+84. Graph & recommendation traversal at scale — "people you may know" over a billion-edge graph (L41): BFS fan-out
+    explosion, precompute vs traverse-at-read (L15), edge sharding & the supernode problem (L79 hot key), and offline
+    vs online candidate generation (L53). Trade: traversal freshness vs precompute cost.
+85. Multi-region data placement & residency — where a row is legally allowed to live: geo-partitioning by user home
+    region (L23/79), data-residency/GDPR constraints (L56), follow-the-sun latency (L14/23), and the cross-region join
+    tax. Trade: local latency & compliance vs global query simplicity.
 
 ## Lesson format conventions
 - Four reusable "moves" framing introduced in Lesson 01: estimate → model →

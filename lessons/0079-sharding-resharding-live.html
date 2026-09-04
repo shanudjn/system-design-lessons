@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 79 — Sharding &amp; Resharding Live: Splitting a Hot Shard Without Dropping a Write</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 79 · Worked Example</div>
+  <h1>Sharding &amp; Resharding Live: Splitting a Hot Shard Without Dropping a Write</h1>
+  <p class="lead">Every lesson so far has said "the database" as if it were one box. It isn't. Our orders table has grown to <b>10 billion rows</b> and takes <b>40,000 writes/second</b> at peak — more storage and more write traffic than any single machine can hold. Lesson 3 already showed us why (a single disk has a storage ceiling and a single node has a throughput ceiling — <i>two separate walls</i>) and hinted at the fix: <b>sharding</b>, splitting the data across many machines so each holds a slice. But splitting raises three questions Lesson 3 left open, and they are the whole lesson. First, <span class="key">how do you decide which row lives on which shard?</span> — <b>range</b> by key, <b>hash</b> of the key, or a <b>directory</b> that looks it up. Each buys something and costs something. Second, <span class="key">what happens when one shard gets too hot</span> and you must split it <i>again</i> — while it's serving live traffic, without losing a write? That's the online-migration problem of Lesson 24, now moving a whole shard. Third, <span class="key">what does a query that doesn't name the shard key cost?</span> — it becomes a <b>scatter-gather</b> across every shard (Lesson 19), and the bill is the tail. We'll <b>estimate</b> how many shards we need and why <code>% N</code> makes resharding a nightmare. We'll <b>model</b> the three strategies and the shard-key decision. We'll <b>trace</b> a point read, a scatter-gather, and a hot shard being split in two live. And we'll find <span class="key">the first bottleneck: resharding a live shard without dropping a write — and the shard key you can almost never take back.</span> The trade under all of it: <b>even load &amp; locality vs query flexibility.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0079-sharding-resharding-live.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>Keep the e-commerce site from Lesson 78. Its <b>orders</b> table (Lessons 12/25/29) now holds <b>10 billion orders</b> at ~1 KB each — <b>10 TB</b> — and takes <b>40,000 writes/second</b> at peak (Black Friday). One machine can't do this: a good OLTP node comfortably holds maybe <b>2 TB</b> and sustains maybe <b>5,000 writes/second</b> before it slows. So we <b>shard</b>: split the 10 TB across many nodes, each holding one slice (a <b>shard</b>), and route every read and write to the shard that owns its key. Our job is three decisions: <b>how to assign rows to shards</b> (the sharding strategy), <b>which column to shard on</b> (the shard key — a choice we'll see is nearly irreversible), and <b>how to split a shard that outgrows its node while it keeps serving traffic</b> (resharding, live). The adversary isn't an attacker; it's <i>skew</i> — the reality that traffic is never spread evenly, so one shard always ends up hotter than the rest.</p>
+
+<div class="diagram"><pre>
+  SHARDING: split ONE logical table across MANY nodes, route by KEY
+
+   client asks for order K
+        |
+        v
+   [ router: which shard owns K? ]   <- range | hash | directory decides this
+        |
+   -----+---------------------+----------------------+-----------
+        v                     v                      v
+   [ shard 0 ]           [ shard 1 ]     ...     [ shard 15 ]
+   625 GB, 2.5k w/s      625 GB, 2.5k w/s        625 GB, 2.5k w/s
+   keys A..            keys ..                   keys ..Z
+
+   Point read/write BY the shard key  -> touches ONE shard   (cheap)
+   Query NOT by the shard key         -> touches ALL shards  (scatter-gather)
+
+   HOT SHARD (skew) -> split it in two, LIVE:
+   [ shard 7  keys P..T ]  ==split==>  [ 7a P..R ]  +  [ 7b R..T ]
+                                        (dual-write -> backfill -> cutover)
+</pre></div>
+
+<p class="note"><span class="key">The one idea the whole lesson turns on:</span> sharding trades a <i>global</i> view for a <i>local</i> one. On one box, every row is reachable by every query at the same cost. The moment you split the data, a query is cheap only if it names the <b>shard key</b> (so the router sends it to one shard) and expensive if it doesn't (so it must ask every shard and merge). So the shard key isn't a storage detail — <b>it decides which of your queries are fast and which are scatter-gathers</b>, and because changing it means moving every row, you get to decide that essentially once. Everything below is: which strategy assigns keys to shards, what that does to load and to range queries, and how you split a shard when skew makes one too hot.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Shard (partition)</b> — one slice of a table, living on its own node, holding a disjoint subset of the rows. All shards together are the whole table.</li>
+  <li><b>Shard key (partition key)</b> — the column whose value decides which shard a row lives on. The router computes the shard from this value.</li>
+  <li><b>Router (routing layer)</b> — the component that, given a key, answers "which shard owns this?" It sits between the app and the shards.</li>
+  <li><b>Range sharding</b> — assign contiguous key ranges to shards (shard 0 = A–D, shard 1 = E–H, …). Keeps neighbours together.</li>
+  <li><b>Hash sharding</b> — assign a row to <code>hash(key) mod N</code>. Scatters neighbours evenly across shards.</li>
+  <li><b>Directory-based sharding</b> — a lookup table (the <b>directory</b>) that explicitly maps a key (or key range) to a shard. Placement is arbitrary and changeable.</li>
+  <li><b>Skew / hotspot</b> — uneven distribution: one shard getting far more data or traffic than its fair share. The thing sharding must survive, not the thing it eliminates.</li>
+  <li><b>Hot shard</b> — a shard whose load exceeds its node's ceiling because of skew. The trigger for resharding.</li>
+  <li><b>Resharding</b> — changing the number of shards or the key→shard mapping, usually by <b>splitting</b> a shard in two (or merging two into one), while the system serves live traffic.</li>
+  <li><b>Scatter-gather (fan-out query)</b> — a query with no shard key: the router sends it to <i>all</i> shards, then merges the partial results (Lesson 19). Cost grows with shard count and is bounded by the slowest shard.</li>
+  <li><b>Cross-shard query / transaction</b> — one that touches rows on more than one shard. Loses single-node atomicity (Lesson 32) and single-node speed.</li>
+  <li><b>Consistent hashing</b> — hashing keys and nodes onto a ring so adding a node moves only ~1/N of keys instead of ~all of them (Lesson 4). The fix for hash sharding's resharding pain.</li>
+</ul>
+
+<h2>Move 1 — Estimate: how many shards, and why <code>% N</code> is a trap</h2>
+<p>Two numbers set the shard count, and a third shows why the obvious hash scheme makes resharding almost impossible.</p>
+
+<div class="card calc">
+  <p><b>Two separate walls set the shard count</b> (Lesson 3's insight, made concrete). We size the fleet <i>twice</i> — once for storage, once for throughput — and take the larger, then add headroom.</p>
+  <ul>
+    <li><b>Storage wall:</b> <code>10 TB ÷ 2 TB per node = 5 shards</code> just to hold the data.</li>
+    <li><b>Throughput wall:</b> <code>40,000 writes/s ÷ 5,000 writes/s per node = 8 shards</code> just to take the write rate.</li>
+    <li>These are <i>independent</i> ceilings — one is bytes, the other is operations/second — so you take the <b>max (8)</b>, not the sum, and add headroom for skew and growth: call it <b>16 shards</b>. Each shard then holds <code>10 TB ÷ 16 ≈ 625 GB</code> and takes <code>40,000 ÷ 16 = 2,500 writes/s</code> — comfortably under both ceilings.</li>
+  </ul>
+  <p><span class="key">Why headroom, not exactly 8:</span> traffic is never even. If one shard runs 2× its fair share (very common), 8 shards would put it at 5,000 writes/s — right at the wall. Sizing to 16 leaves each shard at 2,500 with room for a hot one to run hot before it needs splitting.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Why <code>hash(key) % N</code> makes resharding a nightmare</b> (recap of Lesson 3, because it's the reason two of our three strategies exist). Say you shard by <code>hash(order_id) % 16</code>. It's perfectly even — but the day you add a 17th shard, the mapping becomes <code>% 17</code>, and almost every key now hashes to a different shard:</p>
+  <ul>
+    <li>A key stays put only if <code>hash % 16 == hash % 17</code>, which happens for roughly <b>1 in 17</b> keys.</li>
+    <li>So adding one shard <b>moves ~16/17 ≈ 94% of all rows</b> — <code>~9.4 TB</code> of data shuffled across the network to grow capacity by 6%. During the move, the mapping is ambiguous and reads can miss. This is Lesson 3's headline number, and it's why naive hash sharding is a one-time decision you dread revisiting.</li>
+    <li>The fix is <b>consistent hashing</b> (Lesson 4): put keys <i>and</i> nodes on a ring; adding a node steals only the arc between it and its neighbour — <code>~1/17 ≈ 6%</code> of keys move, not 94%. Same evenness, resharding you can actually do.</li>
+  </ul>
+  <p><span class="key">The trade named:</span> plain <code>% N</code> hashing buys dead-simple routing (a modulo, no lookup) at the cost of a catastrophic reshard; consistent hashing buys cheap resharding at the cost of a little more machinery (the ring, virtual nodes).</p>
+</div>
+
+<h2>Move 2 — Model: three ways to assign keys, and the key you can't take back</h2>
+
+<h3>The three sharding strategies, side by side</h3>
+<div class="card calc">
+  <p>Every strategy answers one question — <span class="key">given a key, which shard owns it?</span> — and the answer sets your load balance, your range-query cost, and how hard resharding is.</p>
+  <table>
+    <tr><th>Strategy</th><th>How it maps key→shard</th><th>Buys</th><th>Costs</th></tr>
+    <tr><td><b>Range</b></td><td>contiguous ranges (A–D → s0, E–H → s1)</td><td>range queries &amp; scans are local (neighbours together); easy to split a range in two</td><td><b>hotspots</b>: sequential keys (timestamps, auto-increment ids) all land on the newest shard → one hot shard, the rest idle</td></tr>
+    <tr><td><b>Hash</b></td><td><code>hash(key) mod N</code> (or on a ring)</td><td><b>even load</b> by construction; no hotspot from sequential keys</td><td>destroys locality — a range query hits <i>every</i> shard (scatter-gather); plain <code>% N</code> resharding moves ~94% of keys (→ consistent hashing)</td></tr>
+    <tr><td><b>Directory</b></td><td>an explicit lookup table: key/range → shard</td><td><b>maximum flexibility</b>: place any range anywhere, split a hot range, pin a big customer to its own shard</td><td>a lookup on every request (extra hop) and the directory is a hot dependency / SPOF (cache &amp; replicate it, L2/34)</td></tr>
+  </table>
+  <p><span class="key">The trade named, in one line:</span> range gives you <b>locality but risks hotspots</b>; hash gives you <b>even load but destroys locality</b>; directory gives you <b>flexibility but adds a lookup and a dependency</b>. Real systems often combine: hash <i>within</i> a directory (the directory maps ranges of a hash space to shards — that's essentially what consistent-hashing systems do), getting even load <i>and</i> movable placement.</p>
+</div>
+
+<p class="note why"><b>Why the range hotspot is so common it deserves its own warning:</b> the most natural shard keys are the most dangerous. Shard orders by <code>order_id</code> (auto-incrementing) or <code>created_at</code> (a timestamp) with <i>range</i> sharding, and every new order has a key larger than every old one — so <b>100% of new writes go to the single highest shard</b> while the other 15 sit idle. You sharded for 40k writes/s and still have one node taking all of them. This is Lesson 19's hot-cell problem and Lesson 3's hotspot in the orders table: sequential key + range sharding = a write hotspot by design. The fixes are to <b>hash the sequential key</b> (spread writes evenly, lose time-range locality) or shard by a naturally-spread key like <code>customer_id</code> instead.</p>
+
+<h3>The shard key: a one-way door</h3>
+<div class="card calc">
+  <p>The shard key is the single most consequential — and most permanent — choice here, because changing it means recomputing every row's location and physically moving essentially the whole table (the 94% move, but on purpose and for <i>all</i> the data). So pick it against three criteria at once:</p>
+  <ul>
+    <li><b>High cardinality</b> — many distinct values. Shard by <code>country</code> (≈200 values) and you can never have more than ~200 shards, with a few countries dwarfing the rest. Shard by <code>customer_id</code> (millions of values) and you can split as fine as you like.</li>
+    <li><b>Even distribution</b> — no single value carries a huge share of the data or traffic. A key where one value is 30% of writes gives you a hot shard no split can fix (that value can't be spread — the wall below).</li>
+    <li><b>Matches the dominant query</b> — the access pattern you do most often should name the shard key, so it's a single-shard lookup, not a scatter-gather. If your app almost always asks "orders for customer X," shard by <code>customer_id</code> and that query hits one shard.</li>
+  </ul>
+  <p>These pull against each other — the query you want local may not be the key that spreads evenly — and that tension <i>is</i> the lesson's headline trade: <span class="key">even load &amp; locality vs query flexibility.</span> Because you get to choose once, choose for the query you run a thousand times a second, not the one you run in a nightly report (send <i>that</i> to the warehouse, Lesson 29).</p>
+</div>
+
+<h2>Move 3 — Trace the paths</h2>
+<p>Follow three situations: a point read that names the shard key, a query that doesn't (scatter-gather), and — the hard one — a hot shard being split in two while it serves live traffic.</p>
+
+<h3>Path A — a point read by the shard key (the cheap, common case)</h3>
+<div class="diagram"><pre>
+   App asks: "get order for customer #8675309" (sharded by customer_id).
+   [1] Router hashes/looks up customer_id -> shard 7 owns it.
+   [2] Send the query to shard 7 ONLY. It scans its local index (L12).
+   [3] One shard answers in ~0.5 ms. Merge nothing. Done.
+   This is the WHOLE point of sharding: name the shard key and you
+     pay one shard's cost, not sixteen. 16x the capacity, 1x the latency.
+</pre></div>
+
+<h3>Path B — a query with no shard key (the scatter-gather tax)</h3>
+<div class="diagram"><pre>
+   App asks: "all orders with status = REFUNDED, newest 20" -- no shard key.
+   [1] Router can't narrow it: status isn't the shard key.
+   [2] Fan OUT the query to ALL 16 shards in parallel.
+   [3] Each returns its top 20 by date; the router GATHERS and merges,
+         re-sorts, keeps the global top 20.
+   The bill:
+     - LATENCY = the SLOWEST of 16 shards (tail amplification, L17).
+       If each shard is slow 1% of the time, P(>=1 slow) = 1 - 0.99^16
+       = ~15%: a query that hits a slow shard 15% of the time.
+     - THROUGHPUT = 16x load: one logical query = 16 physical queries.
+   Fixes: shard by the field you filter on (make it Path A), OR keep a
+     SECOND copy of the data sharded by status (a secondary index, L12,
+     kept in sync via the outbox/CDC of L33), OR send it to the
+     warehouse (L29) if it's an analytics question, not a live one.
+</pre></div>
+
+<h3>Path C — splitting a hot shard, live (the online migration)</h3>
+<div class="diagram"><pre>
+   Skew: shard 7 (customers P..T) has grown to 1.2 TB and 8,000 w/s --
+     3x its fair share, past the node's ceiling. Split it: P..T -> P..R + R..T.
+   The naive move (lock shard 7, copy half out, flip) = an outage: the
+     copy of ~600 GB @ 100 MB/s takes ~100 min, and writes are BLOCKED
+     the whole time (L24's table-lock trap, at shard scale).
+   Do it LIVE, as an online migration (L24 shape):
+   [1] EXPAND: provision new shard 7b (empty), owner of range R..T.
+   [2] DUAL-WRITE: every write to a key in R..T now goes to BOTH
+         shard 7 (old) AND 7b. Turn this ON *first* (before backfill).
+   [3] BACKFILL: copy existing R..T rows from 7 to 7b in the background --
+         batched, cursor-paged (L18), throttled on replica lag (L6).
+         ~600 GB / (10k rows/s) ~= a few hours; live traffic unaffected.
+   [4] VERIFY + CUTOVER: once 7b has caught up (row counts match, lag ~0),
+         flip the router: reads of R..T now go to 7b. Instant, reversible
+         (flip back to 7 if 7b misbehaves -- 7 is still current).
+   [5] CONTRACT: stop dual-writing R..T to shard 7; delete the moved rows
+         from 7. Shard 7 is now P..R only; 7b is R..T. Load halved on each.
+   Two ordering rules make it safe (L24): dual-write ON *before* backfill
+     (else a write during the copy is lost on 7b), and cut readers over
+     only *after* verifying 7b is caught up (keep 7 warm as rollback).
+</pre></div>
+
+<p>Path A is the reward: name the shard key and 16× the capacity costs 1× the latency. Path B is the tax: a query that doesn't name the shard key fans out to all 16 and pays the slowest one — the scatter-gather, and the reason the shard key must match your dominant query. Path C is the hard part and the reason range/directory sharding earn their keep: a hot shard has to be <i>split while it serves traffic</i>, and that's Lesson 24's expand → dual-write → backfill → cutover → contract, now moving a whole key range instead of a column. <span class="key">Move 4 names the wall Path C circles: doing that split without dropping a single write — and the shard key you chose in Move 2 that you can almost never change.</span></p>
+
+<h2>Move 4 — Find the first bottleneck: resharding live, and the one-way door</h2>
+
+<div class="card calc">
+  <p><b>The first bottleneck — resharding a live shard without dropping a write.</b> Growth and skew guarantee that some shard will outgrow its node, so splitting a shard while it serves traffic isn't a rare event — it's the operation your sharding scheme lives or dies by. The whole difficulty is the <b>window</b>: between "start copying shard 7's upper half to 7b" and "7b is the owner," writes keep arriving, and a write that lands in that window can be lost on the new shard if you copied its row a moment before the write and never told 7b. Lesson 24's parallel-change discipline is exactly the fix, and the two ordering rules are non-negotiable:</p>
+  <ul>
+    <li><b>Dual-write ON before backfill.</b> Turn on writing R–T to <i>both</i> shards first. Then backfill. Now any write during the copy is already on 7b (via the dual-write), so the backfill can safely skip or overwrite it — no gap. Reverse the order and a write that slips between "backfill copied this row" and "dual-write started" is lost on 7b forever.</li>
+    <li><b>Cut readers over only after verifying 7b is caught up</b>, and keep shard 7 warm and current as an instant rollback. If 7b is wrong, flip the router back — no data lost, because 7 never stopped being correct until you <i>contract</i>.</li>
+  </ul>
+  <p>The strategy you chose in Move 2 decides how painful this is: <b>range and directory</b> sharding split a range locally (just move R–T), and a directory makes the cutover a one-row change in the lookup table; <b>plain <code>% N</code> hash</b> can't split one shard at all — you'd re-hash everything (the 94% move), which is why real hash-sharded systems use <b>consistent hashing</b> (Lesson 4) so a split moves only the affected arc. <span class="key">The trade named:</span> the split's speed and safety vs the coordination it demands — dual-writes cost double writes and a verify step for the duration, buying you a reshard with zero dropped writes and an instant rollback.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — a single hot <i>key</i> that no split can fix.</b> Sharding balances <i>ranges</i> of keys across nodes. It does nothing for skew <i>within</i> a single key. If one celebrity seller's <code>customer_id</code> takes 8,000 writes/s by itself (Lesson 15's celebrity, Lesson 19's hot cell), splitting the shard doesn't help — that one key can't be in two places, so whichever shard owns it is still hot. You've hit the limit of "spread the keys": the problem is one key, not the key distribution. The fixes come from earlier lessons: <b>split the key itself</b> into sub-keys the app fans across shards (Lesson 6/21's sharded/approximate counter — write to <code>seller#42:shard{0..9}</code> and sum on read), <b>replicate</b> the hot key to many read replicas (Lesson 6) if it's read-hot, or <b>absorb it in a cache</b> (Lesson 78) if it tolerates staleness. <span class="key">The trade named:</span> a hot <i>range</i> is a sharding problem (split it); a hot <i>key</i> is an application-level problem (decompose it) — and confusing the two makes you reshard forever without ever cooling the key.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — cross-shard operations lose atomicity and speed.</b> On one box, "move $50 from Alice to Bob" is a single transaction. Shard by <code>customer_id</code> and Alice and Bob may be on different shards, so there's no single-node transaction to wrap both writes — you're back to Lesson 32's world (a <b>saga</b> with compensations, or 2PC's blocking locks). Likewise a query joining two tables sharded on different keys can't be a local join. Two mitigations: <b>co-locate related rows</b> by choosing a shard key that keeps them together (shard orders <i>and</i> line-items by the same <code>customer_id</code> so a customer's order + its items live on one shard — the join stays local), and accept that anything genuinely cross-shard pays the distributed-transaction tax. <span class="key">The trade named:</span> the shard key that co-locates your transactional unit keeps writes atomic and joins local, at the cost of flexibility for every <i>other</i> access pattern — which is, once more, even load &amp; locality vs query flexibility.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The fourth wall — the shard key is a one-way door.</b> Every wall above is really a consequence of one choice: the shard key. Chose <code>order_id</code> and now need "all orders for a customer" fast? That's a scatter-gather you can't cheapen without a second copy. Chose a low-cardinality key and now need more shards than it has values? You're stuck. And fixing it means re-sharding on a <i>new</i> key — moving the entire table, the 94% move for 100% of the data, the most expensive migration there is. That's why the shard key is decided against the dominant query, the cardinality, and the distribution <i>before</i> you shard, and revisited only under duress. The escape hatches soften but don't remove it: a <b>directory</b> lets you move ranges without re-hashing; <b>secondary indexes</b> (a second copy sharded by another key, kept in sync via Lesson 33's outbox/CDC) buy a second fast access path at the cost of storage and write amplification. <span class="key">The trade named:</span> commit to one shard key's fast paths now, or pay to maintain multiple copies sharded different ways — storage and consistency work vs query flexibility.</p>
+</div>
+
+<p>So the honest picture of a sharded table: reads and writes that <b>name the shard key</b> are gloriously cheap — one shard's cost for the whole fleet's capacity (Path A), which is why we could take 40k writes/s across 16 shards at 2,500 each. But the split into shards traded a global view for a local one, so <b>anything that doesn't name the shard key</b> either scatter-gathers across all 16 and pays the slowest (Path B), or needs a second copy sharded differently. The first bottleneck is <b>resharding a hot shard live</b> — survivable only via Lesson 24's dual-write → backfill → verify → cutover → contract, with dual-write-before-backfill and verify-before-cutover as the two rules that keep a single write from being lost (Path C). Around it: <b>a single hot key no split can cool</b> (→ decompose the key, L6/21), <b>cross-shard transactions and joins lose atomicity and locality</b> (→ co-locate the transactional unit, or pay the saga tax, L32), and <b>the shard key is a one-way door</b> (→ choose for cardinality + distribution + dominant query, soften with a directory or secondary indexes, L33). Every choice names its price.</p>
+
+<p><span class="key">The deepest point: sharding doesn't make one big database; it makes many small independent ones and asks you to pretend they're one — and the pretense holds only for queries that name the shard key.</span> On a single node, storage layout is invisible to the query: every row costs the same to reach. Split the data and the layout becomes the most important thing about the table — the shard key silently divides your queries into "fast, one shard" and "slow, all shards," divides your transactions into "atomic, one shard" and "distributed, needs a saga," and it does so nearly permanently. Notice the whole lesson is assembled from pieces you already own: the two ceilings and the hotspot (L3), consistent hashing for cheap resharding (L4), the online-migration discipline for splitting live (L24), scatter-gather and hot cells (L19), tail amplification across the fan-out (L17), the hot-key decomposition and hot-row coalescing (L6/21), cross-shard transactions as sagas (L32), and secondary copies kept in sync by the outbox (L33). The new idea is only that "the database" was a comfortable fiction, and the shard key is the line you draw through your data that decides, once, which of your questions stay cheap. The standing tension: <span class="key">even load &amp; locality vs query flexibility.</span></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>10 TB &amp; 40k writes/s exceed one node</td><td>Shard: size for storage AND throughput, take the max (L3)</td><td>16 shards, 625 GB &amp; 2,500 w/s each / a global table becomes many local ones</td></tr>
+  <tr><td>Sequential keys pile onto one shard</td><td>Hash the key, or shard by a spread key (range→hash)</td><td>even write load / lose time-range locality</td></tr>
+  <tr><td>Adding a shard moves ~94% of keys</td><td>Consistent hashing on a ring (L4)</td><td>a reshard moves ~1/N of keys / a ring + virtual nodes to run</td></tr>
+  <tr><td>Need to move/split ranges freely</td><td>Directory-based mapping</td><td>arbitrary, changeable placement / a lookup hop + a hot dependency</td></tr>
+  <tr><td>Query with no shard key</td><td>Scatter-gather, or a secondary copy (L12/33)</td><td>the query still runs / 16× load + slowest-shard tail, or storage to keep a 2nd copy in sync</td></tr>
+  <tr><td>A hot shard past its node's ceiling</td><td>Split it live: expand→dual-write→backfill→cutover→contract (L24)</td><td>load halved, zero dropped writes / double writes + a verify step for the duration</td></tr>
+  <tr><td>One hot key no split can cool</td><td>Decompose/replicate the key (L6/21), or cache it (L78)</td><td>the key's load spreads / app-level fan-out + merge-on-read</td></tr>
+  <tr><td>A transaction across two shards</td><td>Co-locate the unit by shard key, or a saga (L32)</td><td>atomic &amp; local when co-located / distributed-transaction tax otherwise</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — a sequential shard key with range sharding.</b> Sharding by <code>order_id</code> or <code>created_at</code> in ranges sends 100% of new writes to the highest shard while the rest idle — you bought N nodes and load one. Hash the key or shard by a naturally-spread field.</li>
+  <li><b>Trap 2 — backfilling before dual-writing.</b> Copy a shard's rows first and turn on dual-writes second, and every write that lands between "row copied" and "dual-write on" is lost on the new shard. Dual-write ON <i>before</i> backfill, always (L24).</li>
+  <li><b>Trap 3 — expecting a split to fix a hot key.</b> Splitting a shard balances key <i>ranges</i>, not a single scorching key. One celebrity key stays hot on whichever shard owns it; you must decompose or replicate the key itself (L6/21), not reshard.</li>
+  <li><b>Trap 4 — choosing the shard key for the wrong query.</b> Optimizing the shard key for a nightly report makes your thousand-per-second live query a scatter-gather. Shard for the dominant online access pattern; send analytics to the warehouse (L29).</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We took "the database" — a single logical box every lesson leaned on — and split it, because 10 TB and 40k writes/s clear no single node. <b>Estimate</b> set the shape: two independent ceilings (storage → 5, throughput → 8) taken as a max plus headroom → <b>16 shards</b> at 625 GB and 2,500 writes/s each, and the reason two of our three strategies exist — plain <code>hash % N</code> moves <b>~94% of rows</b> to add one shard, where consistent hashing moves ~1/N. <b>Model</b> gave the three strategies — <b>range</b> (locality, risks hotspots), <b>hash</b> (even load, destroys locality), <b>directory</b> (flexible, adds a lookup) — and the shard key chosen against cardinality, distribution, and the dominant query all at once. <b>Tracing</b> showed a point read hitting one shard, a shard-key-less query fanning out to all 16 and paying the slowest (~15% chance of a slow shard, 16× load), and a hot shard split in two live via expand → dual-write → backfill → verify → cutover → contract. The <b>first bottleneck</b>: resharding without dropping a write (→ dual-write-before-backfill, verify-before-cutover, L24); around it, <b>a hot key no split can cool</b> (→ decompose/replicate, L6/21), <b>cross-shard transactions lose atomicity</b> (→ co-locate or saga, L32), and <b>the shard key is a one-way door</b> (→ choose deliberately, soften with directory/secondary indexes, L33). The deepest point: sharding makes many small databases and asks you to pretend they're one, and the pretense holds only for queries that name the shard key. The standing tension: <span class="key">even load &amp; locality vs query flexibility.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we keep sending data over the network between shards, services, and clients (Path B merges 16 partial results; L33 ships events everywhere). What <i>format</i> are those bytes in, and what does the wrong choice cost at 40k req/s?</b></p>
+  <p style="margin:.2rem 0">• <b>Serialization formats &amp; the wire (Lesson 80):</b> the cost nobody estimates — <b>JSON</b> vs <b>Protobuf/Avro/Thrift</b>, <b>schema evolution</b> (add/remove fields without breaking readers, L18/24), the CPU + bytes bill at 40k req/s, and zero-copy/columnar formats for analytics (L29). Trade: human-readability &amp; flexibility vs size, speed &amp; schema discipline.</p>
+  <p style="margin:.2rem 0">Say <b>next</b> and we'll weigh the same message in JSON and Protobuf, byte for byte and CPU cycle for cycle.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">shard / partition</span>
+    <span class="pill">shard key</span>
+    <span class="pill">router</span>
+    <span class="pill">range sharding</span>
+    <span class="pill">hash sharding</span>
+    <span class="pill">directory-based sharding</span>
+    <span class="pill">skew / hotspot</span>
+    <span class="pill">hot shard</span>
+    <span class="pill">resharding (split)</span>
+    <span class="pill">scatter-gather</span>
+    <span class="pill">cross-shard query</span>
+    <span class="pill">consistent hashing</span>
+  </p>
+  <p>That's Lesson 79. It builds on: Lesson 3 (the two ceilings — storage vs throughput — hash vs range sharding, hotspots, and why <code>% N</code> moves ~94% of keys), Lesson 4 (consistent hashing — the ring, ~1/N moves, virtual nodes), Lesson 24 (online migration — expand → dual-write → backfill → cutover → contract, and the two ordering rules, applied here to a whole shard), Lesson 19 (scatter-gather and the hot cell), Lesson 17 (tail amplification across a fan-out), Lesson 6/21 (the hot-row wall and decomposing a hot key into sub-counters), Lesson 32 (cross-shard transactions as sagas), Lesson 33 (secondary copies kept in sync via outbox/CDC), and Lesson 29 (send analytics scatter-gathers to the warehouse). <b>Ask me follow-ups</b> — e.g. "how does a system like Vitess or DynamoDB actually decide when and how to split a shard automatically?", "what exactly does a secondary index sharded by a different key cost to keep consistent?", "how do you route a query when the directory itself is sharded or replicated?", "when is it worth re-sharding onto a brand-new shard key versus living with scatter-gathers?", or "how do co-located transactions interact with the resharding window in Path C?" When you're ready, say <b>next</b> and we'll put the same message on the wire in JSON and Protobuf.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "You shard the orders table by hashing an auto-incrementing order_id with hash(order_id) % 16. It's perfectly balanced today. Your capacity planner warns that adding a 17th shard will be painful. Why — and what fixes it?",
+    options: [
+      {t:"Under hash(key) % N, a key keeps its shard only when hash % 16 == hash % 17, which is true for ~1 in 17 keys — so adding one shard remaps ~16/17 ≈ 94% of all rows, shuffling ~9.4 TB across the network to grow capacity ~6%, with an ambiguous mapping (and missed reads) during the move. The fix is consistent hashing: put keys and nodes on a ring so a new node steals only its neighbour's arc — ~1/17 ≈ 6% of keys move, not 94% — keeping the even load while making resharding actually feasible.",
+       ok:true,
+       fb:"Exactly. Plain % N buys the simplest possible routing (a modulo, no lookup) and pays for it with a catastrophic reshard. Consistent hashing (L4) keeps the evenness but changes the geometry so growth moves ~1/N of keys instead of nearly all of them."},
+      {t:"The problem is that hashing destroys range locality, so 'newest 20 orders' becomes a scatter-gather. Switch to range sharding to fix the reshard cost.",
+       ok:false,
+       fb:"Hashing does destroy range locality — but that's a query-cost problem, not the reshard-cost problem the planner flagged. Range sharding would actually make adding a shard easier (split one range), but it reintroduces the hotspot the hash was chosen to avoid: an auto-incrementing order_id in ranges sends 100% of new writes to the highest shard. The specific fix for % N's reshard cost is consistent hashing, which keeps even load."},
+      {t:"There's no real problem — adding a shard just means the new one starts empty and fills up with new orders over time.",
+       ok:false,
+       fb:"That's how a directory or range scheme could behave, but not hash % N: changing N changes the divisor for EVERY key, so existing rows are now expected on different shards than where they physically sit. Until you move ~94% of them, reads compute the new shard and miss the data still living on the old one. The new shard doesn't 'just fill up' — the whole mapping shifted."}
+    ]
+  },
+  {
+    stem: "Shard 7 (customers P–T, sharded by customer_id) has grown to 1.2 TB and 8,000 writes/s — 3× its fair share and past the node's ceiling. You must split P–T into P–R and R–T while it serves live traffic. What's the correct order of operations, and which rule is non-negotiable?",
+    options: [
+      {t:"Provision empty shard 7b for R–T; turn ON dual-writing of R–T keys to BOTH shard 7 and 7b FIRST; then backfill existing R–T rows from 7 to 7b in throttled, cursor-paged batches; verify 7b has caught up (row counts match, lag ~0); flip the router so R–T reads go to 7b (keeping 7 warm as instant rollback); finally stop dual-writing and delete the moved rows from 7. The non-negotiable rule: dual-write ON before backfill — otherwise a write landing between 'row copied' and 'dual-write started' is lost on 7b forever.",
+       ok:true,
+       fb:"Right — this is L24's expand → dual-write → backfill → verify → cutover → contract, applied to a whole key range. Dual-write-before-backfill closes the gap where a live write could be missed; verify-before-cutover with shard 7 kept current gives an instant, lossless rollback."},
+      {t:"Lock shard 7 to stop writes, copy the R–T half to 7b so the snapshot is consistent, then unlock and flip the router. Locking guarantees you can't lose a write.",
+       ok:false,
+       fb:"Locking does prevent lost writes — by causing an outage. Copying ~600 GB at ~100 MB/s takes ~100 minutes, and writes to P–T are blocked the entire time (this is L24's table-lock trap at shard scale). The point of an online migration is to move data WITHOUT blocking traffic; you get lossless AND live by dual-writing before backfilling, not by locking."},
+      {t:"Backfill R–T to 7b first so it has all the data, then turn on dual-writes, then cut over. Doing the bulk copy first is more efficient.",
+       ok:false,
+       fb:"This is the classic trap. Any write that arrives after a given row is backfilled but before dual-writes are enabled updates only shard 7 — 7b never hears about it and is silently stale after cutover. The efficiency saving is illusory; correctness requires dual-write ON before backfill so every in-flight write is already captured on 7b."}
+    ]
+  },
+  {
+    stem: "After sharding orders by customer_id across 16 shards, one celebrity seller's account takes 8,000 writes/s all by itself, hammering whichever shard owns it. You try splitting that shard, but the hot account is still on one side and still overwhelms its node. What's actually going on, and what's the right fix?",
+    options: [
+      {t:"Sharding balances RANGES of keys across nodes; it does nothing for skew concentrated in a SINGLE key, because one key can't live on two shards — so any split just moves the hot key to one side, still hot. This is a hot-KEY problem, not a hot-range problem. Fix it at the application level: decompose the key into sub-keys the app fans across shards (write to seller#42:shard{0..9} and sum on read, L6/21's sharded counter), replicate it if it's read-hot (L6), or absorb it in a cache if it tolerates staleness (L78).",
+       ok:true,
+       fb:"Exactly. The distinction is the whole point: a hot RANGE is a sharding problem (split it), a hot KEY is an application problem (decompose it). Resharding forever won't cool a single scorching key — you have to break the key itself into pieces that CAN be spread."},
+      {t:"The shard key is wrong — reshard the entire table onto a different shard key so the celebrity's load spreads out.",
+       ok:false,
+       fb:"Re-sharding onto a new key is the most expensive migration there is (move 100% of the data), and it wouldn't help: whatever single-valued key identifies the celebrity's writes, all those writes still carry that one value and land together. The load is concentrated in one key's worth of traffic, not in a bad key distribution. You must decompose the key, not replace it."},
+      {t:"Just add more shards — with enough shards, the hot key's load will eventually be small relative to the total.",
+       ok:false,
+       fb:"Total capacity isn't the problem; concentration is. Adding shards spreads DIFFERENT keys across more nodes, but the celebrity's 8,000 writes/s all target one key and therefore one shard no matter how many shards exist. The single owning shard still takes the full 8,000/s. You have to split the key's traffic (sub-keys, replicas), which more shards alone never does."}
+    ]
+  },
+  {
+    stem: "Your app's dominant live query, run thousands of times a second, is 'get all orders for this customer.' A nightly report needs 'all refunded orders across everyone.' You can only choose one shard key. What should you shard on, and why?",
+    options: [
+      {t:"Shard by customer_id, so the thousand-per-second live query names the shard key and hits exactly one shard (a cheap point/range read). Let the nightly 'all refunded orders' query be a scatter-gather across all 16 shards — or better, send it to the analytics warehouse (L29) where cross-cutting scans belong. You optimize the shard key for the dominant ONLINE access pattern, because the shard key is a one-way door and a scatter-gather 15% slower once a night is far cheaper than one thousands of times a second.",
+       ok:true,
+       fb:"Right. The shard key divides queries into 'fast, one shard' and 'slow, all shards,' nearly permanently — so it must serve the query you run constantly, not the one you run nightly. Analytics scatter-gathers go to the warehouse; the live path stays single-shard."},
+      {t:"Shard by status (e.g. refunded/shipped/pending) so the nightly report is a single-shard query, since reports are what management cares about.",
+       ok:false,
+       fb:"status has tiny cardinality (a handful of values), so you could never have more than a few shards and one status would dominate — a built-in hotspot. Worse, it makes your thousands-per-second 'orders for a customer' query a full scatter-gather across all shards, because a customer's orders are scattered by status. You'd optimize the once-a-night query and cripple the constant one. Reports belong in the warehouse (L29)."},
+      {t:"Shard by a random UUID per row so load is perfectly even, then both queries work fine.",
+       ok:false,
+       fb:"A random key does spread load evenly, but neither query names it — 'orders for a customer' and 'all refunded orders' both become scatter-gathers across all 16 shards, paying the slowest-shard tail every time. Even load is necessary but not sufficient; the shard key must also MATCH your dominant query so that query hits one shard. customer_id gives you both even-ish load and a single-shard hot path."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
