@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 80 — Serialization Formats &amp; the Wire: The Same Message in JSON and Protobuf, Byte for Byte</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 80 · Worked Example</div>
+  <h1>Serialization Formats &amp; the Wire: The Same Message in JSON and Protobuf, Byte for Byte</h1>
+  <p class="lead">For seventy-nine lessons we've shipped bytes everywhere — a scatter-gather merges 16 partial results (L79), the outbox fans one order event out to search, cache, the warehouse, and notifications (L33), a request touches 20 services on its way to a page (L17). Every one of those arrows carries a <b>message</b>, and a message is a <span class="key">structure in memory</span> (an object with fields) that has to become a <span class="key">flat sequence of bytes</span> to travel down a socket, then become a structure again on the other side. That turning-into-bytes is <b>serialization</b>; the reverse is <b>deserialization</b>. We've never once asked what those bytes look like — we just said "send the message." This lesson asks the question nobody estimates: <span class="key">what <i>format</i> are the bytes in, and what does the wrong choice cost?</span> We'll take one concrete order event and write it out <b>byte for byte</b> in <b>JSON</b> (text, self-describing) and in <b>Protobuf</b> (binary, schema-driven), measure the size and CPU gap, and — the part that actually bites — trace what happens when you need to <b>add or remove a field</b> six months later without breaking the services that haven't redeployed yet (Lesson 18's contract, Lesson 24's expand/contract). We'll <b>estimate</b> the bytes and cycles at 40k req/s, <b>model</b> the four formats and how each survives change, <b>trace</b> an add, a remove, and a rename across a fleet mid-rollout, and find <span class="key">the first bottleneck: the schema is a distributed contract, and the compactness is paid for in the discipline of never breaking it.</span> The trade under all of it: <b>human-readability &amp; flexibility vs size, speed &amp; schema discipline.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0080-serialization-formats.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>Keep the e-commerce orders platform. When an order is placed, the service (L33's outbox) emits one <b>OrderPlaced</b> event that gets shipped to every downstream — search (L16), cache (L02), the warehouse (L29), and the notification path (L26) — and internal RPCs pass the same shape between services (L34). Here is the one message we'll trace, as an object in memory:</p>
+<div class="diagram"><pre>
+  OrderPlaced {
+     order_id     = 1234567890123   (a 64-bit integer)
+     customer_id  = 8675309         (a 64-bit integer)
+     amount_cents = 4999            (a 32-bit integer)
+     currency     = "USD"           (a 3-char string)
+     status       = PLACED          (one of a few known values)
+     created_at   = 1725500000      (a unix timestamp, 64-bit)
+  }
+</pre></div>
+<p>Our job: turn that object into bytes for the wire, and back. Two honest options sit at opposite ends. <b>JSON</b> writes it as human-readable text with the field names spelled out. <b>Protobuf</b> writes it as compact binary against a <i>schema</i> both sides agreed on ahead of time. We'll write out both, byte for byte, count them, count the CPU to parse them, and then — because a real system runs for years — change the message and watch which format survives the change. The adversary here isn't skew or an attacker; it's <b>time</b>: the message shape you ship today is not the shape you'll ship next year, and half your fleet will be running the old code when you change it.</p>
+
+<div class="diagram"><pre>
+  ONE object -> bytes -> the SAME object again, two ways:
+
+  JSON (text, self-describing):        Protobuf (binary, schema-driven):
+  {"order_id":1234567890123,           08 CB 89 EC 8F F7 23   <- field 1 (order_id)
+   "customer_id":8675309,              10 ED BF 91 04         <- field 2 (customer_id)
+   "amount_cents":4999,                18 87 27               <- field 3 (amount_cents)
+   "currency":"USD",                   22 03 55 53 44         <- field 4 ("USD")
+   "status":"PLACED",                  28 01                  <- field 5 (enum PLACED)
+   "created_at":1725500000}            30 E0 94 E4 B6 06      <- field 6 (created_at)
+
+  127 bytes                            28 bytes
+  field NAMES on the wire, every       field NUMBERS on the wire; the names
+  message ("amount_cents" = 12 bytes)  live in the schema, sent ZERO times
+</pre></div>
+
+<p class="note"><span class="key">The one idea the whole lesson turns on:</span> a serialization format is a bet about <i>where the schema lives</i>. JSON carries the schema <b>inside every message</b> — the field names are right there in the bytes, repeated on all 40,000 messages per second — so it needs no prior agreement and anyone can read it, but it's fat and slow and nothing checks that the fields mean what you think. Protobuf/Avro move the schema <b>out of the message</b> into a definition both sides hold ahead of time, so the wire carries only tiny field <i>numbers</i> and raw values — far smaller and faster — but now producer and consumer share a contract that must be evolved carefully and never broken. Everything below is that one trade made concrete: the bytes you save, the CPU you save, and the coordination you take on in return.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Serialization (marshalling)</b> — turning an in-memory structure (an object with fields) into a flat sequence of bytes that can travel over a network or be written to disk. <b>Deserialization</b> is the reverse.</li>
+  <li><b>Wire format</b> — the exact byte layout a serialized message takes on the network ("the wire"). What this lesson is about.</li>
+  <li><b>Schema</b> — the declared shape of a message: its fields, their names, their types. It exists whether or not you write it down; the question is <i>where</i> it lives.</li>
+  <li><b>Self-describing format</b> — one where the bytes carry their own field names/structure, so a reader needs no prior schema (JSON, XML). Flexible, verbose.</li>
+  <li><b>Schema-driven (binary) format</b> — one where the bytes carry only values + tiny field tags, and the field names/types live in a separate schema both sides hold (Protobuf, Avro, Thrift). Compact, fast, needs the schema.</li>
+  <li><b>Varint</b> — Protobuf's variable-length integer encoding: small numbers take 1 byte, big ones take more (7 value-bits per byte + 1 continuation bit). Why a binary int isn't always 8 bytes.</li>
+  <li><b>Field tag / field number</b> — in Protobuf, the small integer that identifies a field on the wire (not its name). The number, not the name, is the contract.</li>
+  <li><b>Wire type</b> — 3 bits in each Protobuf tag saying how to read the value that follows (varint, 64-bit, length-delimited, 32-bit). Lets a reader skip a field it doesn't recognize.</li>
+  <li><b>Schema evolution</b> — changing a message's shape over time (add/remove/rename fields) without breaking readers running the old or new version. The heart of the lesson.</li>
+  <li><b>Backward compatible</b> — a new reader can read old data. <b>Forward compatible</b> — an old reader can read new data (it tolerates fields it doesn't know). You usually need both during a rollout (L31).</li>
+  <li><b>Schema registry</b> — a central service holding versioned schemas (Avro's model), so a message can carry a tiny schema <i>id</i> instead of the whole schema.</li>
+  <li><b>Columnar / zero-copy format</b> — a layout (Parquet on disk, Arrow in memory) that stores values column-by-column and can be read without parsing rows, for analytics (L29). The opposite optimization from a row message.</li>
+</ul>
+
+<h2>Move 1 — Estimate: the bytes and the cycles</h2>
+<p>Two costs ride on the format choice — how many <b>bytes</b> cross the wire and how much <b>CPU</b> it takes to produce and parse them. Let's compute both for our one message, exactly.</p>
+
+<div class="card calc">
+  <p><b>JSON, byte for byte</b> (compact, no whitespace). Text encoding: every character is a byte, and every field name is spelled out in full.</p>
+  <table>
+    <tr><th>Piece</th><th>Bytes</th></tr>
+    <tr><td><code>"order_id":1234567890123</code></td><td>10 (name+quotes) + 1 (<code>:</code>) + 13 (digits) = <b>24</b></td></tr>
+    <tr><td><code>"customer_id":8675309</code></td><td>13 + 1 + 7 = <b>21</b></td></tr>
+    <tr><td><code>"amount_cents":4999</code></td><td>14 + 1 + 4 = <b>19</b></td></tr>
+    <tr><td><code>"currency":"USD"</code></td><td>10 + 1 + 5 = <b>16</b></td></tr>
+    <tr><td><code>"status":"PLACED"</code></td><td>8 + 1 + 8 = <b>17</b></td></tr>
+    <tr><td><code>"created_at":1725500000</code></td><td>12 + 1 + 10 = <b>23</b></td></tr>
+    <tr><td>5 commas + 2 braces</td><td><b>7</b></td></tr>
+    <tr><td><b>Total</b></td><td><b>127 bytes</b></td></tr>
+  </table>
+  <p><span class="key">Where the bytes go:</span> of 127 bytes, the field <i>names</i> alone are <code>8+11+12+8+6+10 = 55</code> bytes — <b>43% of the message is the same field names repeated on every single message</b>. The numbers are stored as their decimal text (<code>1234567890123</code> = 13 bytes) rather than as raw integers.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Protobuf, byte for byte.</b> Each field = a 1-byte <b>tag</b> (field number + wire type) then the value. Integers use <b>varints</b>: 7 value-bits per byte, so <code>bytes = ceil(bit-length / 7)</code>. No field names anywhere — the schema holds those.</p>
+  <table>
+    <tr><th>Field (number, type)</th><th>Tag</th><th>Value</th><th>Bytes</th></tr>
+    <tr><td>order_id (1, varint)</td><td>1</td><td>1,234,567,890,123 → 41 bits → ceil(41/7)=6</td><td><b>7</b></td></tr>
+    <tr><td>customer_id (2, varint)</td><td>1</td><td>8,675,309 → 24 bits → 4</td><td><b>5</b></td></tr>
+    <tr><td>amount_cents (3, varint)</td><td>1</td><td>4,999 → 13 bits → 2</td><td><b>3</b></td></tr>
+    <tr><td>currency (4, length-delimited)</td><td>1</td><td>1 (length=3) + 3 ("USD")</td><td><b>5</b></td></tr>
+    <tr><td>status (5, enum→varint)</td><td>1</td><td>PLACED = 1 → 1</td><td><b>2</b></td></tr>
+    <tr><td>created_at (6, varint)</td><td>1</td><td>1,725,500,000 → 31 bits → 5</td><td><b>6</b></td></tr>
+    <tr><td><b>Total</b></td><td colspan="2"></td><td><b>28 bytes</b></td></tr>
+  </table>
+  <p>Worked byte dump for <code>amount_cents = 4999</code>: tag = <code>(3&lt;&lt;3)|0 = 0x18</code>; varint of 4999 = <code>4999 = 39×128 + 7</code> → low byte <code>0x87</code> (7, continuation set) then <code>0x27</code> (39) → wire bytes <code>18 87 27</code>. Three bytes, and <b>the string "amount_cents" appears nowhere</b> — versus JSON's 19 bytes for the same field, 14 of them the name.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The size verdict:</b> <code>127 bytes ÷ 28 bytes ≈ 4.5×</code> smaller. The win comes from two places, both structural, not clever compression: (1) field <b>names</b> replaced by 1-byte <b>numbers</b> (the schema holds the names, sent zero times), and (2) numbers stored as raw <b>varints</b> instead of decimal <b>text</b>. At <b>40,000 messages/second</b>: JSON = <code>127 × 40,000 ≈ 5.1 MB/s ≈ 440 GB/day</code>; Protobuf = <code>28 × 40,000 ≈ 1.1 MB/s ≈ 97 GB/day</code> — <b>~343 GB/day less</b> on this one event stream, before you multiply by the fan-out (L33 ships each event to ~4 consumers; L17 crosses ~20 hops).</p>
+</div>
+
+<div class="card calc">
+  <p><b>The CPU cost — the one people forget.</b> Bytes are cheap; the cycles to <i>make</i> and <i>read</i> them are not. Parsing JSON means scanning every byte, matching field-name strings, allocating objects, and converting <code>"1234567890123"</code> (text) into a 64-bit integer — all branchy, allocation-heavy work. Protobuf reads a tag, knows the type, and copies the value; no text scanning, far fewer allocations. In microbenchmarks a small message like this round-trips (serialize + parse) on the order of <b>~3 µs in JSON vs ~0.4 µs in Protobuf — roughly 7× less CPU</b> (order-of-magnitude; exact numbers depend on library and language, but the ratio is robust). Put it on the request path of L17's 20 hops, where the message is serialized and parsed at each hop:</p>
+  <ul>
+    <li>JSON: <code>20 hops × 3 µs = 60 µs</code> of pure marshalling CPU per request. At 40k req/s: <code>40,000 × 60 µs = 2.4 s of CPU per second ≈ 2.4 cores</code> doing nothing but turning objects into text and back.</li>
+    <li>Protobuf: <code>20 × 0.4 µs = 8 µs</code> per request → <code>40,000 × 8 µs = 0.32 cores</code>.</li>
+    <li>Difference: <b>~2 cores</b> reclaimed on this path alone (L59's cost lens), and — because marshalling sits on the hot path — lower <b>tail latency</b> (L17): fewer allocations means fewer GC pauses spiking p99.</li>
+  </ul>
+  <p><span class="key">The trade named:</span> JSON spends bytes and cycles to buy the ability for any human or tool to read the message with no schema; Protobuf spends a shared schema to buy back the bytes and cycles. Neither is "faster" in the abstract — the question is whether you're paying for readability you actually use.</p>
+</div>
+
+<h2>Move 2 — Model: four formats, and how each survives a change</h2>
+
+<h3>The four formats, side by side</h3>
+<div class="card calc">
+  <p>Every format answers two questions: <span class="key">where does the schema live?</span> and <span class="key">how does a message change over time without breaking readers?</span></p>
+  <table>
+    <tr><th>Format</th><th>Schema lives…</th><th>Buys</th><th>Costs</th></tr>
+    <tr><td><b>JSON</b> (text)</td><td>in every message (field names on the wire)</td><td>human-readable, no prior agreement, any tool can parse it, flexible</td><td>largest &amp; slowest; no type checking; the contract is implicit &amp; unenforced</td></tr>
+    <tr><td><b>Protobuf</b> (binary)</td><td>a shared <code>.proto</code> file compiled into both sides</td><td>compact, fast, typed; field <i>numbers</i> make add/skip safe</td><td>opaque bytes (need the schema to read); must never reuse/retype a field number</td></tr>
+    <tr><td><b>Avro</b> (binary)</td><td>separately, referenced by id via a <b>schema registry</b></td><td>tiny per-record overhead (no tags at all); great for big data files &amp; streams (L09/29); explicit reader/writer schema resolution</td><td>needs the registry as a dependency; can't read a record without its writer schema</td></tr>
+    <tr><td><b>Thrift</b> (binary)</td><td>a shared IDL, like Protobuf</td><td>similar compactness; bundles an RPC framework</td><td>same schema-coordination cost as Protobuf</td></tr>
+  </table>
+  <p><span class="key">The trade named, in one line:</span> JSON puts the schema in the message (readable, fat); Protobuf/Thrift put it in a shared file (compact, needs both sides to compile it); Avro puts it in a registry (smallest records, needs the registry). Text formats optimize for the human and the unknown reader; binary formats optimize for the machine and the known reader.</p>
+</div>
+
+<h3>How a binary format skips what it doesn't know — the forward-compat trick</h3>
+<div class="card calc">
+  <p>The reason you can add a field without breaking old readers lives in Protobuf's <b>wire type</b>. Every field on the wire is <code>tag (field-number + 3-bit wire type) → value</code>. The wire type tells a reader <i>how to measure the value's length</i> even if it has never heard of that field:</p>
+  <table>
+    <tr><th>Wire type</th><th>Meaning</th><th>How the reader skips it</th></tr>
+    <tr><td><b>0</b> varint</td><td>int32/64, bool, enum</td><td>read bytes until one has the continuation bit clear</td></tr>
+    <tr><td><b>1</b> 64-bit</td><td>double, fixed64</td><td>skip exactly 8 bytes</td></tr>
+    <tr><td><b>2</b> length-delimited</td><td>string, bytes, sub-message</td><td>read the length varint, skip that many bytes</td></tr>
+    <tr><td><b>5</b> 32-bit</td><td>float, fixed32</td><td>skip exactly 4 bytes</td></tr>
+  </table>
+  <p>So an old reader that hits unknown <b>field 7</b> reads the tag, sees "wire type 2, length 40," skips 40 bytes, and carries on — <b>unknown fields don't break parsing</b>. That is forward compatibility built into the byte layout. JSON gets the same property a cruder way: an unknown key is just skipped by the parser. Both tolerate new fields; the difference is Protobuf does it in 1 tag byte while JSON does it by carrying the full name.</p>
+</div>
+
+<p class="note why"><b>Why "schemaless" is a myth, and a dangerous one:</b> people reach for JSON because it has "no schema" and feels flexible. But the schema didn't disappear — it <b>moved into every reader's code</b>. When service B does <code>order.amount_cents</code>, it is asserting a schema; it's just un-written, un-versioned, and un-checked. Rename the field in the producer and nothing complains at build time — B simply reads <code>undefined</code> at 3 a.m. in production. Protobuf's schema is the <i>same</i> contract made explicit, versioned, and checked by the compiler (L18's published contract, enforced instead of hoped for). The choice isn't "schema vs no schema"; it's "schema you can see and evolve deliberately vs schema scattered implicitly across a dozen codebases."</p>
+
+<h2>Move 3 — Trace the paths: adding, removing, and renaming a field</h2>
+<p>A message that never changes is easy in any format. Real messages change for years while a fleet of services runs mixed old and new code mid-rollout (L31). Trace the three changes that matter.</p>
+
+<h3>Path A — adding a field (the safe, common case)</h3>
+<div class="diagram"><pre>
+   Six months in, we add "coupon_code" to OrderPlaced.
+   PROTOBUF: give it a NEW field number (7). Old readers hit tag 7,
+     read the wire type, SKIP its bytes, ignore it. New readers get
+     the value, or a default if an old producer didn't send it.
+     -> backward AND forward compatible. Safe. This is the ONLY
+        routine evolution move: add optional fields with new numbers.
+   JSON: producers start emitting "coupon_code":"SAVE10". Old readers
+     ignore the unknown key; new readers use it. Also safe.
+   VERDICT: both survive an ADD. Additive change = safe (L18/24).
+</pre></div>
+
+<h3>Path B — removing / renaming a field (where it goes wrong)</h3>
+<div class="diagram"><pre>
+   We decide "status" (string "PLACED") should become an enum, and we
+     want to drop the old text field.
+   PROTOBUF done RIGHT: stop writing the old field, but RESERVE its
+     number and name so no future field ever reuses them:
+        reserved 5; reserved "status";
+     Old readers still expecting field 5 get its default (empty) --
+     they don't crash, and no new field can silently inherit tag 5.
+   PROTOBUF done WRONG: reuse number 5 for the new enum. Now an OLD
+     message's bytes at tag 5 (a length-delimited STRING) are read by
+     a NEW reader as a VARINT enum -> garbage, or a parse error. The
+     field NUMBER is the contract; changing what it means corrupts
+     every in-flight old message. NEVER reuse a field number.
+   RENAME in .proto (status -> order_status) but KEEP number 5: FREE.
+     The name isn't on the wire; only the number is. Nothing breaks.
+   JSON: rename "status" -> "order_status". The name IS the wire key,
+     so every old reader doing order["status"] now reads undefined,
+     silently, in production. A rename is a BREAKING change in JSON.
+</pre></div>
+
+<h3>Path C — the change rolls out across a live fleet (why both directions matter)</h3>
+<div class="diagram"><pre>
+   A deploy is gradual (L31): for ~10 min, HALF the fleet runs new
+     code, half runs old, all reading each other's messages.
+   So a change must be compatible in BOTH directions at once:
+     - new reader must read OLD messages   (backward compatible)
+     - old reader must read NEW messages   (forward compatible)
+   ADD a field  -> both hold (old skips it, new defaults it). Ship it.
+   REMOVE/RENAME/RETYPE -> forward-compat BREAKS. So you can't just
+     "change it." You do L24's expand/contract on the WIRE:
+       1. EXPAND: add the new field alongside the old (both on the wire)
+       2. dual-populate: producers write BOTH old and new
+       3. migrate readers to the new field, deploy, bake
+       4. CONTRACT: once no reader reads the old field, reserve+drop it
+   The schema change is a MIGRATION (L24), not an edit -- because the
+     readers you don't control are mid-rollout when you flip.
+</pre></div>
+
+<p>Path A is the reward and the rule: <b>adding an optional field with a fresh number is safe in every format</b> — that's why systems accrete fields and rarely remove them. Path B is the knife: a <b>rename</b> is free in Protobuf (names aren't on the wire) but <b>breaking</b> in JSON (names <i>are</i> the wire), while <b>reusing or retyping a field number</b> is the cardinal Protobuf sin — it silently reinterprets old bytes. Path C is why this is a lesson and not a footnote: because a fleet deploys gradually (L31), a message-shape change is only safe if it's compatible in <i>both</i> directions during the overlap, so a remove/rename/retype must be run as Lesson 24's expand → dual-write → migrate → contract — on the wire this time. <span class="key">Move 4 names the wall all three circle: the schema is a contract shared across services you deploy independently, and the format's compactness is exactly the discipline of never breaking that contract.</span></p>
+
+<h2>Move 4 — Find the first bottleneck: the schema is a distributed contract</h2>
+
+<div class="card calc">
+  <p><b>The first bottleneck — schema coordination across independently-deployed services.</b> The bytes and the cycles from Move 1 are real, but they are not the thing that wakes you at night. The real cost of a binary format is that <b>producer and consumer now share a contract they must evolve without ever meeting</b>. Get it wrong and the failure is silent and data-shaped, not loud and crash-shaped: reuse field number 5 and a new reader reads an old string's bytes as an integer, producing a plausible-looking wrong number that flows into the ledger (L25) or the warehouse (L29) undetected. The discipline that prevents it is small and absolute:</p>
+  <ul>
+    <li><b>Only ever add optional fields with new numbers.</b> This is the one always-safe move (Path A).</li>
+    <li><b>Never reuse a field number, never change a field's type or number.</b> <code>reserved</code> the number and name of anything you remove so it can't come back (Path B).</li>
+    <li><b>Run any breaking change as a migration</b> (expand → dual-populate → migrate readers → contract, L24), because the fleet is always mid-rollout (Path C, L31).</li>
+  </ul>
+  <p>JSON doesn't escape this — it just <i>hides</i> it. There's no schema file to coordinate, so the contract feels free; but it still exists in every reader's code, un-versioned, and it breaks at <b>runtime</b> (a 3 a.m. <code>undefined</code>) instead of at <b>compile time or in the registry</b>. Avro makes the coordination explicit and central: a <b>schema registry</b> holds every version and can <i>reject</i> an incompatible schema at publish time — turning the silent runtime break into a loud deploy-time error. <span class="key">The trade named:</span> a binary schema gives you compactness and speed <i>and</i> enforceable evolution, paid for with a shared artifact you must version and a registry/build step you must run; JSON gives you freedom from all that machinery, paid for with a contract nobody can see until it breaks.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — row messages are the wrong shape for analytics.</b> Everything above serializes one <i>row</i> (one order) at a time — perfect for an RPC or an event, because you want the whole record. But send a billion of these to the warehouse (L29) and ask "sum of amount_cents by day," and a row format forces you to parse every field of every record just to read one column. That's L29's row-store problem reborn on the wire. The fix is a different <i>kind</i> of format: <b>columnar</b> (Parquet on disk, Arrow in memory) stores all the <code>amount_cents</code> values together, so the reader touches only the column asked for (projection, L29) and the values compress hard (a column is a billion similar numbers). Arrow goes further — it's <b>zero-copy</b>: the in-memory layout <i>is</i> the wire layout, so there's no deserialization step at all; you point at the bytes and read. <span class="key">The trade named:</span> a row format (JSON/Protobuf/Avro) optimizes shipping one whole record; a columnar format optimizes scanning one field across many records — same "turn structure into bytes" problem, opposite access pattern, so opposite layout (L79's "the layout is the design," applied to the wire).</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — the debuggability tax.</b> The moment you go binary, you lose the thing JSON gave you for free: a human (or <code>curl</code>, or a log grep, or a new engineer) can no longer read the message. <code>08 CB 89 EC 8F F7 23</code> means nothing without the <code>.proto</code>. This is a real operational cost — every debugging session now needs the schema and a decoder, and a message logged without its schema version is a mystery. Mitigations: log a <b>decoded</b> (text) copy at the edge for humans while the wire stays binary; keep schemas versioned and discoverable; use <b>gRPC reflection</b> or Avro's registry so tools can decode on the fly. <span class="key">The trade named:</span> binary buys size and speed at the cost of transparency — the same bytes that are cheap for the machine are opaque to the human, so you pay it back in tooling.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The fourth wall — don't pay for discipline you don't need.</b> Binary isn't automatically the answer. A public API consumed by third parties you'll never coordinate a schema rollout with (L18) wants JSON precisely <i>because</i> it's self-describing and universal — the readability and zero-setup are the product. A config file a human edits wants text. A message sent once a minute doesn't justify a schema registry to save 100 bytes. Protobuf/Avro earn their keep on <b>high-volume, internal, service-to-service</b> traffic where you control both ends, the bytes and cycles multiply by 40k/s and 20 hops, and you can run the schema discipline. <span class="key">The trade named:</span> the format follows the reader — a known, high-volume, coordinated reader wants compact binary; an unknown, low-volume, or human reader wants self-describing text. Choosing binary for a public API buys speed nobody needed and pays in adoption friction; choosing JSON for a 40k/s internal fan-out burns the cores from Move 1 for readability nobody uses.</p>
+</div>
+
+<p>So the honest picture of a wire format: the <b>same object</b> is 127 bytes and ~3 µs in JSON, or 28 bytes and ~0.4 µs in Protobuf — <b>~4.5× the bytes, ~7× the CPU</b> — and at 40k req/s across L17's 20 hops that's ~343 GB/day and ~2 cores of difference on one event stream (Move 1). But the bytes and cycles are the <i>visible</i> cost; the one that governs the design is the <b>schema as a contract</b> shared across services you deploy independently (Move 4). Adding a field is safe in every format; removing, renaming, or retyping one is a <b>migration</b> (L24) because the fleet is always mid-rollout (L31), and the compactness of a binary format is <i>bought</i> with the discipline of never reusing a field number and running every breaking change through expand/contract. Around that: <b>analytics wants a columnar/zero-copy layout</b>, not a row message (L29); <b>binary costs you debuggability</b> (pay it back in tooling); and <b>the right format follows the reader</b> — compact binary for known high-volume internal traffic, self-describing text for public or human-read messages. Every choice names its price.</p>
+
+<p><span class="key">The deepest point: a serialization format is a decision about where the schema lives, and that decision sets who has to agree with whom before a message can change.</span> Put the schema in the message (JSON) and no one has to agree — any reader can parse any message — but you pay in bytes on every message and the real contract hides, un-versioned, in a dozen codebases until it breaks at runtime. Move the schema out of the message (Protobuf/Avro) and the wire gets tiny and fast, but now every producer and consumer shares a versioned artifact they must evolve in lockstep-without-a-meeting, which is exactly why field <i>numbers</i> (not names) are the contract and why you may never reuse one. Notice the whole lesson is assembled from pieces you already own: L18's published contract (additive-safe, removes break), L24's expand/contract run on the wire instead of a table, L31's gradual rollout that forces both-directions compatibility, L17's 20 hops that multiply the CPU, L29's row-vs-columnar layout choice, L33's fan-out that multiplies the bytes, and L59's cost lens on the cores you reclaim. The new idea is only that "send the message" was hiding a real engineering choice, and that choice trades <span class="key">human-readability &amp; flexibility vs size, speed &amp; schema discipline.</span></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>Field names repeated on every message</td><td>Schema-driven format: numbers, not names, on the wire (Protobuf/Thrift)</td><td>~4.5× smaller / need the shared schema to read the bytes</td></tr>
+  <tr><td>Integers stored as decimal text</td><td>Varint encoding (raw bytes, 7 bits each)</td><td>13-byte number → 6 bytes / not human-readable</td></tr>
+  <tr><td>CPU burned parsing text on the hot path</td><td>Binary parse (tag→type→copy, no string scan)</td><td>~7× less CPU, lower p99 (fewer allocs, L17) / opaque bytes</td></tr>
+  <tr><td>Add a field without breaking old readers</td><td>New field number + wire-type skip (forward compat)</td><td>backward + forward compatible / must use a fresh number</td></tr>
+  <tr><td>Remove / rename / retype a field</td><td>Reserve the number; expand→dual-write→migrate→contract (L24)</td><td>no silent corruption / it's a migration, not an edit</td></tr>
+  <tr><td>Enforce the contract before it breaks</td><td>Schema registry with compatibility checks (Avro)</td><td>deploy-time error, not 3 a.m. runtime / a central dependency</td></tr>
+  <tr><td>Scan one field across a billion records</td><td>Columnar / zero-copy layout (Parquet/Arrow, L29)</td><td>read only the column, no row parse / wrong shape for single-record RPC</td></tr>
+  <tr><td>A public or human-read message</td><td>Self-describing text (JSON, L18)</td><td>universal, zero setup, readable / fat &amp; slow, unchecked contract</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — reusing a Protobuf field number.</b> Drop field 5 and hand its number to a new field of a different type, and old messages' bytes at tag 5 are silently reinterpreted → plausible garbage in the ledger/warehouse. Always <code>reserved</code> a removed number and name; never reuse.</li>
+  <li><b>Trap 2 — treating a rename/remove as an edit.</b> The fleet is always mid-rollout (L31), so a breaking change must be a migration (expand → dual-populate → migrate readers → contract, L24). "Just rename it" breaks every not-yet-deployed reader — instantly in JSON (name is the wire key), and on removal in Protobuf.</li>
+  <li><b>Trap 3 — using a row format for analytics.</b> Shipping a billion Protobuf/JSON rows to answer "sum by day" forces a full parse of every record to read one column (L29's row-store trap on the wire). Use a columnar format (Parquet/Arrow) so the reader touches only the column.</li>
+  <li><b>Trap 4 — choosing the format against the reader.</b> Binary on a public third-party API buys speed nobody needed and pays in adoption friction and lost debuggability; JSON on a 40k/s internal fan-out burns cores and bytes for readability nobody reads. The format follows the reader: text for unknown/human, compact binary for known/high-volume.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We took the arrow every lesson drew between two boxes — "send the message" — and asked what the bytes actually are. <b>Estimate</b> wrote the one order event both ways, byte for byte: <b>JSON = 127 bytes</b> (43% of it field names repeated on every message, numbers stored as decimal text) and <b>Protobuf = 28 bytes</b> (numbers not names on the wire, varint-encoded integers) → <b>~4.5× smaller and ~7× less CPU</b>, worth ~343 GB/day and ~2 cores on one 40k/s stream across L17's 20 hops. <b>Model</b> gave four formats on two questions — where the schema lives (in the message / a shared file / a registry) and how a change survives — plus the wire-type skip that makes adding a field safe. <b>Tracing</b> showed an add is safe everywhere, a rename is free in Protobuf but breaking in JSON while reusing a field number silently corrupts, and any breaking change is a both-directions migration because the fleet deploys gradually (L31). The <b>first bottleneck</b>: the schema is a distributed contract across independently-deployed services (→ add-only, reserve removed numbers, run breaking changes as L24 expand/contract; Avro's registry makes it a deploy-time error). Around it: <b>analytics wants columnar/zero-copy</b> not row messages (L29), <b>binary costs debuggability</b> (pay it back in tooling), and <b>the format follows the reader</b>. The deepest point: a wire format is a decision about where the schema lives, which sets who must agree with whom before a message can change. The standing tension: <span class="key">human-readability &amp; flexibility vs size, speed &amp; schema discipline.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we've now shipped these bytes everywhere and stored them in the orders DB (L79) and the warehouse (L29). What happens the day someone drops the table, a bad deploy corrupts it, or the disk dies? How far back can you get, and how fast?</b></p>
+  <p style="margin:.2rem 0">• <b>Backups, restore &amp; point-in-time recovery (Lesson 81):</b> the drill nobody runs until it's too late — <b>full vs incremental</b> backups, the WAL/binlog as a <b>replay stream</b> (L33/35), <b>RPO vs RTO</b> as two separate dials (L07/78), restoring a <b>10 TB sharded</b> DB (L79), and why an untested backup is not a backup. Trade: recovery guarantees vs storage &amp; operational cost.</p>
+  <p style="margin:.2rem 0">Say <b>next</b> and we'll put a number on how much data you'd lose and how long you'd be down after a 2 a.m. <code>DROP TABLE</code>.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">serialization / deserialization</span>
+    <span class="pill">wire format</span>
+    <span class="pill">schema</span>
+    <span class="pill">self-describing format</span>
+    <span class="pill">schema-driven format</span>
+    <span class="pill">varint</span>
+    <span class="pill">field number / tag</span>
+    <span class="pill">wire type</span>
+    <span class="pill">schema evolution</span>
+    <span class="pill">backward / forward compatible</span>
+    <span class="pill">schema registry</span>
+    <span class="pill">columnar / zero-copy</span>
+  </p>
+  <p>That's Lesson 80. It builds on: Lesson 18 (the published contract — additive changes safe, removes/renames break clients), Lesson 24 (expand → dual-write → backfill → contract, run here on the wire instead of a table), Lesson 31 (gradual rollout — half the fleet runs old code, forcing both-directions compatibility), Lesson 17 (the 20-hop request that multiplies the marshalling CPU and the tail), Lesson 29 (row vs columnar layout — read only the bytes you need), Lesson 33 (the outbox fan-out that multiplies the bytes), and Lesson 59 (the cost lens on the cores you reclaim). <b>Ask me follow-ups</b> — e.g. "how does Avro's reader/writer schema resolution actually work when the two differ?", "when is FlatBuffers or Cap'n Proto (true zero-copy) worth it over Protobuf?", "how do you version a public JSON API's schema without a registry?", "what exactly does gRPC add on top of Protobuf?", or "how do compression (gzip/zstd) and the format choice interact — does compressing JSON close the gap with Protobuf?" When you're ready, say <b>next</b> and we'll design what happens after a 2 a.m. <code>DROP TABLE</code>: backups, restore, and point-in-time recovery.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "The same OrderPlaced event is 127 bytes in compact JSON but 28 bytes in Protobuf — about 4.5× smaller. Where does that size difference actually come from?",
+    options: [
+      {t:"Two structural reasons, not compression: (1) JSON spells the field NAMES out in the bytes of every single message (43% of the 127 bytes is names like \"amount_cents\" repeated 40,000×/s), while Protobuf replaces each name with a 1-byte field NUMBER and keeps the names only in the shared schema, sent zero times; and (2) JSON stores numbers as decimal TEXT (\"1234567890123\" = 13 bytes) while Protobuf stores them as raw varints (6 bytes). The schema moved out of the message.",
+       ok:true,
+       fb:"Exactly. The win is structural — the field names leave the wire and live in the schema, and integers become raw bytes instead of text. No clever compression involved; it's just not carrying the names 40,000 times a second."},
+      {t:"Protobuf uses gzip compression internally, so the message is compressed on the wire; JSON is sent raw.",
+       ok:false,
+       fb:"No — neither format compresses by default; the 28 vs 127 is the raw encoding. (You can gzip either one afterward.) The difference is that Protobuf drops the field names to 1-byte numbers and encodes integers as varints rather than text. Compression is a separate, orthogonal layer you could add to both."},
+      {t:"Protobuf drops fields it considers redundant, so it's smaller because it carries less information.",
+       ok:false,
+       fb:"Both messages carry the exact same six fields and the same information — you can reconstruct the identical object from either. Protobuf isn't dropping data; it's encoding the same data without the field names (they're in the schema) and with integers as varints instead of decimal text."}
+    ]
+  },
+  {
+    stem: "Six months after launch you want to remove the old string field 'status' (field number 5) from your Protobuf message and introduce a new enum field for the same concept. A junior engineer reuses number 5 for the new enum. What happens, and what's the correct move?",
+    options: [
+      {t:"Disaster, silently: the field NUMBER is the contract, not the name. An old message still on the wire has field 5 encoded as a length-delimited STRING; a new reader now interprets those same bytes at tag 5 as a VARINT enum — producing garbage or a parse error, with no crash to alert you, and the wrong value can flow into the ledger or warehouse undetected. Correct move: never reuse a number. `reserved 5; reserved \"status\";` so nothing can inherit it, add the new enum as field 6, and run the removal as an expand→dual-populate→migrate→contract migration (L24).",
+       ok:true,
+       fb:"Right. Reusing a field number reinterprets old bytes as a new type — the quintessential silent, data-shaped failure. Reserve the retired number and name, add the replacement with a fresh number, and treat the removal as a migration because the fleet is always mid-rollout."},
+      {t:"It's fine as long as the new enum's values happen to line up with the old string values; Protobuf matches them by name.",
+       ok:false,
+       fb:"Protobuf matches nothing by name on the wire — only the number and wire type. The old string's bytes and the new enum's bytes are different wire types at the same tag, so an old message read by a new reader (or vice versa) misreads the bytes regardless of what the values 'mean.' There's no name-based reconciliation to save you."},
+      {t:"The Protobuf compiler will reject reusing field number 5, so the mistake can't ship.",
+       ok:false,
+       fb:"The compiler will happily let you assign number 5 to a new field once the old one is gone unless you explicitly `reserved` it — that's exactly why `reserved` exists. Nothing automatically remembers that 5 used to be a string. The safeguard is the discipline of reserving retired numbers/names, not a built-in guarantee."}
+    ]
+  },
+  {
+    stem: "You're rolling out a message-shape change to a fleet of services. For about 10 minutes, half the fleet runs the new code and half runs the old, all exchanging messages. Which change is safe to ship directly, and which must be run as a migration — and why?",
+    options: [
+      {t:"ADDING an optional field with a new number is safe to ship directly: old readers hit the unknown tag, use the wire type to skip its bytes, and ignore it (forward compatible), while new readers read it or take a default (backward compatible) — both directions hold during the overlap. REMOVING, RENAMING, or RETYPING a field must be a migration (expand → dual-populate → migrate readers → contract, L24), because forward compatibility breaks: an old reader mid-rollout still expects the old shape, so you must keep both shapes on the wire until every reader has moved.",
+       ok:true,
+       fb:"Exactly. A gradual deploy (L31) means both old and new code read each other's messages simultaneously, so a change is only safe if it's compatible in BOTH directions. Adds are; removes/renames/retypes aren't, so they become L24's expand/contract on the wire."},
+      {t:"Any change is safe as long as you deploy all producers before any consumers — ordering the deploy removes the need for compatibility.",
+       ok:false,
+       fb:"You rarely control the deploy order across independent services, and even a perfectly ordered deploy is gradual — there's a window where new producers emit the new shape while old consumers still expect the old one. That window is the whole problem. Compatibility in both directions is what makes the change safe, not deploy ordering."},
+      {t:"Only removes are dangerous; renames are always safe because the data is still there under a different label.",
+       ok:false,
+       fb:"A rename is breaking wherever the label is the contract. In JSON the name IS the wire key, so old readers doing order['status'] get undefined the instant producers rename it. (In Protobuf a rename that keeps the same number is free — but that's because the number, not the name, is on the wire.) 'The data is still there' doesn't help a reader looking for the old key."}
+    ]
+  },
+  {
+    stem: "Your internal order service fans out 40k events/s to a handful of services you own on both ends, and separately you expose a public API for third-party developers you'll never coordinate a schema rollout with. What formats fit where, and why?",
+    options: [
+      {t:"Use a compact binary schema-driven format (Protobuf/Avro) for the internal 40k/s fan-out — you control both ends, the ~4.5× bytes and ~7× CPU multiply across the volume and hops (L17), and you can run the schema discipline — and use self-describing JSON for the public API, precisely because third parties can read it with no shared schema, no build step, and any tool. The format follows the reader: known/high-volume/coordinated → binary; unknown/human/uncoordinated → text.",
+       ok:true,
+       fb:"Right. There's no globally 'best' format — the reader decides. Binary earns its keep where you control both ends and the volume is high; JSON's self-describing readability is the product for a public API you can't coordinate."},
+      {t:"Use Protobuf everywhere, including the public API — it's smaller and faster, so it's strictly better, and third parties can just compile the .proto.",
+       ok:false,
+       fb:"Binary on a public API buys speed nobody asked for and pays in real friction: every third party must obtain and compile your schema, lose the ability to debug with curl or a browser, and coordinate on your schema changes — exactly the coordination a public boundary is supposed to avoid. The self-describing readability of JSON is the feature there, not a weakness."},
+      {t:"Use JSON everywhere for consistency — one format is simpler to operate, and the byte/CPU difference is negligible.",
+       ok:false,
+       fb:"On a 40k/s internal fan-out across ~20 hops the difference is not negligible: ~343 GB/day and ~2 cores of pure marshalling (Move 1), plus higher p99 from GC pressure. 'One format everywhere' trades a real, multiplied internal cost for a consistency that the public boundary doesn't even benefit from. Match the format to each reader instead."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

@@ -1603,10 +1603,27 @@
     gather/hot cell), L17 (tail amplification), L6/21 (hot-row/hot-key decomposition), L32 (cross-shard sagas), L33
     (secondary copies via outbox/CDC), L29 (analytics to the warehouse). Trade: even load & locality vs query flexibility.
     (Lesson 0079)
-80. Cost & performance of serialization formats — the wire format nobody estimates: JSON vs Protobuf/Avro vs Thrift,
-    schema evolution (add/remove fields without breaking readers, L18/24), the CPU + bytes cost at 40k req/s, and
-    zero-copy/columnar formats for analytics (L29). Trade: human-readability & flexibility vs size, speed & schema
-    discipline.
+80. ✅ **Serialization formats & the wire** — one `OrderPlaced` event (order_id, customer_id, amount_cents, currency,
+    status, created_at) shipped between services/consumers at 40k req/s (L33 fan-out, L17's 20 hops), written byte for
+    byte two ways. **Estimate**: compact JSON = **127 bytes** (field NAMES on the wire = 43% of it, repeated every
+    message; ints as decimal text) vs Protobuf = **28 bytes** (1-byte field NUMBER tags + varint ints; names live in the
+    schema, sent 0×) → **~4.5× smaller**; CPU ~3 µs vs ~0.4 µs round-trip (**~7×**) → ~343 GB/day & ~2 cores saved across
+    L17's 20 hops, plus lower p99 (fewer allocs/GC). Worked varint: amount_cents=4999 → tag `0x18` + `87 27`, no
+    "amount_cents" text. **Model**: JSON (schema in the message: readable, fat, unchecked contract), Protobuf/Thrift
+    (schema in a shared `.proto`: compact, typed, needs both sides), Avro (schema in a **registry** by id: tiny records,
+    needs the registry). The **wire type** (3 bits in each tag: varint/64-bit/length-delim/32-bit) lets a reader SKIP an
+    unknown field's exact bytes → forward-compat built into the layout. "Schemaless" is a myth — the schema just moves
+    into every reader's code, un-versioned. **Trace**: (A) ADD a field = new number, old readers skip it, new default it
+    → safe in every format (L18 additive-safe); (B) REMOVE/RENAME/RETYPE — rename is FREE in Protobuf (name not on the
+    wire, number is) but BREAKING in JSON (name IS the wire key); **reusing a field number** reads old string bytes as a
+    new-type value = silent corruption → `reserved` the number+name, never reuse; (C) a gradual rollout (L31) means half
+    the fleet runs old code, so a breaking change needs BOTH-directions compat → run it as L24 expand→dual-populate→
+    migrate→contract ON THE WIRE. **First bottleneck**: the schema is a **distributed contract** across independently-
+    deployed services (add-only; reserve removed numbers; migrate breaking changes; Avro registry = deploy-time error not
+    3 a.m. runtime). Walls: analytics wants **columnar/zero-copy** (Parquet/Arrow, L29) not row messages; binary costs
+    **debuggability** (opaque bytes → log a decoded copy, gRPC reflection); **the format follows the reader** (self-
+    describing text for public/human, compact binary for known high-volume internal). Trade: human-readability &
+    flexibility vs size, speed & schema discipline. (Lesson 0080)
 81. Backups, restore & point-in-time recovery — the drill nobody runs until it's too late: full vs incremental backups,
     the WAL/binlog as a replay stream (L33/35), RPO vs RTO as two separate dials (L7/78), restoring a 10 TB sharded DB
     (L79), and why an untested backup is not a backup. Trade: recovery guarantees vs storage & operational cost.
