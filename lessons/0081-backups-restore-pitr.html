@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 81 — Backups, Restore &amp; Point-in-Time Recovery: Rewinding the Orders DB to One Second Before the DROP</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 81 · Worked Example</div>
+  <h1>Backups, Restore &amp; Point-in-Time Recovery: Rewinding the Orders DB to One Second Before the DROP</h1>
+  <p class="lead">For eighty lessons we've built the orders platform up: sharded it 16 ways (L79), indexed it (L12), fanned its events out to search, cache, and the warehouse (L33), and shipped its bytes on the wire (L80). Every one of those lessons assumed the data was <i>there</i>. This lesson asks the question nobody wants to answer at 2 a.m.: <span class="key">a tired engineer runs <code>DROP TABLE orders</code> on production instead of staging — or a bad deploy quietly writes garbage for six hours — how much data do you lose, and how long are you down?</span> Those are two different numbers, and confusing them is how companies die. We'll define them precisely (<b>RPO</b> = how much data you lose, <b>RTO</b> = how long you're down), put real numbers on both for our <b>10 TB, 16-shard, 40,000-writes/second</b> orders DB, and then build the machinery that turns "we lost a day" into "we lost one second." We'll <b>estimate</b> the loss and the downtime, <b>model</b> full + incremental backups and the <b>WAL as a continuous replay stream</b>, <b>trace</b> three disasters — the accidental <code>DROP</code>, the silent corrupting deploy, and the sharded restore — and find <span class="key">the first bottleneck: a backup you have never restored is not a backup.</span> The trade under all of it: <b>recovery guarantees vs storage &amp; operational cost.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0081-backups-restore-pitr.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>Keep the orders database from L79: <b>10 TB</b> of data, <b>10 billion rows</b> (~1 KB each), split across <b>16 shards</b>, taking <b>40,000 writes/second</b> at peak (inserts, updates, status changes). It is the system of record — the ledger (L25), the source every downstream copies from (L33). If it's gone, the business is gone. Our job: make it so that <i>any</i> single disaster — a fat-fingered command, a corrupting bug, a dead disk, a whole region on fire — costs us seconds of data and minutes of downtime, not a company.</p>
+
+<p>Before anything else, two words, because everyone conflates them and the whole lesson is the difference:</p>
+<div class="diagram"><pre>
+  DISASTER strikes here
+          |
+   <---- RPO ---->|<------- RTO ------->
+   (how much data |  (how long you are
+    you LOSE,     |   DOWN, measured
+    measured      |   FORWARD to "back
+    BACKWARD from |   online")
+    the failure)  |
+          |       |
+  ...writes...  FAIL           ...restoring...        BACK UP
+     lost <------ X ----------------------------------> serving
+
+  RPO = the gap between your last SAFE copy and the failure.
+        Set by HOW OFTEN you capture. Fix it -> capture more often.
+  RTO = the time from failure to serving again.
+        Set by HOW FAST you can restore. Fix it -> restore faster.
+
+  They are TWO SEPARATE DIALS. You can have great RPO and awful RTO
+  (every write archived, but 10 TB takes 6 h to copy back), or the
+  reverse (a warm standby flips in 30 s, but loses 5 min of writes).
+</pre></div>
+
+<p class="note"><span class="key">The one idea the whole lesson turns on:</span> <b>RPO</b> (Recovery Point Objective) is the maximum data you can afford to lose, measured <i>backward</i> from the failure — it is fixed by how often you safely capture changes. <b>RTO</b> (Recovery Time Objective) is the maximum downtime you can afford, measured <i>forward</i> from the failure — it is fixed by how fast you can restore. They cost money independently, they fail independently, and you must size them independently. Everything below is those two dials made concrete and then defended against the ways each one silently breaks.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Backup</b> — a copy of your data kept somewhere else, from which you can rebuild after loss. Not a replica (see below).</li>
+  <li><b>Full backup</b> — a complete, self-contained copy of the whole dataset. Big and slow, but needs nothing else to restore.</li>
+  <li><b>Incremental backup</b> — a copy of only what changed since the last backup. Cheap and fast to take, but restoring needs the full plus every incremental in the chain.</li>
+  <li><b>WAL / binlog (write-ahead log)</b> — the log the database writes <i>before</i> it applies a change (L33/L35). Every committed change, in order. Archive it and you have a continuous stream you can replay.</li>
+  <li><b>Point-in-time recovery (PITR)</b> — restoring the database to any chosen instant, by restoring a base backup and then replaying the WAL forward up to (and stopping at) that instant.</li>
+  <li><b>RPO (Recovery Point Objective)</b> — the maximum acceptable data loss, in time (e.g. "≤ 5 seconds"). The backward gap.</li>
+  <li><b>RTO (Recovery Time Objective)</b> — the maximum acceptable downtime (e.g. "≤ 30 minutes"). The forward gap.</li>
+  <li><b>Log shipping / WAL archiving</b> — continuously copying WAL segments off the database to durable storage (L20) as they're produced, so the log survives the database dying.</li>
+  <li><b>Snapshot</b> — a fast, storage-level copy of a volume at an instant (copy-on-write). A cheap way to take a base backup without a long read.</li>
+  <li><b>Warm standby</b> — a second database kept continuously up to date and ready to take over. Near-zero RTO, but it faithfully copies mistakes (so it is not a backup).</li>
+  <li><b>Restore drill</b> — actually performing a restore, on a schedule, to prove the backup works and to measure real RPO/RTO. The only test that counts.</li>
+  <li><b>3-2-1 rule</b> — keep 3 copies, on 2 kinds of media, with 1 offsite/offline. Survives a single site, disk, or account being destroyed.</li>
+  <li><b>Immutable / WORM backup</b> — write-once-read-many storage a backup can't be altered or deleted before its retention expires. Survives ransomware and a rogue admin (L30/L75).</li>
+</ul>
+
+<h2>Move 1 — Estimate: how much you lose, and how long you're down</h2>
+<p>Two numbers, computed exactly for our 10 TB / 16-shard / 40k-writes/s orders DB. Start with the naive design almost everyone starts with — <b>one full backup a day, at 2 a.m.</b> — and price both dials.</p>
+
+<div class="card calc">
+  <p><b>RPO of daily-full-only.</b> The worst case is a failure just <i>before</i> the next backup: you fall back to the last one, up to 24 hours old.</p>
+  <div class="diagram"><pre>
+  RPO(worst) = time since last safe copy = up to 24 h
+             = 24 h × 3,600 s/h × 40,000 writes/s
+             = 86,400 s × 40,000
+             = 3,456,000,000 writes LOST
+             ≈ 3.5 BILLION writes — every order placed overnight, gone.
+  </pre></div>
+  <p>That is not a bug you patch; it is a business you no longer have. Daily backups give a <b>24-hour RPO</b> — catastrophic for a system of record. <span class="key">The fix for RPO is always the same shape: capture more often.</span> Taking a full every hour would cut it to 1 h — but a 10 TB full every hour is absurd (that's the storage/operational cost dial pushing back). We need a way to capture <i>continuously</i> without copying 10 TB each time. That's Move 2.</p>
+</div>
+
+<div class="card calc">
+  <p><b>RTO of restoring 10 TB.</b> Downtime is dominated by how fast you can move the bytes back. At L12's <b>500 MB/s</b> restore throughput per stream:</p>
+  <div class="diagram"><pre>
+  Naive — restore 10 TB on ONE stream:
+     10 TB ÷ 500 MB/s = 10,000,000 MB ÷ 500 = 20,000 s ≈ 5.6 HOURS
+     just to COPY the bytes — before the DB even opens for traffic.
+
+  Sharded — restore 16 shards IN PARALLEL (L79):
+     each shard = 10 TB / 16 = 625 GB
+     625,000 MB ÷ 500 MB/s = 1,250 s ≈ 21 MINUTES (all shards at once)
+  </pre></div>
+  <p><span class="key">The same sharding that scaled our writes (L79) now scales our recovery:</span> 16 independent restores run at once, so RTO drops ~16× from 5.6 h to ~21 min for the base copy. The trade named: parallelism buys RTO, and it's the shards you already have. But 21 minutes is only the <i>base copy</i> — a base backup is stale by however long ago it was taken, and closing that staleness is the replay in Move 2. That replay time is the other half of RTO, and it grows with how old your base is.</p>
+</div>
+
+<p class="note why"><b>Why the two dials must be sized separately:</b> notice they pull on different machinery. RPO is fixed by <i>capture frequency</i> — nothing about a faster disk shrinks your data loss. RTO is fixed by <i>restore throughput</i> — nothing about backing up more often shrinks your downtime once the failure happens. A team that "does daily backups" has silently chosen a 24-hour RPO <i>and</i> a multi-hour RTO without ever deciding either. Naming them as two numbers, out loud, with a cost attached, is the entire discipline.</p>
+
+<h2>Move 2 — Model: full + incremental + the WAL as a replay stream</h2>
+
+<h3>Three building blocks, from expensive to cheap</h3>
+<div class="card calc">
+  <table>
+    <tr><th>Block</th><th>What it captures</th><th>Buys</th><th>Costs</th></tr>
+    <tr><td><b>Full backup</b></td><td>the entire 10 TB</td><td>self-contained; restore needs nothing else</td><td>huge &amp; slow — can't take it often</td></tr>
+    <tr><td><b>Incremental backup</b></td><td>only blocks changed since the last backup</td><td>small &amp; fast — take it often (hourly)</td><td>restore needs the full + every incremental in the chain (a gap breaks it)</td></tr>
+    <tr><td><b>WAL archiving</b></td><td>every committed change, continuously (L33/L35)</td><td>near-zero RPO; enables PITR to <i>any</i> instant</td><td>a steady stream to store &amp; manage; replay takes time</td></tr>
+  </table>
+  <p>The database already writes a <b>write-ahead log</b>: before any change touches the table, it's appended to the WAL (that's how the DB survives its own crash — L35). So the changes are <i>already</i> being written down in order. Backups' one trick is to <b>archive that log off the box as it's produced</b> (log shipping to object storage, L20). Now you own a continuous, ordered record of every committed write — a <span class="key">replay stream</span>.</p>
+</div>
+
+<h3>How the pieces combine — the recovery timeline</h3>
+<div class="diagram"><pre>
+   Sun 02:00        Mon 02:00   Tue 02:00        Wed 02:00:03
+      |                |           |                  |
+   [FULL 10TB]     [incr]      [incr]              DROP TABLE  <- disaster
+      |======= continuous WAL archived, every commit =========|
+                                  |
+   To recover to Wed 01:59 (one second before the DROP):
+     1. restore the most recent BASE that's <= target
+          = Tue's incremental chain on Sun's full  (~25 min, parallel)
+     2. REPLAY archived WAL forward from Tue 02:00
+          ...applying every commit in order...
+     3. STOP replay at recovery_target = Wed 02:00:02.999
+          -> the DROP is the next record in the log; we simply
+             don't apply it. The table is back, intact, minus ~1 s.
+
+   RPO here = the un-archived WAL tail (seconds, or ~0 if streamed)
+   RTO here = base copy (~25 min) + replay window (Tue->Wed, minutes-hours)
+</pre></div>
+
+<div class="card calc">
+  <p><b>Why incrementals aren't just about storage — they set your RTO.</b> The base you restore is stale by however long ago it was taken, and you close that gap by <i>replaying the WAL forward</i>. Replay is slower than a sequential copy — it re-applies transactions and maintains indexes (L12), not just streams bytes. So:</p>
+  <div class="diagram"><pre>
+   RTO = copy the base  +  replay the WAL up to the recovery point
+       = (parallel base restore)  +  (replay window × replay cost)
+
+   base = Sun full only  -> replay 3 days of WAL   -> HOURS of replay
+   base = Tue incremental -> replay ~26 h of WAL    -> tens of minutes
+   base = hourly incr.    -> replay ~1 h of WAL     -> a few minutes
+  </pre></div>
+  <p><span class="key">The trade named:</span> a fresh base shrinks the replay window, so <b>incremental frequency is really an RTO dial</b>, not just a storage one — more incrementals cost more storage and I/O but recover faster. And WAL archiving frequency is the <b>RPO dial</b> — stream it synchronously and RPO → ~0; ship it every 60 s and RPO ≤ 60 s of writes. Two knobs, two objectives, priced separately, exactly as Move 1 warned.</p>
+</div>
+
+<p class="note why"><b>Why PITR is the payoff, in one line:</b> a plain backup can only take you to the instants you happened to snapshot. The WAL is a <i>continuous</i> stream, so "restore the base, then replay forward and stop at 02:00:02.999" lets you land on <b>any</b> instant — including one second before a catastrophe you didn't know was coming. You are not restoring a photo; you are rewinding a movie and pausing on the exact frame you want.</p>
+
+<h2>Move 3 — Trace the paths: three disasters, three restores</h2>
+
+<h3>Path A — the 2 a.m. <code>DROP TABLE</code> (the clean case PITR is built for)</h3>
+<div class="diagram"><pre>
+   02:00:03  someone runs DROP TABLE orders on prod.
+   02:04     alerts fire; the table is gone; writes are erroring.
+
+   Daily-full-only response:  restore Tue 02:00 full -> you are
+     back, but at YESTERDAY. RPO = ~24 h = 3.5 B writes lost. No
+     way to get the day back. Business-ending.
+
+   PITR response:
+     - restore base (Tue incr on Sun full), ~25 min parallel
+     - replay archived WAL from Tue 02:00 forward
+     - set recovery_target_time = 02:00:02.999 and STOP
+     - the DROP is the very next WAL record; don't apply it
+     -> table back, intact, RPO ~= 1 s (the un-shipped tail)
+        RTO ~= base copy + replay window (~30-40 min total)
+</pre></div>
+<p>This is the reward: continuous WAL archiving turned "we lost a day" into "we lost a second and were down for half an hour." The <code>DROP</code> is just a transaction in the log; PITR replays up to it and declines to take the last step.</p>
+
+<h3>Path B — the silent corrupting deploy (why a replica is NOT a backup)</h3>
+<div class="diagram"><pre>
+   08:00  a bad deploy starts writing amount_cents in the WRONG
+          currency's units for a subset of orders. No error. No crash.
+   14:00  finance notices the numbers are wrong. 6 hours of corruption
+          are now committed and long since REPLICATED.
+
+   "We have 3 replicas (L06) and a warm standby!" -> useless here.
+   Replication faithfully copies EVERY committed write, in ~ms, to
+   all replicas and all 16 shards. The bug propagated PERFECTLY.
+   Every copy is corrupt. A standby is a copy of your mistake.
+
+   Only a BACKUP lets you go BACK IN TIME:
+     - PITR a COPY of the DB to 07:59:59 (just before the deploy)
+     - extract the correct rows for the affected orders
+     - reconcile them back into live prod (a compensating fix, L25/L32)
+</pre></div>
+<p class="note"><span class="key">The distinction that saves you:</span> <b>replication protects against losing a machine; backups protect against losing your data's correctness.</b> A replica or warm standby copies writes as fast as it can — including the <code>DROP</code> and the corrupting write — so it slashes RTO for hardware failure but offers <b>zero protection</b> against a bad command or a bad deploy. That's why you need <i>both</i>: a standby for fast failover, and point-in-time backups to rewind past logical damage. And Path B names a nasty secondary trade: the good writes from 08:00–14:00 (real orders) are entangled with the bad ones, so a blind PITR to 07:59 would lose 6 h of legitimate data too. Recovery is rarely "rewind everything" — it's often "rewind a copy, then surgically reconcile," which is why you restore to a <i>side</i> database first.</p>
+
+<h3>Path C — restoring the 10 TB sharded DB (the consistency wall)</h3>
+<div class="diagram"><pre>
+   16 shards, each with its OWN base + its OWN WAL stream.
+
+   Good news: restore all 16 IN PARALLEL -> RTO/16 (Move 1).
+   Hard news: each shard's WAL ends at a DIFFERENT point, and a
+     cross-shard transaction (L32 saga: reserve seat on shard 3,
+     charge on shard 11) can be half-applied if you stop the two
+     shards at slightly different instants.
+
+   Restoring "to 02:00:02" by each shard's WALL CLOCK is a TRAP:
+     clocks skew by tens of ms (L35) -> shard 3 stops 40 ms later
+     than shard 11 -> a transfer exists on one shard, not the other.
+
+   Fix: restore all shards to a GLOBAL consistent marker, not a
+     local wall-clock time -> a shared LSN / snapshot barrier /
+     transaction boundary that every shard's WAL agrees on, so no
+     cross-shard operation is left half-done (L11/L23/L35).
+</pre></div>
+<p>Sharding gave us parallel restore for free, but it took back single-machine consistency: a restore is only correct if every shard lands on the <i>same</i> logical instant, and "the same wall-clock time" isn't the same logical instant once clocks skew (L35). The trade named: <b>distributed recovery buys speed with parallelism and pays it back in the coordination needed to restore all shards to one consistent point.</b></p>
+
+<p>Path A is the happy path PITR was designed for — a discrete bad transaction you replay up to and stop before. Path B is the one that humbles teams who thought replication was a backup: a faithfully-copied mistake is on every replica, and only a point-in-time copy can undo it. Path C is why "we have backups" isn't the same as "we can restore the whole system" — 16 shards restore fast but must agree on one instant. <span class="key">Move 4 names the wall all three share: none of this is real until you've actually done the restore.</span></p>
+
+<h2>Move 4 — Find the first bottleneck: an untested backup is not a backup</h2>
+
+<div class="card calc">
+  <p><b>The first bottleneck — the backup you have never restored.</b> Every design above assumes the restore <i>works</i>. But a backup is <b>Schrödinger's</b>: it is simultaneously good and useless until you actually restore it and look. The night of the disaster is the worst possible time to discover which. The ways a "successful" backup is secretly dead:</p>
+  <ul>
+    <li><b>The files are corrupt</b> — bit rot on cold storage, a truncated upload, a bad compression run. The backup job exited 0; the bytes are junk.</li>
+    <li><b>The WAL chain has a gap</b> — one segment failed to archive at 3 a.m. weeks ago; PITR can only replay up to the gap, so your real RPO is that day, not one second.</li>
+    <li><b>A shard is missing</b> — the backup covered 15 of 16 shards after someone added shard 16 and forgot the backup config. You restore a DB with a hole.</li>
+    <li><b>The runbook is wrong</b> — the credentials rotated (L30), the tool version changed, the restore host isn't sized for 10 TB. Nobody knew until the clock was running.</li>
+    <li><b>The restore blows the RTO budget</b> — it <i>works</i>, but takes 9 hours, and you promised 30 minutes. A working backup that misses RTO still fails the business.</li>
+  </ul>
+  <p><span class="key">The only test that counts is a real restore.</span> Schedule <b>restore drills</b> (game days, L51): on a cadence, restore to a scratch environment, run PITR to a random target, verify row counts and checksums, and <b>measure the actual RPO and RTO</b> — don't assume them. A backup system's real SLA is its last successful drill, not its last successful backup job. The trade named: drills cost engineering time and infrastructure, and buy the only thing that matters — the certainty that the numbers you promised are real.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — a backup next to the data dies with the data.</b> A backup on the same disk, same host, or same cloud account as the primary is destroyed by the very events you're insuring against: the disk fails, the region burns, or an attacker (or a rogue admin) with access to prod also deletes the backups. Ransomware specifically hunts and encrypts backups first. The discipline is the <b>3-2-1 rule</b>: 3 copies, on 2 kinds of media, with 1 <b>offsite and offline/immutable</b>. Make the offsite copy <b>WORM / object-lock</b> (write-once, can't be deleted or altered before its retention expires, L30/L75) so that no credential — stolen or malicious — can erase your last line of defense. <span class="key">The trade named:</span> more copies, further away, more locked down, cost more storage and more operational friction, and buy survival of the correlated disaster that takes the primary <i>and</i> its nearby copies at once.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — you can't keep everything forever.</b> Continuous WAL plus hourly incrementals plus full history is a lot of bytes: our WAL alone runs on the order of <b>~1 TB/day</b> at 40k writes/s. Keeping all of it hot is expensive and pointless. The answer is a <b>retention policy</b> tiered by age (L39 hot/warm/cold, L20 object storage): keep fine-grained PITR (every second) for the last 7–35 days on cheap object storage, then thin to daily fulls for a few months, then monthly for compliance years, then delete. <span class="key">The trade named:</span> retention depth vs storage cost — a longer PITR window and longer history cost linearly more storage, so you buy exactly as much rewind as the business (and the auditors, L75) actually needs, and no more.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The fourth wall — RTO has a floor, and closing it is a different (pricier) tool.</b> Even with parallel restore, pulling 10 TB back and replaying WAL takes tens of minutes. If the business needs RTO in <i>seconds</i>, no backup gets you there — you need a <b>warm standby</b> continuously applying the WAL, ready to be promoted (L10 leader election) in seconds. But recall Path B: a standby copies mistakes, so it is not a substitute for backups; it's the <i>other end</i> of the RTO dial. The full picture is a spectrum: <b>backups</b> (cheap, slow RTO, protect against logical damage) on one end, a <b>hot standby</b> (expensive, seconds RTO, protects only against hardware loss) on the other, and most serious systems run <b>both</b>. <span class="key">The trade named:</span> RTO vs cost — every second you shave off downtime is bought with more standby infrastructure running all the time, whether you ever fail over or not.</p>
+</div>
+
+<p>So the honest picture of recoverability: the naive daily backup silently commits you to a <b>24-hour RPO</b> (~3.5 billion writes) and a <b>multi-hour RTO</b> (Move 1). Adding <b>incremental backups + continuous WAL archiving</b> (Move 2) turns the WAL into a replay stream, so <b>PITR</b> rewinds to any instant: RPO shrinks to the un-shipped tail (seconds or zero), and RTO becomes parallel base-copy plus a replay window that a fresh base keeps short. <b>Tracing</b> (Move 3) showed PITR nailing the clean <code>DROP</code>, replication being worthless against a corrupting deploy (a replica copies the mistake — you need a point-in-time copy to rewind), and a sharded restore demanding one <i>global</i> consistent instant, not each shard's local clock. The <b>first bottleneck</b> (Move 4): none of it is real until a <b>restore drill</b> proves it and measures the actual numbers — and around that, keep copies <b>3-2-1 &amp; immutable</b> so the disaster can't take them too, <b>tier retention</b> so you don't pay to keep everything forever, and add a <b>warm standby</b> when RTO must be seconds. Every choice names its price.</p>
+
+<p><span class="key">The deepest point: RPO and RTO are two independent dials, and every backup decision is really a purchase of one or the other.</span> Capture more often (WAL streaming, frequent incrementals) and you buy down RPO. Restore faster (parallel shards, fresh bases, warm standbys) and you buy down RTO. Neither is free, and neither substitutes for the other — a system with a five-second RPO can still be down for nine hours, and a standby that flips in thirty seconds can still have copied the very corruption you need to undo. Notice the whole lesson is assembled from pieces you already own: L33/L35's WAL is the replay stream, L79's shards make the restore parallel <i>and</i> the consistency hard, L35's clock skew is why a sharded restore needs a logical marker not a wall-clock time, L06's replication is exposed as protection against machines but not against mistakes, L25/L32's compensation is how you reconcile a partial rewind, L20/L39's tiering prices the retention, and L30/L75's immutability keeps the last copy safe. The new idea is only that all the durability we assumed for eighty lessons is itself a system you design — and that <span class="key">a backup you have never restored is not a backup.</span> The standing tension: <b>recovery guarantees vs storage &amp; operational cost.</b></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>Daily backup loses ~24 h of writes</td><td>Continuous WAL archiving / log shipping (L33/L35)</td><td>RPO → seconds or ~0 / a steady stream to store &amp; manage</td></tr>
+  <tr><td>Rewind to an exact instant</td><td>Point-in-time recovery: base + replay WAL, stop at target</td><td>land on any second / replay takes time</td></tr>
+  <tr><td>10 TB takes 5.6 h to copy back</td><td>Parallel per-shard restore (L79)</td><td>~16× faster base copy / needs a consistent global point (Path C)</td></tr>
+  <tr><td>Base is stale; replay is long</td><td>Frequent incremental backups</td><td>shorter replay window = lower RTO / more storage &amp; I/O</td></tr>
+  <tr><td>A bad deploy corrupts data on every replica</td><td>Point-in-time backup, not replication (L06)</td><td>go back before the mistake / must reconcile good writes since</td></tr>
+  <tr><td>Sharded restore lands shards at different instants</td><td>Restore to a global marker / LSN, not wall-clock (L35)</td><td>cross-shard consistency / coordination overhead</td></tr>
+  <tr><td>The backup silently rotted / can't be restored</td><td>Scheduled restore drills / game days (L51)</td><td>proven, measured RPO/RTO / engineering &amp; infra time</td></tr>
+  <tr><td>Disaster (or ransomware) takes the backups too</td><td>3-2-1 + immutable/WORM offsite copy (L30/L75)</td><td>survives correlated loss &amp; deletion / more cost &amp; friction</td></tr>
+  <tr><td>RTO must be seconds, not minutes</td><td>Warm standby, promote on failover (L10)</td><td>near-zero RTO for hardware loss / expensive, copies mistakes</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — thinking a replica is a backup.</b> A read replica or warm standby copies every committed write in milliseconds — including a <code>DROP TABLE</code> or a corrupting deploy (Path B). It protects against a dead machine, never against a bad write. You need point-in-time backups <i>and</i> a standby; they defend different dials.</li>
+  <li><b>Trap 2 — confusing RPO with RTO (or setting neither).</b> "We do daily backups" silently picks a 24-hour RPO <i>and</i> a multi-hour RTO. They're separate numbers set by different machinery (capture frequency vs restore speed); name both, out loud, with a cost.</li>
+  <li><b>Trap 3 — trusting a backup you've never restored.</b> A green backup job proves the write, not the restore. Corrupt files, WAL gaps, a missing shard, a stale runbook, or a restore that blows the RTO budget all hide until the disaster. Drill the restore on a schedule and measure the real numbers (L51).</li>
+  <li><b>Trap 4 — keeping the only copy next to the data.</b> A backup on the same disk/host/account dies with the primary, and ransomware or a rogue admin deletes it on purpose. Follow 3-2-1 with one offsite, <b>immutable/WORM</b> copy so no single failure — or credential — can erase your last line of defense (L30/L75).</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We asked the question eighty lessons quietly assumed away: after a 2 a.m. <code>DROP TABLE</code>, how much do you lose and how long are you down? <b>Estimate</b> made those two numbers concrete — daily-full-only is a <b>24-hour RPO</b> (~3.5 billion writes) and, at 500 MB/s, a <b>5.6-hour single-stream RTO</b> that parallel per-shard restore (L79) cuts to ~21 minutes for the base copy. <b>Model</b> combined full + incremental backups with continuous <b>WAL archiving</b>, turning the write-ahead log (L33/L35) into a <b>replay stream</b> that powers <b>point-in-time recovery</b> — restore a base, replay forward, stop one second before the disaster — with WAL frequency as the RPO dial and incremental frequency as the RTO dial. <b>Tracing</b> showed PITR handling the clean <code>DROP</code> (Path A), replication being useless against a corrupting deploy because it copies the mistake to every replica (Path B), and a sharded restore needing one global consistent instant rather than each shard's skewed wall clock (Path C, L35). The <b>first bottleneck</b>: an untested backup is Schrödinger's — real only after a <b>restore drill</b> (L51) proves and measures it — surrounded by 3-2-1 + immutable copies (L30/L75), tiered retention (L20/L39), and a warm standby (L10) when RTO must be seconds. The deepest point: RPO and RTO are two independent dials, and every backup decision buys down one or the other, never for free. The standing tension: <span class="key">recovery guarantees vs storage &amp; operational cost.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we've protected the orders data, sharded it (L79), and moved it on the wire (L80). But we've never questioned the shape of the table itself. Why is <code>orders</code> one wide table here and five joined tables there — and what does that choice cost every read and every write?</b></p>
+  <p style="margin:.2rem 0">• <b>Data modeling: normalization vs denormalization (Lesson 82):</b> one schema decision that ripples everywhere — <b>3NF</b> for write integrity vs <b>denormalized/precomputed</b> for read speed (L15/L29), the <b>read:write ratio</b> as the deciding bet, embedding vs referencing in document stores, and the <b>update-anomaly tax</b>. Trade: write correctness &amp; storage vs read latency.</p>
+  <p style="margin:.2rem 0">Say <b>next</b> and we'll take one order-and-customer schema and lay it out both ways, then count what each layout costs a read and a write.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">backup</span>
+    <span class="pill">full backup</span>
+    <span class="pill">incremental backup</span>
+    <span class="pill">WAL / binlog</span>
+    <span class="pill">point-in-time recovery (PITR)</span>
+    <span class="pill">RPO</span>
+    <span class="pill">RTO</span>
+    <span class="pill">log shipping / WAL archiving</span>
+    <span class="pill">snapshot</span>
+    <span class="pill">warm standby</span>
+    <span class="pill">restore drill</span>
+    <span class="pill">3-2-1 rule</span>
+    <span class="pill">immutable / WORM backup</span>
+  </p>
+  <p>That's Lesson 81. It builds on: Lesson 33/35 (the WAL/binlog as a durable, ordered log — here archived and replayed), Lesson 79 (16 shards make the restore parallel and the cross-shard consistency hard), Lesson 35 (clock skew — why a sharded restore needs a logical marker, not a wall-clock time), Lesson 06 (replication protects machines, not correctness), Lesson 25/32 (compensation/reconciliation for a partial rewind), Lesson 20/39 (object storage &amp; tiering price the retention), Lesson 30/75 (immutable/WORM copies survive deletion &amp; ransomware), Lesson 10 (promote a standby on failover), and Lesson 51 (chaos/game days — the restore drill). <b>Ask me follow-ups</b> — e.g. "how does PostgreSQL PITR actually work with base backups and <code>recovery_target_time</code>?", "what exactly is an LSN and how do you get a consistent restore point across shards?", "how do you back up a system that's part SQL, part object store, part cache?", "how do backups interact with GDPR deletion (L56) when a deleted user is still in an old backup?", or "when is continuous data protection (CDP) worth it over WAL archiving?" When you're ready, say <b>next</b> and we'll design the schema itself: normalization vs denormalization, and what each layout costs a read and a write.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your team says 'we're covered — we take a full backup every night at 2 a.m.' What have they actually committed to for RPO and RTO, and why are those two separate numbers?",
+    options: [
+      {t:"They've silently chosen BOTH a ~24-hour RPO and a multi-hour RTO. RPO (max data loss) is set by how often you capture: a failure just before the next nightly backup falls back up to 24 h — at 40k writes/s that's ~3.5 billion writes gone. RTO (max downtime) is set by how fast you can restore: copying 10 TB back at 500 MB/s is ~5.6 h on one stream. They're separate because nothing about backing up more often makes the restore faster, and nothing about a faster disk reduces the data you lost — different machinery, sized independently.",
+       ok:true,
+       fb:"Exactly. 'Daily backups' is not one decision — it's two undecided numbers. RPO rides on capture frequency; RTO rides on restore throughput. Naming both out loud, with a cost, is the whole discipline."},
+      {t:"They've committed to a good RPO (the data is safe on disk) and just need a faster server to fix RTO; the two are really the same guarantee measured differently.",
+       ok:false,
+       fb:"They're not the same measured differently. RPO is how much data is lost (backward from the failure) and is fixed by capture frequency — a 24-hour-old backup means 24 hours of loss no matter how fast the restore. RTO is downtime (forward) and is fixed by restore speed. A faster server helps RTO but does nothing for the 24-hour RPO."},
+      {t:"Nothing to worry about — a nightly full is the industry standard and gives near-zero data loss because the full captures everything.",
+       ok:false,
+       fb:"A full captures everything as of 2 a.m. — it says nothing about the writes since. A failure at 1:59 a.m. the next day loses almost a full day of writes. 'Captures everything' is about completeness at capture time, not about how recent the capture is. RPO is the gap since the last capture, and here that gap is up to 24 hours."}
+    ]
+  },
+  {
+    stem: "A bad deploy at 08:00 quietly writes wrong values into orders for six hours before finance notices at 14:00. Someone says 'no problem, we have three read replicas and a warm standby.' Why doesn't that help, and what does?",
+    options: [
+      {t:"It doesn't help at all: replication faithfully copies every committed write in milliseconds, so the corrupting writes propagated to all three replicas and the standby the instant they committed — every copy is now equally corrupt. Replication protects against losing a MACHINE, not against bad DATA. What helps is a point-in-time backup: PITR a COPY of the DB to 07:59:59 (just before the deploy), then extract the correct rows and reconcile them back into live prod (a compensating fix, L25/L32) — because only a backup lets you go back in time before the mistake.",
+       ok:true,
+       fb:"Right. A replica or standby is a copy of your mistake, delivered fast. It slashes RTO for hardware failure but offers zero protection against a bad write. Rewinding past logical corruption needs a point-in-time backup — and usually a restore-to-the-side-then-reconcile, since good writes since 08:00 are entangled with the bad ones."},
+      {t:"The replicas help because you can promote one that hasn't received the corrupt writes yet — replication lag means at least one copy is still clean.",
+       ok:false,
+       fb:"Replication lag is milliseconds to seconds, not six hours — by 14:00 every replica applied the 08:00–14:00 writes long ago. You can't find a replica that's conveniently six hours behind, and if one were that stale it would also be missing six hours of legitimate writes. Lag is not a time machine; backups are."},
+      {t:"They're right — a warm standby is the same as a backup, so they can just fail over to it and the corruption is gone.",
+       ok:false,
+       fb:"A warm standby is continuously updated from the primary's WAL, so it contains exactly the same corrupt data. Failing over changes which machine serves, not what the data says. A standby defends the RTO dial against hardware loss; it is not a backup and cannot undo a bad write."}
+    ]
+  },
+  {
+    stem: "At 02:00:03 someone runs DROP TABLE orders. You have a nightly full, hourly incrementals, and continuously archived WAL. How do you get the table back with only ~1 second of loss, and what makes it possible?",
+    options: [
+      {t:"Restore the most recent base that predates the disaster (the latest incremental on the last full, in parallel across the 16 shards), then REPLAY the archived WAL forward from that base, applying every committed transaction in order, and STOP replay at a recovery target of 02:00:02.999 — the DROP is simply the next record in the log, which you don't apply. It works because the WAL is a CONTINUOUS replay stream, so you can land on any instant, not just the moments you happened to snapshot. RPO ≈ the un-shipped WAL tail (~seconds); RTO ≈ parallel base copy + the replay window.",
+       ok:true,
+       fb:"Exactly — that's point-in-time recovery. A base backup gets you close fast; replaying the archived WAL and stopping just before the bad transaction gets you to the exact frame. The WAL being continuous is what lets you choose 02:00:02.999 rather than whatever time you last snapshotted."},
+      {t:"You must have taken a backup at exactly 01:59:59; if your most recent snapshot is older, one-second recovery is impossible.",
+       ok:false,
+       fb:"That's the misconception PITR removes. You do NOT need a snapshot at the exact instant — you restore an older base and replay the continuously archived WAL forward to any target time you choose. The WAL fills in every second between snapshots, which is precisely why continuous archiving matters."},
+      {t:"You run the DROP TABLE statement in reverse on the primary to undo it, which re-creates the table from the transaction log.",
+       ok:false,
+       fb:"There's no 'run it backward' operation — a DROP isn't an invertible statement, and the table's data is gone from the live DB. Recovery means rebuilding from a backup plus WAL replay up to just before the DROP, not undoing the command in place."}
+    ]
+  },
+  {
+    stem: "Your backup jobs have exited successfully every night for a year, and the WAL is archiving to durable, immutable, offsite storage. Are you safe? What's the one thing that actually proves it?",
+    options: [
+      {t:"Not proven yet — a backup is 'Schrödinger's' until you actually restore it: the files can be corrupt, the WAL chain can have a silent gap from a failed 3 a.m. archive, a newly-added shard can be missing from the config, the runbook's credentials or tooling can be stale, or the restore can simply blow your RTO budget (works, but takes 9 h when you promised 30 min). The only test that counts is a scheduled RESTORE DRILL to a scratch environment that runs a real PITR and MEASURES the actual RPO and RTO. A backup system's real SLA is its last successful drill, not its last successful backup job.",
+       ok:true,
+       fb:"Right. A green backup job proves the write, not the restore. Every failure mode above hides until the disaster unless you rehearse the recovery and measure the numbers. Drill it on a cadence; assume nothing."},
+      {t:"Yes — a successful backup job (exit code 0) plus immutable offsite storage covers every case; the restore is deterministic, so if the backup wrote, it will read.",
+       ok:false,
+       fb:"Exit code 0 means the job THOUGHT it succeeded — it doesn't catch bit rot, a truncated upload, a missing shard, a WAL gap, or a restore that exceeds RTO. Restores are not guaranteed to work just because a write returned success; the environment, tooling, and chain all have to line up, which only a real restore verifies."},
+      {t:"Yes — you added checksums to the backup files, and matching checksums guarantee a working restore.",
+       ok:false,
+       fb:"Checksums prove the bytes you stored are the bytes you read back — genuinely useful, but they don't prove the backup is COMPLETE (all 16 shards), that the WAL chain has no gap, that the runbook still works, or that the restore fits the RTO budget. A file can be intact and still un-restorable in practice. Only an end-to-end restore drill proves recoverability."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

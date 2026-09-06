@@ -1624,9 +1624,20 @@
     **debuggability** (opaque bytes → log a decoded copy, gRPC reflection); **the format follows the reader** (self-
     describing text for public/human, compact binary for known high-volume internal). Trade: human-readability &
     flexibility vs size, speed & schema discipline. (Lesson 0080)
-81. Backups, restore & point-in-time recovery — the drill nobody runs until it's too late: full vs incremental backups,
-    the WAL/binlog as a replay stream (L33/35), RPO vs RTO as two separate dials (L7/78), restoring a 10 TB sharded DB
-    (L79), and why an untested backup is not a backup. Trade: recovery guarantees vs storage & operational cost.
+81. ✅ **Backups, restore & point-in-time recovery** — a 2 a.m. `DROP TABLE orders` (or a corrupting deploy) on the
+    10 TB / 16-shard / 40k-writes/s orders DB (L79). Two separate dials named up front: **RPO** (data lost, backward
+    from the failure, set by capture frequency) vs **RTO** (downtime, forward, set by restore speed). Estimate:
+    daily-full-only = 24 h RPO ≈ 3.5B writes lost, and 10 TB @ 500 MB/s = 5.6 h single-stream RTO → parallel per-shard
+    restore (L79) cuts base copy to ~21 min. Model = full + incremental + continuous **WAL archiving** (L33/35) turning
+    the log into a **replay stream** → **PITR** (restore base, replay WAL forward, stop at `recovery_target` one second
+    before the DROP); WAL frequency = RPO dial, incremental frequency = RTO dial (fresh base shrinks the replay window).
+    Trace: (A) clean DROP → PITR nails it; (B) corrupting deploy → **replication is NOT a backup** (a replica/standby
+    copies the mistake to every copy in ms; only a point-in-time copy rewinds; then reconcile good writes since, L25/32);
+    (C) sharded restore → all 16 shards must land on ONE global consistent instant, not each shard's skewed wall clock
+    (L35). First bottleneck = **an untested backup is not a backup** (Schrödinger's — corrupt files / WAL gap / missing
+    shard / stale runbook / blown RTO budget) → **restore drills** (L51) that measure real RPO/RTO. Walls: 3-2-1 +
+    immutable/WORM offsite (L30/75, ransomware/rogue admin), tiered retention (L20/39), warm standby (L10) for
+    seconds-RTO. Trade: recovery guarantees vs storage & operational cost. (Lesson 0081)
 82. Data modeling: normalization vs denormalization — one schema decision that ripples everywhere: 3NF for write
     integrity vs denormalized/precomputed for read speed (L15/29), the read:write ratio as the deciding bet, embedding
     vs referencing in document stores, and the update-anomaly tax. Trade: write correctness & storage vs read latency.

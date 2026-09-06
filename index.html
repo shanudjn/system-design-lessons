@@ -31,6 +31,11 @@
   </header>
 
   <!-- LESSONS: newest at top. The daily agent inserts new entries here. -->
+  <a class="lesson" href="lessons/0081-backups-restore-pitr.html">
+    <div class="num">LESSON 81</div>
+    <div class="title">Backups, Restore &amp; Point-in-Time Recovery: Rewinding the Orders DB to One Second Before the DROP</div>
+    <div class="blurb">Eighty lessons assumed the data was <i>there</i>. This one asks the 2 a.m. question: someone runs <code>DROP TABLE orders</code> on prod (or a bad deploy quietly writes garbage for six hours) — how much do you lose, and how long are you down? Those are <b>two different numbers</b>: <b>RPO</b> (data lost, backward from the failure, set by capture frequency) and <b>RTO</b> (downtime, forward, set by restore speed). <b>Estimate</b> prices both on a <b>10 TB / 16-shard / 40k-writes/s</b> orders DB: daily-full-only = a <b>24-hour RPO</b> (~3.5 billion writes) and a <b>5.6-hour</b> single-stream RTO that parallel per-shard restore (L79) cuts to <b>~21 min</b>. <b>Model</b> full + incremental backups + continuous <b>WAL archiving</b>, turning the write-ahead log (L33/L35) into a <b>replay stream</b> that powers <b>PITR</b> — restore a base, replay forward, stop one second before the disaster; WAL frequency is the RPO dial, incremental frequency the RTO dial. <b>Trace</b> the clean <code>DROP</code> (PITR nails it), the corrupting deploy (a replica copies the mistake to every copy — <b>replication is not a backup</b>; only a point-in-time copy rewinds), and the sharded restore (all 16 shards must land on one <i>global</i> instant, not each shard's skewed wall clock, L35). First bottleneck = <b>an untested backup is not a backup</b> — Schrödinger's until a <b>restore drill</b> (L51) proves and measures it; around it, 3-2-1 + immutable/WORM copies (L30/L75), tiered retention (L20/L39), and a warm standby (L10) when RTO must be seconds. Deepest point: RPO and RTO are two independent dials, and every backup decision buys down one or the other, never for free. Trade: recovery guarantees vs storage &amp; operational cost.</div>
+  </a>
   <a class="lesson" href="lessons/0080-serialization-formats.html">
     <div class="num">LESSON 80</div>
     <div class="title">Serialization Formats &amp; the Wire: The Same Message in JSON and Protobuf, Byte for Byte</div>
