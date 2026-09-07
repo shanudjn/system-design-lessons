@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 82 — Data Modeling: Normalization vs Denormalization: One Order-and-Customer Schema, Laid Out Both Ways</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 82 · Worked Example</div>
+  <h1>Data Modeling: Normalization vs Denormalization: One Order-and-Customer Schema, Laid Out Both Ways</h1>
+  <p class="lead">For eighty-one lessons we've said "the <code>orders</code> table" as if the <i>shape</i> of it were obvious. It isn't. The very first decision you make about any dataset — before sharding it (L79), indexing it (L12), or backing it up (L81) — is how to split the facts into tables, and that one choice quietly sets the cost of <i>every</i> read and <i>every</i> write forever after. This lesson takes <span class="key">one concrete schema — customers and their orders — and lays it out both ways</span>: fully <b>normalized</b> (each fact stored exactly once, tables joined at read time) and <b>denormalized</b> (facts copied together so a read is a single fetch). We'll <b>estimate</b> what a join costs versus a pre-joined read, put a real read:write ratio on it, and price the storage. We'll <b>model</b> what "normalized" actually means (functional dependencies, third normal form) and why copying a fact creates the <b>update anomaly</b>. We'll <b>trace</b> three operations — reading an order history, placing an order, and renaming a product — through both layouts, watching one get cheap exactly where the other gets expensive. And we'll find <span class="key">the first bottleneck: the update-anomaly tax</span>, and the resolution that lets you stop choosing — keep the normalized truth, <i>derive</i> a denormalized read copy. The trade under all of it: <b>write correctness &amp; storage vs read latency.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0082-data-modeling-normalization.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>Keep the orders platform from L79: <b>10 billion orders</b>, placed by <b>100 million customers</b>, each order holding a few <b>line items</b> (a product, a quantity, a price). The page everyone hits is the <b>order-history page</b>: "show me my 50 most recent orders, with each item's product name, category, and price." It's read constantly. Orders are placed at <b>40,000 writes/second</b> at peak (L79); the history and product pages are read at roughly <b>500,000 reads/second</b>. Hold onto that ratio — it decides everything.</p>
+
+<p>Here is the same information, drawn two ways. Look at where the facts live:</p>
+<div class="diagram"><pre>
+  NORMALIZED (3NF) — each fact stored ONCE, tables joined at read time
+  ┌──────────────┐      ┌──────────────┐      ┌──────────────────┐
+  │  customers   │      │    orders    │      │   order_items    │
+  ├──────────────┤      ├──────────────┤      ├──────────────────┤
+  │ customer_id ◄├──┐   │ order_id     │   ┌─►│ order_id  (FK)   │
+  │ name         │  └───┤ customer_id ─┼───┘  │ product_id (FK) ─┼──┐
+  │ email        │      │ created_at   │      │ qty              │  │
+  │ tier         │      │ status       │      └──────────────────┘  │
+  └──────────────┘      └──────────────┘      ┌──────────────────┐  │
+                                              │    products      │◄─┘
+   "Blue Runner" is stored in exactly ONE     ├──────────────────┤
+   place: products.name. Everything else      │ product_id       │
+   POINTS to it with a foreign key (FK).       │ name  "Blue Runner"
+                                              │ category         │
+                                              │ price_cents      │
+                                              └──────────────────┘
+
+  DENORMALIZED — facts COPIED together so a read is one fetch
+  ┌──────────────────────────────────────────────────────────────┐
+  │  order_history  (one wide row per order line)                 │
+  ├──────────────────────────────────────────────────────────────┤
+  │ order_id │ customer_id │ customer_name │ product_name │ ...    │
+  │  9001    │   42        │  "Ada Lovelace"│ "Blue Runner"│ 12900 │
+  │  9001    │   42        │  "Ada Lovelace"│ "Red Racer"  │  8900 │
+  │  9002    │   42        │  "Ada Lovelace"│ "Blue Runner"│ 12900 │  <- "Blue Runner"
+  └──────────────────────────────────────────────────────────────┘     and "Ada Lovelace"
+                                                                        copied on EVERY row
+</pre></div>
+
+<p class="note"><span class="key">The one idea the whole lesson turns on:</span> <b>normalization stores every fact in exactly one place</b> and reconstructs the wide view with a <b>join</b> at read time; <b>denormalization copies facts together</b> so the wide view is already assembled. The first makes writes correct and cheap (change a fact in one row) but makes reads expensive (re-join every time). The second makes reads cheap (one fetch) but makes writes expensive and dangerous (a fact now lives in a million rows that can disagree). Every data-modeling decision is choosing which of those two pains to pay, and where.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Schema</b> — the shape of your data: what tables exist, what columns they have, and how they relate.</li>
+  <li><b>Primary key (PK)</b> — the column that uniquely identifies a row (e.g. <code>customer_id</code>). One per row, never repeated.</li>
+  <li><b>Foreign key (FK)</b> — a column that holds another table's primary key, so a row can <i>point</i> to a row elsewhere instead of copying it.</li>
+  <li><b>Join</b> — the read-time operation that follows foreign keys to stitch rows from several tables back into one wide result.</li>
+  <li><b>Functional dependency</b> — "A determines B": if knowing A always fixes B, then B depends on A. Knowing <code>customer_id</code> fixes the <code>name</code>. Written <code>customer_id → name</code>.</li>
+  <li><b>Normalization</b> — organizing tables so each fact is stored once, in the table whose key it depends on. Removes duplicated data.</li>
+  <li><b>Third normal form (3NF)</b> — the common target: every non-key column depends on <i>the key, the whole key, and nothing but the key</i>. In plain words: no column is a copy of a fact that really belongs to some other table.</li>
+  <li><b>Denormalization</b> — deliberately copying facts together (violating 3NF on purpose) so a read doesn't have to join.</li>
+  <li><b>Update anomaly</b> — the bug denormalization invites: a fact stored in many rows, so changing it means updating every copy, and any copy you miss is now wrong.</li>
+  <li><b>Read:write ratio</b> — how many reads you serve per write. The single number that decides which pain is worth paying.</li>
+  <li><b>Materialized view / read model</b> — a denormalized, pre-joined copy that the database (or your code) keeps in sync with the normalized truth. The copy is <i>derived</i>, never the source.</li>
+  <li><b>Source of truth</b> — the one authoritative place a fact lives. Everything else is a copy you can rebuild.</li>
+  <li><b>Embedding vs referencing</b> — the document-store version of the same choice: nest child data inside the parent document (embed) or store an id that points to it (reference).</li>
+</ul>
+
+<h2>Move 1 — Estimate: what a join costs, and how often you pay it</h2>
+<p>Two numbers decide this whole lesson: how expensive is the join we're avoiding, and how lopsided is the read:write ratio that tells us whether avoiding it is worth it.</p>
+
+<div class="card calc">
+  <p><b>The read: normalized order history is a 4-way join.</b> To render one customer's 50-order page, each order carrying ~3 line items (150 items total), the normalized schema must:</p>
+  <div class="diagram"><pre>
+  1. find the 50 orders    — one index range on orders(customer_id, created_at)
+                             (L18 cursor seek) ........... ~0.5 ms
+  2. find their items      — 150 rows via order_id index .. ~0.5 ms
+  3. look up each product  — 150 B-tree seeks into products
+                             (L12: ~0.4 ms each) = 150 × 0.4 = 60 ms   <-- dominates
+  4. look up the customer  — 1 seek ...................... ~0.4 ms
+                                                          ---------
+                             total ................... ~61 ms
+  </pre></div>
+  <p>The killer is step 3: a <b>nested-loop join</b> does one index seek <i>per item</i>, so the cost scales with how many rows you're stitching. Now the denormalized read of the same page:</p>
+  <div class="diagram"><pre>
+  order_history is already keyed by (customer_id, created_at) with the
+  product name/category/price COPIED into each row:
+     one index range scan returns all 50 orders' lines ...... ~0.5 ms
+  </pre></div>
+  <p><span class="key">~61 ms vs ~0.5 ms ≈ 120× faster.</span> That's the read prize denormalization buys: the join was <i>precomputed once at write time</i> (L15's precompute-the-read) instead of re-run on every page view. The trade named: we traded write-time work and duplicated storage for a 120× cheaper read.</p>
+</div>
+
+<div class="card calc">
+  <p><b>How often do we pay it? The read:write ratio.</b> Reads run at ~500,000/s; order-placing writes at ~40,000/s; and the facts we'd be copying — a product's name or category, a customer's name — change far more rarely still (a product is renamed maybe once in its life, read millions of times).</p>
+  <div class="diagram"><pre>
+  reads : order-writes      = 500,000 : 40,000   ≈ 12 : 1
+  reads : product-renames   ≈ 500,000/s : ~0.01/s ≈ 50,000,000 : 1
+
+  A product read is served ~50 million times between renames.
+  Paying a little MORE on the rename to make each of those 50M
+  reads 120× cheaper is an overwhelmingly good trade.
+  </pre></div>
+  <p><span class="key">This ratio is the deciding bet.</span> When reads vastly outnumber the writes that would change a copied fact, denormalize: pay the rare expensive write to make the constant read cheap. When writes are frequent or the data churns, normalize: don't create copies you'll spend all day keeping in sync. Data modeling is a <i>bet on your read:write ratio</i> — and if you don't know the ratio, you can't make the schema decision honestly.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The storage price of copying.</b> A customer's name is ~20 bytes. Stored once per customer (normalized) vs copied into every order (denormalized):</p>
+  <div class="diagram"><pre>
+  normalized:   100,000,000 customers × 20 B = 2 GB      (once each)
+  denormalized: 10,000,000,000 orders   × 20 B = 200 GB   (copied per order)
+                                                 -------
+                        100× more storage for that ONE field
+  </pre></div>
+  <p>Multiply across every copied column (name, category, price...) and denormalized tables balloon. Storage is cheap, so the <b>bytes</b> aren't the real cost — but every one of those duplicated copies is a fact that can now <i>drift out of sync</i>, and that is the real bill, which Move 2 makes precise.</p>
+</div>
+
+<p class="note why"><b>Why the read and the write pull in opposite directions:</b> a join is work you do at <i>read</i> time; a copy is work (and risk) you take on at <i>write</i> time. You cannot make both cheap with one physical layout, because the wide, pre-joined shape that a read wants is exactly the duplicated shape a write hates. So the schema question is never "which is better" — it's "which side of this system do I want to pay on, given how often each side runs." Name the ratio, then name the price.</p>
+
+<h2>Move 2 — Model: what "normalized" means, and the anomaly copying creates</h2>
+
+<h3>Normalization is one rule: each fact depends on its key, and lives with that key</h3>
+<div class="card calc">
+  <p>Start with the messy "one big table" everyone reaches for first, and watch what's wrong with it:</p>
+  <div class="diagram"><pre>
+  order_id │ customer_id │ customer_email      │ product_id │ product_name │ price
+  ─────────┼─────────────┼─────────────────────┼────────────┼──────────────┼──────
+   9001    │   42        │ ada@example.com     │  7         │ Blue Runner  │ 12900
+   9002    │   42        │ ada@example.com     │  7         │ Blue Runner  │ 12900
+   9003    │   42        │ ada@example.com     │  9         │ Red Racer    │  8900
+  </pre></div>
+  <p>Look at the <b>functional dependencies</b> — which column determines which:</p>
+  <ul>
+    <li><code>customer_id → customer_email</code> (id 42 always means <code>ada@example.com</code>)</li>
+    <li><code>product_id → product_name, price</code> (product 7 is always "Blue Runner" at 12900)</li>
+  </ul>
+  <p>Neither of those facts depends on <code>order_id</code>, the table's key — yet they're stored in this orders table, repeated on every row. <b>Third normal form</b> is the rule that fixes it: <span class="key">every non-key column must depend on the key, the whole key, and nothing but the key.</span> <code>customer_email</code> depends on <code>customer_id</code>, not on the order — so it belongs in a <code>customers</code> table keyed by <code>customer_id</code>. <code>product_name</code> depends on <code>product_id</code> — so it belongs in a <code>products</code> table. Move each fact to the table whose key it actually depends on, and leave behind only a foreign key that points to it. That's the normalized schema from the top of the page. Each fact now lives in exactly one place.</p>
+</div>
+
+<h3>Why "one place" matters: the update anomaly</h3>
+<div class="card calc">
+  <p>Store a fact in one place and changing it is one write. Copy it into a million rows and you've created the <b>update anomaly</b>: to change the fact you must find and rewrite every copy, and the instant you've done some but not all, your data is <i>lying</i>.</p>
+  <div class="diagram"><pre>
+  Product 7 is renamed "Blue Runner" -> "Blue Runner v2".
+
+  NORMALIZED:  UPDATE products SET name='Blue Runner v2' WHERE product_id=7;
+               -> ONE row changed. Every order that points to product 7
+                  now reads the new name automatically. Impossible to
+                  be half-done: there's only one copy.
+
+  DENORMALIZED: product 7 appears in, say, 2,000,000 order_history rows.
+               UPDATE order_history SET product_name='Blue Runner v2'
+                 WHERE product_id=7;
+               -> 2,000,000 rows to rewrite. At 10,000 rows/s that's
+                  ~200 seconds, DURING WHICH some rows say "Blue Runner"
+                  and some say "Blue Runner v2" — the same product, two
+                  names, at the same time. If the job crashes at row
+                  1,000,000, it stays that way.
+  </pre></div>
+  <p><span class="key">The update-anomaly tax, stated as a number:</span> one logical change costs <b>1</b> write normalized and <b>2,000,000</b> writes denormalized — and worse than the cost is the <i>window of inconsistency</i> while the fan-out runs, plus the permanent corruption if it fails partway. (Its cousins: the <b>insertion anomaly</b> — you can't record a new product until someone orders it, because products only exist inside order rows — and the <b>deletion anomaly</b> — delete the last order for a product and the product's very existence vanishes. Both are the same disease: a fact with no home of its own.)</p>
+</div>
+
+<h3>The same choice in a document store: embed vs reference</h3>
+<div class="card calc">
+  <p>Document databases dress this decision in different clothes but it's identical. An order document can <b>embed</b> its line items (nest them inside) or <b>reference</b> them (store ids):</p>
+  <div class="diagram"><pre>
+  EMBED (denormalize):  { order_id: 9001, customer: "Ada",
+                          items: [ {name:"Blue Runner", price:12900}, ... ] }
+     one read gets the whole order — but "Blue Runner" is copied into
+     every order that bought it, and the document grows with the array.
+
+  REFERENCE (normalize): { order_id: 9001, customer_id: 42,
+                           item_ids: [7, 9] }   // look products up separately
+     no duplication, but rendering the order needs a second lookup (a join
+     by another name).
+  </pre></div>
+  <p><span class="key">The rule of thumb:</span> <b>embed what is read together, owned by the parent, and bounded; reference what is shared, independently updated, or unbounded.</b> Line items are read with their order, owned by it, and few → embed. A product's canonical name is shared across millions of orders and updated on its own → reference. The wall on embedding is the same update anomaly plus a hard one: an <b>unbounded array</b> (embed every comment under a post, forever) eventually blows the document size limit and rewrites the whole document on every append. Bounded-and-owned embeds; shared-or-unbounded references.</p>
+</div>
+
+<h2>Move 3 — Trace the paths: one read, one write, one rename</h2>
+
+<h3>Path A — read the order-history page (denormalized wins)</h3>
+<div class="diagram"><pre>
+   NORMALIZED:   4-way join, 150 nested-loop product seeks -> ~61 ms
+   DENORMALIZED: one index range scan of pre-joined rows   -> ~0.5 ms
+
+   This page runs ~500,000 times/second. The 120× gap is paid
+   half a million times a second -> denormalization is the whole
+   difference between a snappy page and a melted database.
+</pre></div>
+<p>This is the case denormalization exists for: a read-heavy path where the join is re-run constantly on data that rarely changes. Precompute the join once (L15), store it wide, and every read is a single seek.</p>
+
+<h3>Path B — place a new order (normalized wins, mildly)</h3>
+<div class="diagram"><pre>
+   NORMALIZED:   INSERT 1 order row + 3 order_item rows (FKs to
+                 existing customer & products) = 4 small inserts.
+                 The customer's name and each product's name are
+                 NOT written — they already exist, once.
+
+   DENORMALIZED: INSERT 3 order_history rows, each carrying a COPY
+                 of the customer name + product name/category/price.
+                 More bytes per write, and you must first FETCH those
+                 facts to copy them in. Slightly heavier, but bounded
+                 (a handful of rows) — placing an order is fine either way.
+</pre></div>
+<p>Placing an order touches only a few rows in both layouts, so the write difference here is small. The write pain of denormalization doesn't show up when you <i>add</i> a row — it shows up when you <i>change a copied fact</i>, which is Path C.</p>
+
+<h3>Path C — a product is renamed (the denormalized layout's nightmare)</h3>
+<div class="diagram"><pre>
+   NORMALIZED:   UPDATE products SET name=... WHERE product_id=7;
+                 -> 1 row. Atomic. Every reader sees the new name at once.
+
+   DENORMALIZED: UPDATE order_history SET product_name=... WHERE product_id=7;
+                 -> ~2,000,000 rows. Slow (~200 s), and INCONSISTENT
+                    for the whole 200 s (two names live at once). Crash
+                    mid-way -> permanently split-brained product name.
+</pre></div>
+<p class="note"><span class="key">The two layouts are photographic negatives of each other.</span> Exactly where the denormalized layout is 120× faster (the read, Path A), the normalized layout is 2,000,000× cheaper (the rename, Path B/C). Neither is "better." The read:write ratio from Move 1 tells you which path runs more and matters more — and for order history (read 500k/s, product renamed ~never) the read wins decisively. But notice we've been forced to give up something real on whichever side we don't pick. The next move refuses that dilemma.</p>
+
+<h2>Move 4 — Find the first bottleneck: the update-anomaly tax, and how to stop choosing</h2>
+
+<div class="card calc">
+  <p><b>The first bottleneck — the update-anomaly tax.</b> A pure denormalized schema makes the common read fast but turns every change to a shared fact into a mass rewrite with a window of inconsistency (Move 2, Path C). A pure normalized schema keeps every write correct and cheap but makes the common read a costly multi-way join (Path A). Chosen globally, each is wrong for half your workload. The resolution is to <b>stop treating it as one global choice</b>:</p>
+  <div class="diagram"><pre>
+   Keep the NORMALIZED tables as the SOURCE OF TRUTH.
+     - 3NF: each fact once, writes correct, rename = 1 row (Path C stays cheap)
+     - this is where an order is placed and a product is renamed
+
+   DERIVE a DENORMALIZED read model from it, kept in sync ASYNC.
+     - a materialized view / read table: pre-joined, wide, fast (Path A)
+     - the rename updates 1 truth row, then a background job (L15/L33
+       CDC/outbox) re-fans the new name into the read model
+     - readers hit the read model; writers hit the truth
+
+   The copy is DERIVED, never authoritative. If it drifts or is lost,
+   REBUILD it from the truth. The update anomaly stops being CORRUPTION
+   (a lie with no correct source) and becomes LAG (a copy that's briefly
+   stale but will converge) — a far cheaper problem.
+</pre></div>
+  <p><span class="key">This is the deepest point of the lesson.</span> The reason a pure-denormalized schema is dangerous isn't the duplication itself — it's that the duplicated copy <i>is</i> the data, so a missed update is permanent corruption with no correct version to fall back to. Make the copy <b>derived</b> from a single normalized source of truth and the same duplication becomes safe: the worst case is a few seconds of staleness (L06 eventual consistency), and you can always rebuild the read model by re-running the join. You get the 120× read <i>and</i> the 1-row rename — paid for with eventual consistency and the machinery to keep the copy in sync. That machinery is exactly CQRS (L37), materialized views, and the precompute-the-read pattern (L15), fed by CDC/outbox events (L33).</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — over-normalization has its own tax.</b> Normalization taken to a purist extreme (split every attribute into its own table) makes writes pristine but turns a simple read into a 10-way join, and every join is a chance for the query planner to pick a bad plan (L12's selectivity trap). A read that needs eight joins to show one screen is a design smell in the other direction. <span class="key">The trade named:</span> normalize until each fact has one clear home, but don't shatter data that's always read together across so many tables that every read pays a join tax with no write benefit to show for it. 3NF is the target, not "as many tables as possible."</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — some denormalization can't be derived cheaply and must be chosen up front.</b> The order-history read model is easy to derive because the join is simple. But some access patterns (a feed, a leaderboard, a per-user timeline, L15) are expensive to compute on the fly <i>and</i> expensive to keep as a derived view, so you bake the denormalized shape into the primary write path — this is the norm in wide-column and document stores (Cassandra, DynamoDB), where <span class="key">you model the table around the query, not the entities</span>. There you accept the update anomaly deliberately and manage it with application-level fan-out and idempotent updates (L13). The trade named: the more your store lacks cheap joins, the more you must denormalize at write time and own the consistency work yourself.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The fourth wall — the read:write ratio changes, and so must the schema.</b> The deciding bet (Move 1) is made against <i>today's</i> ratio. A write-light, read-heavy table that denormalized happily can flip — a new feature makes the "copied" fact change hourly, and suddenly your rename tax is a daily fire. Schemas are not permanent; they migrate (L24 expand/contract, L79 resharding). <span class="key">The trade named:</span> a denormalized schema is a bet that the copied facts stay stable; when that bet stops holding, the fix is a migration back toward normalization (or toward a derived read model), and the earlier you priced the ratio the earlier you see the bet turning.</p>
+</div>
+
+<p>So the honest picture: <b>normalization</b> stores each fact once, keeping writes correct and cheap (a product rename is one row) but making the read-heavy order-history page a ~61 ms four-way join. <b>Denormalization</b> copies facts together, making that page a ~0.5 ms single fetch (120× faster, paid half a million times a second) but turning a product rename into a ~2,000,000-row rewrite with a window of inconsistency and a corruption risk if it fails partway — the <b>update-anomaly tax</b>. <b>Estimate</b> priced both sides and named the read:write ratio (~12:1 for orders, ~50,000,000:1 for renamed facts) as the deciding bet. <b>Model</b> defined normalization as "each fact depends on and lives with its key" (3NF), showed the anomaly copying creates, and mapped it onto embed-vs-reference in document stores. <b>Tracing</b> showed the two layouts as photographic negatives — one cheap exactly where the other is dear. The <b>first bottleneck</b> — the update-anomaly tax — dissolves once you stop choosing globally: keep a <b>normalized source of truth</b> and <b>derive</b> a denormalized read model kept in sync asynchronously (L15/L37/L33), turning corruption into mere lag. Around it: don't over-normalize into a join tax, some denormalization must be chosen up front in join-less stores, and re-price the bet when the read:write ratio shifts. Every choice names its price.</p>
+
+<p><span class="key">The deepest point: a normalized fact has a single source of truth, and a denormalized fact is a cache of that truth — so denormalization is safe exactly when the copy is derived and rebuildable, and dangerous exactly when the copy is the only copy.</span> That reframes the whole lesson: "normalize vs denormalize" is really "where is the truth, and what is merely a fast copy of it?" Store the truth normalized so a fact changes in one place; serve reads from denormalized copies so the common path is a single fetch; and keep the copies honest with the sync machinery you already know — precompute-the-read (L15), materialized views / CQRS (L37), CDC/outbox propagation (L33), all under eventual consistency (L06). Notice everything here is assembled from pieces you own: L12's B-tree seek is what a join costs, L15's precompute-the-read is the denormalized read model, L18's cursor indexes the history page, L33's outbox keeps the copy in sync, L79's sharding and L24's migration are how a schema changes when the bet turns. The new idea is only that the <i>shape</i> of the data is itself a design decision — the first one — and it is a bet on your read:write ratio. The standing tension: <b>write correctness &amp; storage vs read latency.</b></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>Order-history read is a slow 4-way join (~61 ms)</td><td>Denormalized, pre-joined read model (L15 precompute)</td><td>~120× faster read / duplicated storage + sync work</td></tr>
+  <tr><td>A fact copied into millions of rows drifts</td><td>Normalize: each fact in one table, 3NF</td><td>rename = 1 row, no drift / reads must join</td></tr>
+  <tr><td>Deciding which layout to use</td><td>Price the read:write ratio (this lesson)</td><td>an honest bet / must actually measure the ratio</td></tr>
+  <tr><td>The update-anomaly tax (2M-row rewrite)</td><td>Normalized truth + derived read model (L37 CQRS)</td><td>fast read AND 1-row write / eventual consistency</td></tr>
+  <tr><td>Keeping the derived copy in sync</td><td>CDC / outbox fan-out to the read model (L33)</td><td>copy converges / a pipeline to run &amp; monitor</td></tr>
+  <tr><td>Document store: order + its items</td><td>Embed bounded/owned, reference shared/unbounded</td><td>one read / same anomaly + document-size wall</td></tr>
+  <tr><td>Read needs 8 joins to draw one screen</td><td>Don't over-normalize; keep read-together data together</td><td>fewer joins / less write purity</td></tr>
+  <tr><td>Join-less store (Cassandra/Dynamo)</td><td>Model the table around the query, denormalize up front</td><td>fast query / own the consistency yourself (L13)</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — denormalizing without a source of truth.</b> Copying a fact into many rows where the copy <i>is</i> the data means a missed update is permanent corruption with nothing to fall back to. Always keep one normalized authoritative copy and <i>derive</i> the rest, so drift is lag you can rebuild, not corruption you can't.</li>
+  <li><b>Trap 2 — choosing the layout without knowing the read:write ratio.</b> Normalize vs denormalize is a bet on how often you read versus how often the copied facts change. Guessing the ratio is guessing the schema. Measure it first, and revisit when the workload shifts.</li>
+  <li><b>Trap 3 — over-normalizing into a join tax.</b> "More tables = more correct" is false past 3NF: shattering read-together data across ten tables makes every read an expensive multi-join with no write benefit. Normalize until each fact has one home, then stop.</li>
+  <li><b>Trap 4 — embedding unbounded or shared data.</b> Nesting a growing array (all comments under a post, forever) or a shared fact (a product's canonical name) inside a document rebuilds the whole document on every change and duplicates the shared fact. Embed only what is bounded and owned; reference the rest.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We took the one decision eighty-one lessons assumed away — the <i>shape</i> of the <code>orders</code> table — and laid it out both ways. <b>Estimate</b> made the trade concrete: the normalized order-history read is a ~61 ms four-way join (150 nested-loop product seeks, L12), the denormalized read is a ~0.5 ms single fetch (~120× faster, L15's precompute), and the read:write ratio (~12:1 for orders, effectively ~50,000,000:1 for the facts we'd copy) is the deciding bet. <b>Model</b> defined normalization as functional dependencies obeyed — each fact stored with the key it depends on (3NF) — and showed the <b>update anomaly</b> that copying invites: one logical rename costs 1 write normalized and ~2,000,000 denormalized, with a window of inconsistency and a corruption risk if it fails partway; the same choice reappears as embed-vs-reference in document stores. <b>Tracing</b> a read, a write, and a rename showed the two layouts as photographic negatives — each cheap exactly where the other is dear. The <b>first bottleneck</b>, the update-anomaly tax, dissolves once you keep a normalized <b>source of truth</b> and <b>derive</b> a denormalized read model kept in sync asynchronously (CQRS L37, materialized views, CDC/outbox L33) — turning corruption into mere lag (L06). Around it: don't over-normalize into a join tax, denormalize up front in join-less stores and own the consistency (L13), and re-price the bet when the ratio shifts (L24/L79). The deepest point: a normalized fact is the truth and a denormalized fact is a cache of it, so the real question is always <i>where does the truth live, and what is merely a fast copy?</i> The standing tension: <span class="key">write correctness &amp; storage vs read latency.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we've chosen the shape of the data and where its truth lives. But one of the hardest reads we keep deferring is full-text: "blue running shoes" over millions of products. Lesson 12 built the inverted index and Lesson 16 ranked the results — now we assemble the whole pipeline end to end.</b></p>
+  <p style="margin:.2rem 0">• <b>Full-text &amp; relevance pipelines end-to-end (Lesson 83):</b> beyond L12/L16 — <b>analyzers/tokenizers</b> (how text becomes searchable terms), the <b>index-build vs query-time</b> split, <b>near-real-time indexing</b> (L16/L29 freshness), <b>typo tolerance &amp; synonyms</b>, and <b>faceted search</b> over shards (L79). Trade: index richness &amp; freshness vs build cost &amp; query latency.</p>
+  <p style="margin:.2rem 0">Say <b>next</b> and we'll trace one query and one document all the way through the pipeline, from raw text to a ranked, faceted result page.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">schema</span>
+    <span class="pill">primary key</span>
+    <span class="pill">foreign key</span>
+    <span class="pill">join</span>
+    <span class="pill">functional dependency</span>
+    <span class="pill">normalization</span>
+    <span class="pill">third normal form (3NF)</span>
+    <span class="pill">denormalization</span>
+    <span class="pill">update anomaly</span>
+    <span class="pill">read:write ratio</span>
+    <span class="pill">materialized view / read model</span>
+    <span class="pill">source of truth</span>
+    <span class="pill">embedding vs referencing</span>
+  </p>
+  <p>That's Lesson 82. It builds on: Lesson 12 (the B-tree seek that a join pays per row, and the selectivity trap over-normalization risks), Lesson 15 (precompute-the-read — the denormalized read model), Lesson 18 (the cursor index on the history page), Lesson 37 (CQRS — split the write model from the read model), Lesson 33 (CDC/outbox — how the derived copy is kept in sync), Lesson 06 (eventual consistency — what the copy's lag really is), Lesson 13 (idempotent fan-out when you denormalize at write time), and Lesson 24/79 (migrating the schema when the read:write bet turns). <b>Ask me follow-ups</b> — e.g. "what are 1NF and 2NF, and when does BCNF matter?", "how do I keep a materialized view fresh without hammering the primary?", "how do Cassandra/DynamoDB force query-first modeling, concretely?", "when is a denormalized column worth a trigger vs an async job?", or "how do I decide embed vs reference for a comments feature?" When you're ready, say <b>next</b> and we'll build the full-text search pipeline end to end.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your order-history page is served ~500,000 times/second and runs a 4-way join costing ~61 ms; the facts it joins (product names, customer names) change extremely rarely. A denormalized, pre-joined table would serve the same page in ~0.5 ms. Should you denormalize, and what's the reasoning?",
+    options: [
+      {t:"Yes — the read:write ratio is overwhelmingly lopsided, so precompute the join. The page is read ~500,000×/s while the copied facts change maybe once in a product's lifetime (~50,000,000 reads between changes). Denormalization pays a rare, expensive write to make a constant, hot read ~120× cheaper (L15's precompute-the-read). Paying more on the near-never write to make 500k reads/s each 120× faster is a decisively good bet.",
+       ok:true,
+       fb:"Exactly. The schema decision is a bet on the read:write ratio. When reads vastly outnumber the writes that would change a copied fact, move the join work to write time and store the result wide. Just keep a normalized source of truth so the copy stays derivable (Q4)."},
+      {t:"No — denormalization violates 3NF, and a correct schema must always be fully normalized; the ~61 ms join is the price of correctness and you should just add more read replicas.",
+       ok:false,
+       fb:"3NF is a default, not a law. Denormalization is a deliberate, legitimate trade when the read:write ratio justifies it. Read replicas multiply the same 61 ms join across more machines — they scale how many slow joins you can run, not the latency of each one. The pre-joined read is 120× faster per query regardless of replica count."},
+      {t:"No — storage is the deciding factor, and copying the customer name into 10 billion order rows uses 100× more space (200 GB vs 2 GB), which rules denormalization out.",
+       ok:false,
+       fb:"Storage is real (100× for that field) but it's the cheap part — 200 GB is trivial at this scale. The actual cost of duplication is that the copies can drift out of sync (the update anomaly), not the bytes. And that risk is manageable if the copy is derived from a source of truth. Storage size doesn't rule out a 120×-faster read on a 500k/s path."}
+    ]
+  },
+  {
+    stem: "In a fully denormalized order_history table, the product 'Blue Runner' (product_id 7) has been sold 2,000,000 times, so its name is copied into 2,000,000 rows. Marketing renames it 'Blue Runner v2'. What is the cost and the danger, versus the normalized layout?",
+    options: [
+      {t:"Denormalized: ~2,000,000 rows must be rewritten (~200 s at 10k rows/s), and for that whole window some rows read 'Blue Runner' and some read 'Blue Runner v2' — the same product with two names at once; a crash mid-way leaves it permanently split. Normalized: one UPDATE to products.name (product_id 7) — a single atomic row change every order automatically sees. This is the update-anomaly tax: a fact copied into many rows costs one write per copy plus a window of inconsistency.",
+       ok:true,
+       fb:"Right. Storing a fact in one place makes a change atomic and impossible to be half-done. Copying it turns one logical change into a mass rewrite with an inconsistency window and a corruption risk — the core reason denormalization is dangerous without a derivable source of truth."},
+      {t:"Both layouts cost the same — the database updates all matching rows in a single statement either way, so there's no meaningful difference between one row and two million.",
+       ok:false,
+       fb:"A single SQL statement can express both, but it does very different amounts of work: the normalized UPDATE touches 1 row, the denormalized one touches 2,000,000 (~200 s of I/O) and is non-atomic in practice, exposing an inconsistency window and risking a partial-failure corruption. 'One statement' hides a 2,000,000× difference in rows written."},
+      {t:"The denormalized layout is fine because you can just run the rename overnight in a batch job; the extra rows are only a performance detail, not a correctness one.",
+       ok:false,
+       fb:"Scheduling it overnight reduces load contention but doesn't remove the two real problems: during the batch the product genuinely has two names in the data (a correctness issue any concurrent reader sees), and a crash partway leaves it permanently inconsistent. The row count is a performance detail; the split-brain fact and partial-failure corruption are correctness problems."}
+    ]
+  },
+  {
+    stem: "You want the ~0.5 ms denormalized read AND the 1-row atomic rename — without the update-anomaly tax. What design achieves both, and why is it safe?",
+    options: [
+      {t:"Keep the NORMALIZED tables as the source of truth (writes and renames hit them — a rename is still 1 row), and DERIVE a denormalized read model from them, kept in sync asynchronously (a materialized view / CQRS read table fed by CDC/outbox events, L37/L33). Reads hit the fast pre-joined copy; writes hit the truth. It's safe because the copy is derived and rebuildable: a missed or lagging update is temporary staleness (eventual consistency, L06) that converges, not permanent corruption — and if the copy is ever lost, you rebuild it from the truth.",
+       ok:true,
+       fb:"Exactly the resolution. The danger of duplication was never the copies — it was a copy with no correct source. Make the copy derived from a single normalized truth and the same duplication becomes a cache: worst case a few seconds of lag, always rebuildable. Fast read, atomic write, at the cost of eventual consistency and a sync pipeline."},
+      {t:"Store everything denormalized but wrap each rename in a database transaction, so the 2,000,000-row update is atomic and there's no inconsistency window.",
+       ok:false,
+       fb:"A transaction can make the 2M-row update atomic (no half-done state visible), but it doesn't make it cheap or safe: it still rewrites 2,000,000 rows, holds locks for ~200 s (L22's serial gate / L28 backpressure), and blocks or is blocked by concurrent orders. You've removed the split-brain window by trading it for a massive long-held lock. It also still lacks a separate source of truth to rebuild from. The derived-read-model design avoids the mass write entirely."},
+      {t:"Use a read replica of the denormalized table so reads are fast and the rename only has to run on the primary.",
+       ok:false,
+       fb:"A replica copies the primary's writes, including the 2,000,000-row rename — it doesn't shrink that write, it duplicates it onto every replica (L81's 'replication is not a backup' shape: a replica faithfully copies the expensive change). Replicas scale read throughput, not the cost or safety of the rename. You still have the update-anomaly tax on the write side."}
+    ]
+  },
+  {
+    stem: "You're modeling orders in a document store. You must decide whether to EMBED the line items inside the order document or REFERENCE them, and likewise for the product's canonical name. What's the right call and the rule behind it?",
+    options: [
+      {t:"Embed the line items (they're bounded, owned by the order, and always read with it → one read gets the whole order), but reference the product's canonical name by product_id (it's shared across millions of orders and updated independently → copying it recreates the update anomaly). Rule: embed what is bounded, owned, and read-together; reference what is shared, independently updated, or unbounded.",
+       ok:true,
+       fb:"Right. Embed-vs-reference is the document-store face of denormalize-vs-normalize. A handful of order-owned items embed cleanly; a shared, separately-updated fact like the product name should be referenced so it has one home. And beware unbounded arrays — they blow the document-size limit and rewrite the whole doc on every append."},
+      {t:"Always embed everything — the whole point of a document store is one read per document, so nesting line items AND the full product record (name, category, price) in every order is the idiomatic design.",
+       ok:false,
+       fb:"Embedding the shared product record into every order re-creates the exact update anomaly from the SQL case: rename the product and you must rewrite it in every order that bought it. 'One read' is a benefit for bounded, owned data (the line items), but for a shared, independently-updated fact it's the same duplication trap. Document stores don't repeal the anomaly."},
+      {t:"Always reference everything — embedding duplicates data, which violates normalization, so store only ids and look everything up separately for correctness.",
+       ok:false,
+       fb:"Referencing everything is over-normalization in document clothing: now rendering one order needs a second lookup per line item (a join by another name), losing the store's main advantage for data that's bounded, owned, and always read together. The line items should embed. The skill is choosing per-relationship, not applying one rule everywhere."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

@@ -1638,9 +1638,23 @@
     shard / stale runbook / blown RTO budget) → **restore drills** (L51) that measure real RPO/RTO. Walls: 3-2-1 +
     immutable/WORM offsite (L30/75, ransomware/rogue admin), tiered retention (L20/39), warm standby (L10) for
     seconds-RTO. Trade: recovery guarantees vs storage & operational cost. (Lesson 0081)
-82. Data modeling: normalization vs denormalization — one schema decision that ripples everywhere: 3NF for write
-    integrity vs denormalized/precomputed for read speed (L15/29), the read:write ratio as the deciding bet, embedding
-    vs referencing in document stores, and the update-anomaly tax. Trade: write correctness & storage vs read latency.
+82. ✅ **Data modeling: normalization vs denormalization** — one order-and-customer schema laid out BOTH ways: normalized
+    (3NF, each fact stored once, joined at read) vs denormalized (facts copied together, one fetch). Estimate: the
+    order-history read = a ~61 ms 4-way join (150 nested-loop product seeks @ 0.4 ms, L12) vs ~0.5 ms pre-joined single
+    scan (~120× faster, L15 precompute); the read:write ratio (~12:1 orders, ~50,000,000:1 for renamed facts) is the
+    DECIDING BET; storage 100× (name once = 2 GB vs copied per order = 200 GB, but bytes are cheap — DRIFT is the bill).
+    Model = normalization is functional dependencies obeyed (each fact lives with the key it depends on, 3NF = "the key,
+    the whole key, and nothing but the key"); copying creates the UPDATE ANOMALY (rename product = 1 row normalized vs
+    ~2,000,000 denormalized, + inconsistency window + partial-failure corruption; cousins = insert/delete anomaly = a
+    fact with no home); same choice = embed (bounded/owned/read-together) vs reference (shared/unbounded/independently-
+    updated) in document stores + the unbounded-array wall. Trace read (denorm wins 120×) / place-order (a wash, few
+    rows) / rename (norm wins 2,000,000×) — the two layouts are PHOTOGRAPHIC NEGATIVES. First bottleneck = the update-
+    anomaly tax, dissolved by NOT choosing globally: keep a NORMALIZED source of truth + DERIVE a denormalized read model
+    kept in sync ASYNC (materialized view / CQRS L37 / CDC-outbox L33) → the copy is derived + rebuildable, so drift
+    becomes LAG (L06 eventual consistency) not corruption. Walls: over-normalization = a join tax (8-way join, L12
+    selectivity trap); join-less stores (Cassandra/Dynamo) model the table around the QUERY, denormalize up front, own
+    consistency (L13); the read:write bet turns → migrate back (L24/79). Deepest point: a normalized fact is the truth, a
+    denormalized fact is a cache of it — the real question is WHERE is the truth and what is a fast copy. (Lesson 0082)
 83. Full-text & relevance pipelines end-to-end — beyond L12/16: analyzers/tokenizers, the index-build vs query-time
     split, near-real-time indexing (L16/29 freshness), typo tolerance & synonyms, and faceted search over shards (L79).
     Trade: index richness & freshness vs build cost & query latency.
