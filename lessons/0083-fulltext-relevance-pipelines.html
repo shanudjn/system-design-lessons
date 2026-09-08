@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 83 — Full-Text &amp; Relevance Pipelines End to End: One Query and One Document, Traced Through the Whole Machine</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 83 · Worked Example</div>
+  <h1>Full-Text &amp; Relevance Pipelines End to End: One Query and One Document, Traced Through the Whole Machine</h1>
+  <p class="lead">Two lessons ago we said search was solved: Lesson 12 built the <b>inverted index</b> (tokenize text, keep a postings list per term, intersect the lists), and Lesson 16 ranked the matches (IDF, BM25, top-K). But between "raw product text sitting in a database" and "a ranked, filterable results page" sits an entire machine we skipped — and it's the part that decides whether a shopper who types <code>runing shose</code> at 11 p.m. finds anything at all. This lesson assembles that machine end to end. We take <span class="key">one document — a product listing — and one messy query, and trace both all the way through</span>: through the <b>analyzer</b> (the pipeline that turns text into searchable terms), into the inverted index, and back out as a scored, faceted result page. We'll <b>estimate</b> the index size and the sharp asymmetry between building the index and querying it. We'll <b>model</b> the analyzer, the one iron rule that index-time and query-time must obey together, and how typos and synonyms are handled. We'll <b>trace</b> three paths — indexing a document, running a clean query, and running a query with a typo. And we'll find <span class="key">the first bottleneck: keeping the index fresh</span> — why an inverted index can't be updated in place, and the segment-and-merge design that makes near-real-time search possible. The trade under all of it: <b>index richness &amp; freshness vs build cost &amp; query latency.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0083-fulltext-relevance-pipelines.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>Keep the product catalog from L12/L16: <b>10 million products</b>, each with a title and a short description. Shoppers search it at <b>5,000 queries/second</b> at peak, and they expect a results page in well under <b>100 ms</b>. Two very specific things travel through the system in this lesson, and we'll follow each one byte by byte:</p>
+<ul>
+  <li><b>One document</b> being indexed: a product titled <code>Men's Running Shoes — Blue Runner (Waterproof)</code>, in category <i>Shoes</i>.</li>
+  <li><b>One query</b> being run: a shopper types <code>runing shose</code> — two typos — and still expects to see that shoe.</li>
+</ul>
+
+<p>Here is the whole machine on one page. The left column is done <i>once per document, at index time</i>; the right column is done <i>on every query, at read time</i>; the boxed rule in the middle is why the system works at all:</p>
+<div class="diagram"><pre>
+  INDEX TIME (once per document)            QUERY TIME (once per query)
+  ------------------------------            ---------------------------
+  "Men's Running Shoes -                    "runing shose"
+   Blue Runner (Waterproof)"                      │
+        │                                         │
+        ▼                                         ▼
+  ┌───────────────┐                        ┌───────────────┐
+  │   ANALYZER    │  <=== MUST BE THE ===> │   ANALYZER    │
+  │ char filter   │      SAME  PIPELINE    │ char filter   │
+  │ tokenizer     │                        │ tokenizer     │
+  │ lowercase     │                        │ lowercase     │
+  │ stopwords     │                        │ stopwords     │
+  │ stemming      │                        │ stemming      │
+  │ synonyms      │                        │ + typo fix    │
+  └──────┬────────┘                        └──────┬────────┘
+         │ terms: [men, run, shoe,                │ terms: [run, shoe]
+         │  blue, runner, waterproof]             │
+         ▼                                        ▼
+  ┌─────────────────────┐              ┌────────────────────────────┐
+  │  INVERTED INDEX     │  retrieve →  │ postings for run ∩/∪ shoe   │
+  │  run  -> [.. docX ..]│ ───────────▶│  -> candidate doc set       │
+  │  shoe -> [.. docX ..]│              │  -> BM25 score (L16)        │
+  │  (immutable segments)│              │  -> top-K heap + FACET counts│
+  └─────────────────────┘              └────────────────────────────┘
+                                                  │
+                                                  ▼
+                                        ranked, faceted results page
+</pre></div>
+
+<p class="note"><span class="key">The one idea the whole lesson turns on:</span> full-text search is a machine with two halves that must be built to match. At <b>index time</b> you do the heavy work once — run every document's text through an <b>analyzer</b> that turns messy prose into clean, normalized <b>terms</b>, and store those terms in an inverted index. At <b>query time</b> you run the <i>same analyzer</i> over the short query, look up the resulting terms, and rank what comes back. If the two halves disagree about how to turn text into terms — even slightly — the shopper's words never line up with the document's words, and a product that perfectly matches returns <i>nothing</i>. Everything else (typo tolerance, synonyms, facets, freshness) is a feature bolted onto that spine.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Term</b> — the atomic unit the index is keyed on: a normalized token, e.g. <code>run</code>. Not the same as a word — the analyzer turns "Running" into the term <code>run</code>.</li>
+  <li><b>Analyzer</b> — the pipeline that turns a blob of text into a list of terms. It runs at index time <i>and</i> at query time, and the two must be identical.</li>
+  <li><b>Char filter</b> — the first analyzer stage: cleans the raw characters (strip HTML, normalize punctuation and accents) <i>before</i> anything is split.</li>
+  <li><b>Tokenizer</b> — splits the cleaned text into tokens (usually on whitespace and punctuation): <code>"Blue Runner"</code> → <code>[Blue, Runner]</code>.</li>
+  <li><b>Token filter</b> — a stage that transforms the token stream: lowercase, remove stopwords, stem, expand synonyms. Analyzers are a char filter + a tokenizer + a chain of token filters.</li>
+  <li><b>Stopword</b> — a term so common it carries almost no meaning (<code>the</code>, <code>a</code>, <code>of</code>); often dropped to shrink the index and speed queries (L16's near-zero IDF made concrete).</li>
+  <li><b>Stemming</b> — reducing a word to a root form so variants collapse to one term: <code>running</code>, <code>runs</code>, <code>ran</code> → <code>run</code>. Makes a query for one variant match all of them.</li>
+  <li><b>Synonym expansion</b> — mapping different words for the same thing to a shared term or term set: <code>sneaker</code> ↔ <code>shoe</code>.</li>
+  <li><b>Inverted index</b> — the map <code>term → list of documents containing it</code> (the postings list). Built in L12; the thing the analyzer feeds.</li>
+  <li><b>Edit distance (Levenshtein)</b> — the number of single-character insert/delete/substitute edits to turn one string into another. <code>runing</code> → <code>running</code> is distance 1 (one insert).</li>
+  <li><b>Segment</b> — a small, <i>immutable</i>, self-contained inverted index. A search engine's index is a set of segments searched together; new documents go into new segments.</li>
+  <li><b>Refresh</b> — the act of making newly-written documents visible to search by exposing a new segment. The interval between refreshes is the freshness dial.</li>
+  <li><b>Merge</b> — the background job that combines many small segments into fewer big ones to keep query fan-out and file counts bounded (the LSM-tree shape from L47).</li>
+  <li><b>Facet</b> — a count of matching documents grouped by a field, shown as filters: "Shoes (1,240) · Boots (89) · Sandals (12)".</li>
+  <li><b>Recall vs precision</b> (from L16) — recall = did we retrieve the good matches at all; precision = are the retrieved ones actually good. Retrieve broadly, then rank to restore precision.</li>
+</ul>
+
+<h2>Move 1 — Estimate: the index size, and the build-vs-query asymmetry</h2>
+<p>Three numbers set up every decision in this lesson: how big the index is, how lopsided the cost of building it is versus querying it, and how expensive typo tolerance gets if you do it naively.</p>
+
+<div class="card calc">
+  <p><b>How big is the inverted index?</b> Each product's title + description is ~500 characters, which the analyzer turns into roughly <b>50 distinct terms</b> after stopword removal and stemming. The index is one <b>posting</b> per (term, document) pair:</p>
+  <div class="diagram"><pre>
+  postings = 10,000,000 docs × 50 distinct terms/doc = 500,000,000 postings
+
+  raw posting = doc_id (4 B) + term positions (~4 B) ≈ 8 B
+     500,000,000 × 8 B = 4 GB raw
+
+  but postings are SORTED by doc_id, so delta-encode the gaps and
+  variable-length compress them (L80 wire encoding, L29 columnar) → ~3-4× smaller
+     ≈ 1-1.5 GB compressed
+
+  vocabulary (distinct terms) ≈ 1-2 million entries → a small term dictionary
+  </pre></div>
+  <p><span class="key">~1 GB, held in RAM across a few nodes.</span> That's the payoff of the inverted layout: the entire searchable form of a 10M-product catalog is small enough to serve from memory, because the analyzer threw away everything a search doesn't need (punctuation, casing, stopwords, word endings) before storing it. The trade named already: we shrank and sped the index by <i>discarding information</i> — the original text is no longer reconstructable from the terms, so the index is a derived copy (L82), not the source of truth.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The asymmetry: building the index is heavy, querying it is light.</b> This is the single fact that shapes the architecture.</p>
+  <div class="diagram"><pre>
+  INDEX a document: char-filter + tokenize + lowercase + stopword +
+     stem + synonym, then write postings. ~0.2 ms of CPU per doc.
+     Full rebuild of 10M docs = 10,000,000 × 0.2 ms = 2,000 s single-core
+       ≈ 33 min on one core; parallelize across 32 cores → ~1 min.
+     ==> heavy, done ONCE per document (or once per re-index).
+
+  QUERY "runing shose": analyze a 2-word string (~microseconds),
+     look up 2 postings lists, intersect/union, BM25-score the
+     candidates, keep top 10.  Target: < 20 ms.
+     ==> light, done on EVERY one of 5,000 queries/second.
+  </pre></div>
+  <p><span class="key">This is L15's precompute-the-read, in its purest form.</span> All the linguistic work — splitting, normalizing, stemming — is paid once at index time and baked into the terms. The query only has to analyze a handful of words and walk a few short lists. If you moved any of that work to query time (say, stemming every document's text while the query runs) you'd multiply a 20 ms query by millions of documents and melt the cluster. The design principle: <b>do the expensive language processing once, at write time; keep the read a lookup.</b></p>
+</div>
+
+<div class="card calc">
+  <p><b>The price of typo tolerance, done wrong.</b> The shopper typed <code>runing</code>. To find that <code>running</code> (→ <code>run</code>) is one edit away, the naive approach compares the typo against every term in the dictionary:</p>
+  <div class="diagram"><pre>
+  naive fuzzy match: 1 typo × 1,500,000 dictionary terms
+     = 1,500,000 edit-distance computations, per query term, per query
+     at 5,000 q/s × 2 terms → 15,000,000,000 comparisons/s  ==> impossible
+
+  smart: a Levenshtein automaton / FST walk over the term dictionary
+     enumerates only the terms within edit distance 1 of "runing"
+     (a trie/finite-state walk prunes the other ~1,499,99x) → a handful
+     of candidates in microseconds.
+  </pre></div>
+  <p>The lesson buried in the arithmetic: <span class="key">every "nice" search feature — typos, synonyms, wildcards — expands one query term into many, and the cost is in that expansion.</span> Typo tolerance widens recall (you match more), but if you expand carelessly you either blow the latency budget or blow up precision (matching too much). The trade named: richer matching vs query latency and precision.</p>
+</div>
+
+<p class="note why"><b>Why the whole design is "heavy once, light forever":</b> a query is a tiny amount of text (2–4 words) read against a huge amount of data (10M docs), millions of times a second. So you spend lavishly, once, to pre-shape the data into a form where the query is a cheap lookup — and you refuse to do <i>anything</i> per-document at query time. Every hard part of this lesson (freshness, faceting, typo tolerance) is really the question "how do I add this feature without breaking the light-query rule?"</p>
+
+<h2>Move 2 — Model: the analyzer, the symmetry rule, and how matching gets smart</h2>
+
+<h3>The analyzer, stage by stage, on our one document</h3>
+<div class="card calc">
+  <p>Watch the product title become terms. Each stage does one job, in order:</p>
+  <div class="diagram"><pre>
+  raw:         "Men's Running Shoes — Blue Runner (Waterproof)"
+    │
+  char filter  strip punctuation/accents, normalize the em-dash & parens
+    ▼          "Men's Running Shoes Blue Runner Waterproof"
+  tokenizer    split on whitespace/punctuation
+    ▼          [Men's] [Running] [Shoes] [Blue] [Runner] [Waterproof]
+  lowercase    fold case so "Running" and "running" are one term
+    ▼          [men's] [running] [shoes] [blue] [runner] [waterproof]
+  possessive/  strip 's ; drop stopwords (none here; "the/a/of" would go)
+  stopword ▼   [men] [running] [shoes] [blue] [runner] [waterproof]
+  stemming     collapse word endings to a root (Porter-style)
+    ▼          [men] [run] [shoe] [blue] [runner] [waterproof]
+  synonyms     (optional, index-time) sneaker->shoe, h2o->waterproof ...
+    ▼          [men] [run] [shoe] [blue] [runner] [waterproof]
+
+  FINAL TERMS stored in the index for this doc:
+     men, run, shoe, blue, runner, waterproof
+  </pre></div>
+  <p>Notice what happened to <code>running</code> and <code>shoes</code>: they became <code>run</code> and <code>shoe</code>. The document no longer contains the word "running" anywhere in the index — only the stem <code>run</code>. This is the crucial setup for the next rule.</p>
+</div>
+
+<h3>The one iron rule: index-time and query-time analysis must match</h3>
+<div class="card calc">
+  <p>The document is stored under the term <code>run</code>, not <code>running</code>. So when a query arrives, it <i>must</i> be run through the same stemmer, or it will look up the wrong term and find nothing:</p>
+  <div class="diagram"><pre>
+  Query "running shoes":
+    SAME analyzer  -> [run, shoe]   -> looks up "run", "shoe" -> HIT ✓
+
+  Query "running shoes" analyzed DIFFERENTLY (no stemmer at query time):
+                   -> [running, shoes] -> looks up "running", "shoes"
+                   -> the index has no term "running" (only "run") -> MISS ✗
+  </pre></div>
+  <p><span class="key">This is the number-one cause of "search is broken and I can't tell why."</span> Both sides analyze text; if they don't use the identical pipeline, a perfect match silently returns zero results — no error, no crash, just nothing. The rule: <b>the query and the document must be turned into terms the same way.</b> (There are deliberate exceptions — you might add synonyms only at query time — but they are decisions made <i>knowing</i> the two sides differ, never accidents.) The deeper point tying back to L82: the inverted index is a <i>derived copy</i> of the text under a specific analyzer. Change the analyzer and the copy is now built two different ways — which is exactly the freshness/consistency problem we hit in Move 4.</p>
+</div>
+
+<h3>Recall first, then precision: retrieve broad, rank narrow</h3>
+<div class="card calc">
+  <p>From L16: a search has two jobs, and it does them in two phases. First <b>retrieve</b> a broad candidate set (favor recall — don't miss good matches); then <b>rank</b> to pull the best to the top (restore precision). Our query <code>[run, shoe]</code>:</p>
+  <div class="diagram"><pre>
+  RETRIEVE (cheap, broad):  docs containing run OR shoe
+     -> ~600,000 candidate products (L16's broad OR-match)
+  RANK (moderate, on candidates only):  BM25 score each candidate (L16)
+     -> saturating term frequency + length normalization + IDF
+     -> keep the top 10 in a heap  (N log 10, not N log N — L16)
+  RE-RANK (expensive, optional, top ~1,000 only):  ML / business signals
+     -> popularity, margin, in-stock, personalization (L16 two-phase funnel)
+  </pre></div>
+  <p><span class="key">The funnel is the recall/precision trade made physical (L12/L14/L16).</span> Match broadly with a cheap operation over the whole index, then spend the expensive scoring only on the survivors. You never run the costly ranker over 10M documents — you run it over the ~1,000 that already passed the cheap gate. Trade named: broader retrieval catches more true matches (recall) but hands more noise to the ranker to clean up (precision) — and more candidates means a slower query.</p>
+</div>
+
+<h3>Typos and synonyms: widening recall on purpose</h3>
+<div class="card calc">
+  <p>Two features live in the analyzer/retrieval boundary and both work by <b>expanding one term into several</b>:</p>
+  <div class="diagram"><pre>
+  TYPO TOLERANCE (query-time, via edit distance):
+     "runing" --edit distance 1 (insert 'n')--> {running} --stem--> run
+     "shose"  --1 transposition (swap s,e)---> {shoes} --stem--> shoe
+                (engines use Damerau-Levenshtein, which counts a swap of
+                 two adjacent letters as ONE edit; keep only dictionary
+                 terms that exist & are common)
+     => query [run, shoe] now matches our document.
+
+  SYNONYMS (index-time OR query-time expansion):
+     index-time:  store "shoe" AND "sneaker" for the doc (bigger index,
+                  no query-time cost, but re-index to change the list)
+     query-time:  expand "sneaker" -> (shoe OR sneaker) at search
+                  (smaller index, flexible, but every query pays to expand)
+  </pre></div>
+  <p><span class="key">The synonym placement decision is the index-richness-vs-flexibility trade in miniature.</span> Expand at <b>index time</b> and queries stay fast but the index is fatter and changing the synonym list means re-indexing (Move 4's wall). Expand at <b>query time</b> and the index stays lean and the list is editable instantly, but every query pays the expansion cost. Same pattern as L15 push-vs-pull and L82 precompute-vs-compute: pay early for speed, or pay late for flexibility.</p>
+</div>
+
+<h2>Move 3 — Trace the paths: index a doc, run a clean query, run a typo query</h2>
+
+<h3>Path A — index the product (heavy, once)</h3>
+<div class="diagram"><pre>
+   product written to the catalog DB (the SOURCE OF TRUTH, L82)
+     │  (via CDC/outbox, L33 — the index is a derived read model)
+     ▼
+   analyzer: "Men's Running Shoes — Blue Runner (Waterproof)"
+     -> terms [men, run, shoe, blue, runner, waterproof]
+     ▼
+   append doc → a NEW in-memory segment; for each term, add this
+     doc_id to that term's postings list within the segment
+     ▼
+   on REFRESH (say every 1 s), the segment becomes searchable
+     -> the product is now findable ~1 s after it was written (near-real-time)
+</pre></div>
+<p>The document is not edited into the big index in place — it lands in a fresh little segment that becomes visible at the next refresh. Why it must work that way is Move 4.</p>
+
+<h3>Path B — a clean query, "running shoes" (light, on every request)</h3>
+<div class="diagram"><pre>
+   "running shoes"
+     -> SAME analyzer -> [run, shoe]
+     -> fetch postings("run"), postings("shoe") from every segment
+     -> union candidates (~600k), BM25-score them (L16), top-10 heap
+     -> compute FACETS over the matching set: count by category
+          Shoes (1,240) · Boots (89) · Sandals (12)
+     -> return page in ~15 ms
+</pre></div>
+<p>The heavy lifting was all done at index time; the query walked two short posting lists and scored the survivors. This is the light-read the whole design protects.</p>
+
+<h3>Path C — the typo query, "runing shose" (the shopper's real input)</h3>
+<div class="diagram"><pre>
+   "runing shose"
+     -> analyze -> [runing, shose]  (still misspelled)
+     -> typo tolerance: Levenshtein automaton over the term dictionary
+          runing -> running -> stem -> run
+          shose  -> shoes   -> stem -> shoe
+     -> query becomes [run, shoe]  == exactly Path B from here on
+     -> same postings, same BM25, same facets -> the shoe is found ✓
+</pre></div>
+<p class="note"><span class="key">Paths B and C converge.</span> The entire job of typo tolerance is to repair the query into the terms the index actually holds — after that repair, a misspelled query is identical to a clean one. And note the symmetry rule at work again: the repaired words still pass through the <i>same</i> stemmer (<code>running</code>→<code>run</code>) as the documents did, or the repair would fix the spelling and then miss anyway. Every smart feature funnels back onto the one spine: turn the query into the terms the documents were stored under.</p>
+
+<h2>Move 4 — Find the first bottleneck: keeping the index fresh</h2>
+
+<div class="card calc">
+  <p><b>The first bottleneck — you can't update an inverted index in place.</b> A postings list is stored <i>sorted and compressed</i> so it can be walked fast. Inserting one new document into the middle of a term's sorted, delta-encoded list means rewriting the list:</p>
+  <div class="diagram"><pre>
+  term "run" -> [12, 47, 88, 210, ...]  (sorted, delta-encoded, packed)
+  new doc 63 contains "run" -> must splice 63 between 47 and 88
+     -> re-encode the deltas, rewrite the block on disk
+  a single new product touches ~50 terms -> 50 packed lists rewritten
+  10M-doc catalog updating live -> constant rewrites of huge lists
+     ==> in-place update is O(rewrite), and it fights every concurrent read
+  </pre></div>
+  <p>So live full-text indexes almost never mutate the index. Instead they borrow the <b>LSM-tree</b> idea from L47:</p>
+  <div class="diagram"><pre>
+   WRITE PATH: new/changed docs -> a small NEW immutable SEGMENT
+      (a segment = a complete mini inverted index, write-once)
+   REFRESH: expose the new segment to searchers (the freshness event)
+   SEARCH: query ALL segments in parallel, merge their results (L21/L79)
+   DELETE/UPDATE: mark the old doc_id in a "deleted" bitset; the term
+      isn't removed — it's filtered out at read (a tombstone, L15/L20)
+   MERGE (background): combine many small segments into fewer big ones,
+      dropping tombstoned docs, to bound query fan-out & file count (L47)
+  </pre></div>
+  <p><span class="key">This is what "near-real-time" means, and why it's near and not real.</span> A document isn't searchable the instant it's written — it's searchable at the next <b>refresh</b>. The refresh interval is a direct dial: refresh every 1 second and a new product is findable ~1 second after it's written, but you mint a new tiny segment every second (more segments = more lists to merge on every query = slower reads and more merging work). Refresh less often and queries stay fast and segments stay few, but new products take longer to appear. Trade named: <b>freshness vs query speed and merge cost</b> — exactly L16's near-real-time indexing question and L29's batch-vs-stream freshness dial, now concrete.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — faceted search over a sharded index.</b> At 10M products the index is sharded (L79): each shard holds a slice of the catalog and searches it independently, a coordinator scatters the query and gathers the results (L19/L21 scatter-gather). Ranking merges cleanly (each shard returns its top-K, coordinator merges into a global top-K). Facets are trickier:</p>
+  <div class="diagram"><pre>
+   query hits 600k matches spread across, say, 12 shards
+   each shard: count its matches by category -> partial facet counts
+   coordinator: SUM the per-category counts across shards (L21 mergeable)
+      Shoes: 110+95+... = 1,240   Boots: 8+11+... = 89   ...
+
+   the deep-pagination / top-facet trap:
+   if a shard returns only its LOCAL top-20 categories, a category
+   ranked #21 on every shard could be #1 globally but never reported
+   -> same top-K-from-shards accuracy problem as deep pagination (L18)
+   -> fix: return more per shard than you display, or a second round
+</pre></div>
+  <p>Facet <i>counts</i> merge by addition (L21's mergeable counters), but facet <i>rankings</i> ("show the top 20 brands") have the same shard-truncation hazard as deep pagination (L18): a global winner can hide just below every shard's local cutoff. The trade named: cheap, approximate facets (trust each shard's local top-N) vs exact facets (fetch more per shard or do a second round) — accuracy vs query cost, the L21 sketch trade wearing a search hat.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — changing the analyzer means reindexing everything.</b> Suppose you add a stemmer, or swap the synonym list, or start folding accents. Every document already in the index was analyzed the <i>old</i> way — its terms are <code>running</code>, not <code>run</code>. New documents get the new terms. Now the index is half one language and half another, and the symmetry rule breaks for exactly half your catalog.</p>
+  <div class="diagram"><pre>
+   old docs indexed as: [running, shoes]      (pre-stemmer)
+   new docs indexed as: [run, shoe]           (post-stemmer)
+   query analyzed new way: [run, shoe]
+      -> matches new docs, MISSES every old doc  ✗
+   the only fix: REINDEX the whole corpus under the new analyzer
+      -> rebuild 10M docs (Move 1: ~1 min on 32 cores) into a NEW index,
+         then atomically swap (blue-green, L31) so search never sees the seam
+  </pre></div>
+  <p><span class="key">An analyzer change is a schema migration on the index (L24).</span> Because the index is a derived copy of the text under a fixed analyzer (L82), changing the analyzer is changing the derivation — and the only way to make old and new agree is to re-derive everything and swap it in atomically (L31 blue-green, so no query straddles the two). This is why the index being <i>rebuildable from a source of truth</i> (L82) is not a nicety but the thing that makes the system evolvable at all: you can always throw the whole index away and rebuild it from the catalog.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The fourth wall — the index is stale by construction, so it needs a freshness pipeline.</b> The catalog DB is the source of truth (L82); the search index is a derived read model. Keeping it current is the CDC/outbox pipeline from L33: every product write emits an event, an indexer consumes it, analyzes the doc, and writes a new segment. That pipeline has lag (L06), and its lag <i>is</i> your search staleness. The trade named: a fresher index needs a faster, more expensive propagation pipeline and more frequent refreshes/merges; a cheaper pipeline means shoppers see stale prices and missing new products for longer. Freshness is bought, never free.</p>
+</div>
+
+<p>So the honest picture: full-text search is a two-halved machine joined by one rule. At <b>index time</b> an <b>analyzer</b> (char filter → tokenizer → lowercase → stopword → stemming → synonyms) turns each document's prose into clean <b>terms</b> and stores them in an <b>inverted index</b> — heavy work done once (L15 precompute). At <b>query time</b> the <i>same</i> analyzer turns the short query into terms, retrieves a broad candidate set, and ranks it with BM25 (L16) — a light lookup done millions of times. <b>Estimate</b> sized the index (~1 GB compressed, RAM-resident) and named the build-vs-query asymmetry that forces "heavy once, light forever." <b>Model</b> walked the analyzer on one document, stated the iron symmetry rule (index and query must analyze text identically or a perfect match returns nothing), and showed typos and synonyms as deliberate recall-widening term expansions. <b>Tracing</b> a clean query and a typo query showed them converge onto the same terms. The <b>first bottleneck</b> — an inverted index can't be updated in place — is solved by immutable <b>segments</b> + <b>refresh</b> + background <b>merge</b> (L47's LSM shape), whose refresh interval is the freshness-vs-speed dial. Around it: sharded facets merge by addition but risk the top-K-from-shards trap (L18/L21/L79), an analyzer change is a full reindex-and-swap (L24/L31), and the index is a derived copy kept current by a CDC/outbox pipeline whose lag is your staleness (L33/L06/L82). The standing tension: <b>index richness &amp; freshness vs build cost &amp; query latency.</b></p>
+
+<p><span class="key">The deepest point: the search index is a derived, disposable copy of your text, pre-shaped by an analyzer so that queries are cheap lookups — and everything hard about search is the cost of keeping that copy rich, fresh, and in sync with the terms a query will actually ask for.</span> Once you see the index as a read model (L82) built by precomputation (L15), fed by a change pipeline (L33), searched by scatter-gather (L79), and rebuilt by migration-and-swap (L24/L31), full-text search stops being a black box and becomes an assembly of pieces you already own. The genuinely new idea is small: text isn't searchable — <i>terms</i> are, and the analyzer is the machine that turns one into the other, on both sides, the same way. The trade to carry: <span class="key">index richness &amp; freshness vs build cost &amp; query latency.</span></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>Turn messy text into searchable units</td><td>The analyzer pipeline (this lesson)</td><td>clean, normalized terms / information discarded, not reversible</td></tr>
+  <tr><td>A perfect match returns zero results</td><td>Index &amp; query use the SAME analyzer</td><td>words line up / an analyzer change forces a reindex</td></tr>
+  <tr><td>Do language work only once</td><td>Heavy at index time, light query (L15 precompute)</td><td>fast reads / stale until re-indexed</td></tr>
+  <tr><td>Retrieve without missing good matches</td><td>Broad retrieve, then rank (recall→precision, L16)</td><td>high recall / ranker cleans up the noise</td></tr>
+  <tr><td>Shopper mistypes the query</td><td>Edit-distance repair via a Levenshtein automaton</td><td>typos still match / naive fuzzy is impossibly slow</td></tr>
+  <tr><td>"sneaker" should match "shoe"</td><td>Synonym expansion, index-time or query-time</td><td>better recall / fat index vs per-query cost</td></tr>
+  <tr><td>An inverted index can't be edited in place</td><td>Immutable segments + refresh + merge (L47 LSM)</td><td>near-real-time writes / segment fan-out &amp; merge cost</td></tr>
+  <tr><td>Facet counts across a sharded index</td><td>Scatter-gather, sum per-category counts (L21/L79)</td><td>counts merge cleanly / top-N facets risk shard truncation</td></tr>
+  <tr><td>Keeping the index current with the catalog</td><td>CDC/outbox derived read model (L33/L82)</td><td>fresh search / pipeline lag = search staleness</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — mismatched analyzers.</b> Indexing with a stemmer but querying without it (or vice versa) makes perfect matches return zero results, silently. Always run the query through the identical pipeline the documents used; any deliberate difference (query-only synonyms) must be a known decision, not an accident.</li>
+  <li><b>Trap 2 — doing language work at query time.</b> Stemming, synonym expansion, or fuzzy matching applied per-document while the query runs multiplies a cheap lookup by millions of documents. Pre-shape everything you can at index time; keep the read a lookup over a broad-then-narrow funnel.</li>
+  <li><b>Trap 3 — treating the index as the source of truth.</b> The index is a derived, lossy copy of the text (the original prose can't be rebuilt from stems). Keep the catalog DB as the source of truth (L82), feed the index by a change pipeline (L33), and be ready to rebuild-and-swap the whole index whenever the analyzer changes (L24/L31).</li>
+  <li><b>Trap 4 — expecting real-time and exact facets for free.</b> Near-real-time search is bounded by the refresh interval (a freshness-vs-speed dial), and top-N facets over shards can silently truncate a global winner below each shard's local cutoff. Choose the refresh cadence and the facet accuracy deliberately; both trade cost for correctness.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We assembled the search machine that L12 and L16 left in pieces, and traced one document and one messy query all the way through it. <b>Estimate</b> sized the inverted index at ~1 GB compressed (RAM-resident) and named the asymmetry that governs everything: building the index is heavy (analyze + postings, ~1 min to rebuild 10M docs on 32 cores) while a query is light (analyze 2 words, walk 2 lists, score the survivors, &lt;20 ms) — and naive typo matching (1.5M dictionary comparisons per term) is impossibly slow without a Levenshtein automaton. <b>Model</b> walked the <b>analyzer</b> stage by stage on <code>Men's Running Shoes — Blue Runner</code> (→ terms <code>men, run, shoe, blue, runner, waterproof</code>), stated the iron <b>symmetry rule</b> (index and query must analyze identically or a perfect match returns nothing), recapped retrieve-broad-then-rank (L16), and placed typos and synonyms as deliberate recall-widening expansions. <b>Tracing</b> an index write, a clean query, and a typo query showed the messy query repaired back onto the exact terms the document was stored under. The <b>first bottleneck</b> — you can't update an inverted index in place — is solved by immutable <b>segments</b> + <b>refresh</b> + background <b>merge</b> (L47's LSM shape), whose refresh interval is the freshness-vs-query-speed dial. Around it: sharded facet counts merge by addition but top-N facets risk the shard-truncation trap (L18/L21/L79); changing the analyzer is a full reindex-and-atomic-swap (L24/L31); and the index is a derived read model kept fresh by a CDC/outbox pipeline whose lag is your search staleness (L33/L06/L82). The deepest point: the index is a disposable, lossy, pre-shaped copy of your text, and every hard part of search is the cost of keeping that copy rich, fresh, and aligned with the terms a query will ask for. The standing tension: <span class="key">index richness &amp; freshness vs build cost &amp; query latency.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we've searched text by matching terms. But some of the most valuable questions aren't "find documents with these words" — they're "who is connected to whom." Lesson 41 built the graph; now we traverse it at scale.</b></p>
+  <p style="margin:.2rem 0">• <b>Graph &amp; recommendation traversal at scale (Lesson 84):</b> "people you may know" over a billion-edge graph (L41) — the <b>BFS fan-out explosion</b>, precompute vs traverse-at-read (L15), <b>edge sharding &amp; the supernode problem</b> (L79 hot key), and offline vs online candidate generation (L53). Trade: traversal freshness vs precompute cost.</p>
+  <p style="margin:.2rem 0">Say <b>next</b> and we'll trace one "people you may know" request across a sharded, billion-edge graph and watch the fan-out try to eat the cluster.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">term</span>
+    <span class="pill">analyzer</span>
+    <span class="pill">char filter</span>
+    <span class="pill">tokenizer</span>
+    <span class="pill">token filter</span>
+    <span class="pill">stopword</span>
+    <span class="pill">stemming</span>
+    <span class="pill">synonym expansion</span>
+    <span class="pill">inverted index</span>
+    <span class="pill">edit distance (Levenshtein)</span>
+    <span class="pill">segment</span>
+    <span class="pill">refresh</span>
+    <span class="pill">merge</span>
+    <span class="pill">facet</span>
+    <span class="pill">recall vs precision</span>
+  </p>
+  <p>That's Lesson 83. It builds on: Lesson 12 (the inverted index and postings lists this lesson feeds), Lesson 16 (retrieve-broad-then-rank, IDF/BM25, the two-phase funnel), Lesson 15 (precompute-the-read — heavy at index time, light at query time), Lesson 47 (the LSM-tree shape behind immutable segments + merge), Lesson 79 (sharding the index + scatter-gather), Lesson 21 (mergeable facet counts + the accuracy-vs-cost trade), Lesson 18 (the top-K-from-shards / deep-pagination trap facets inherit), Lesson 33 (CDC/outbox keeping the derived index in sync), Lesson 82 (the index as a derived, rebuildable read model — not the source of truth), and Lesson 24/31 (reindex-and-swap when the analyzer changes). <b>Ask me follow-ups</b> — e.g. "how does a Levenshtein automaton actually prune the dictionary?", "when should synonyms be index-time vs query-time?", "how do I pick a refresh interval and merge policy?", "how do phrase queries and term positions work?", or "how do I make facets exact across shards without a second round-trip?" When you're ready, say <b>next</b> and we'll traverse a billion-edge graph for "people you may know."</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "You add a stemmer to your analyzer so that a search for 'running' also matches 'run'. You configure it only on the indexing side and forget the query side. A shopper searches 'running shoes' — a product literally titled 'Running Shoes' exists. What happens, and why?",
+    options: [
+      {t:"The search returns ZERO results (or misses that product), silently. The indexer stemmed the document to the terms [run, shoe], but the un-stemmed query looks up the literal terms [running, shoes] — and the index no longer contains 'running' or 'shoes', only the stems. Index-time and query-time analysis must be identical; when they diverge, a perfect match lines up with the wrong terms and returns nothing, with no error to point at the cause.",
+       ok:true,
+       fb:"Exactly. This is the number-one 'search is mysteriously broken' bug. The index is a derived copy of the text under a specific analyzer; the query must be turned into terms the same way or the words never line up. Fix: apply the identical analyzer on both sides."},
+      {t:"It works fine — the database still has the original text 'Running Shoes', so the engine falls back to matching the raw stored words when the stemmed terms don't hit.",
+       ok:false,
+       fb:"There's no such fallback. The inverted index is keyed on the analyzed terms only; the original prose isn't what gets matched (and after stemming it isn't even reconstructable from the index). If the query's terms don't exist in the index, retrieval returns nothing — it doesn't quietly re-match raw text."},
+      {t:"It returns too MANY results — stemming on one side makes the query broader, so it now matches every product containing any form of 'run'.",
+       ok:false,
+       fb:"Backwards. The mismatch makes the query NARROWER to the point of failure: the query asks for the term 'running', which the stemmed index doesn't contain at all, so it matches nothing. Over-matching would come from the opposite — stemming the query but not the docs — and even then the failure mode here is a miss, not a flood."}
+    ]
+  },
+  {
+    stem: "Your team wants new and updated products to be searchable within about a second of being written. Someone proposes updating the inverted index in place — splicing each new document's doc_id into every relevant term's postings list as it arrives. Why is this the wrong design, and what's used instead?",
+    options: [
+      {t:"Postings lists are stored sorted and delta-compressed for fast reads, so inserting one doc_id into the middle means re-encoding and rewriting the whole packed list — and one product touches ~50 terms, so live writes become constant large rewrites that fight every concurrent read. Instead, write new/changed docs into small IMMUTABLE segments (mini-indexes), make them visible on a periodic REFRESH, search all segments together, tombstone deletes, and MERGE small segments into big ones in the background (the LSM-tree shape, L47).",
+       ok:true,
+       fb:"Right. In-place mutation of a sorted, compressed index is O(rewrite) and contends with reads, so search engines never do it. Segments + refresh + merge give near-real-time writes; the refresh interval is the freshness-vs-query-speed dial."},
+      {t:"In-place updates are fine for correctness, but you should avoid them only because they use too much disk; the real solution is just to add more storage so the rewrites fit.",
+       ok:false,
+       fb:"The problem isn't disk capacity — it's that rewriting sorted, compressed postings on every write is expensive in CPU/IO and contends with concurrent queries, regardless of how much disk you have. More storage doesn't make the rewrites cheap or lock-free. The fix is a write-once segment model, not more space."},
+      {t:"It's wrong because the index must always be perfectly real-time, and in-place updates are too slow to be instant; the alternative is to make every write synchronously visible before it returns.",
+       ok:false,
+       fb:"Full-text search is near-real-time by design, not real-time: a doc becomes searchable at the next refresh, not the instant it's written. Demanding synchronous instant visibility is the opposite of the actual solution — segments deliberately decouple the write from visibility via the refresh interval to keep queries fast."}
+    ]
+  },
+  {
+    stem: "A shopper types 'runing shose' (two typos). Your catalog has 1.5 million distinct terms in its dictionary and serves 5,000 queries/second. How should typo tolerance find that 'runing' is one edit from 'running', and why does the obvious approach fail?",
+    options: [
+      {t:"Use a structure that enumerates only the dictionary terms within a small edit distance of the typo — a Levenshtein automaton / FST walk over the term dictionary — returning a handful of candidates in microseconds. The obvious approach (compare the typo against all 1.5M terms with an edit-distance calc) is ~1.5M comparisons per query term; at 5,000 q/s × 2 terms that's ~15 billion comparisons/second — impossible. Typo tolerance widens recall, but the whole cost is in how you expand one term into its near neighbors.",
+       ok:true,
+       fb:"Exactly. Every 'smart' feature — typos, synonyms, wildcards — expands one term into many, and the engineering is doing that expansion cheaply. A trie/automaton prunes the dictionary to the edit-distance neighborhood instead of scanning all of it."},
+      {t:"Store every possible misspelling of every product term in the index at index time, so any typo is already a real term and no query-time work is needed.",
+       ok:false,
+       fb:"The space of misspellings is enormous (edit distance ≥1 over a huge vocabulary explodes combinatorially), so pre-storing them all would bloat the index beyond reason and still miss novel typos. Typo repair is done at query time by walking the dictionary for near neighbors, not by pre-materializing every misspelling."},
+      {t:"Skip typo tolerance and rely on stemming — a stemmer already reduces 'runing' to 'run', so misspellings are handled by the same step that handles word endings.",
+       ok:false,
+       fb:"Stemming collapses grammatical variants of a correctly-spelled word (running/runs/ran → run); it doesn't repair spelling errors. 'runing' is not a valid inflection, so the stemmer produces a broken stem that still doesn't match. Typo tolerance (edit distance) and stemming are separate stages solving separate problems."}
+    ]
+  },
+  {
+    stem: "Your product index is sharded across 12 nodes. A query matches ~600,000 products, and you want to show facet filters: the top brands by number of matches. Each shard returns only its own local top-20 brands. What can go wrong, and how does it relate to earlier lessons?",
+    options: [
+      {t:"A brand that ranks, say, #21 on every single shard can be the #1 brand globally — but since no shard reports it in its local top-20, the coordinator never sees it and it's missing from the results. This is the same top-K-from-shards accuracy hazard as deep pagination (L18): a global winner hidden just below every shard's local cutoff. Facet COUNTS merge cleanly by summation (L21 mergeable), but facet RANKINGS need each shard to return more than you display, or a second round-trip — trading query cost for accuracy.",
+       ok:true,
+       fb:"Right. Additive counts are mergeable, but 'top-N by count' truncated per shard can drop a global winner — the deep-pagination / top-K-from-shards trap (L18/L21). Fix by over-fetching per shard or doing a second exact-count round; accuracy vs query cost."},
+      {t:"Nothing can go wrong — summing each shard's local top-20 counts always yields the correct global top-20, because addition is associative across shards.",
+       ok:false,
+       fb:"Addition being associative is exactly why the COUNTS are correct for brands that get reported — but the bug is about which brands get reported at all. If a brand never appears in any shard's local top-20, it contributes zero to the merged view even though its true global count is large. Associativity doesn't rescue a value that was truncated before the merge."},
+      {t:"The facets will be wrong because counts can't be combined across shards at all — counting is inherently non-distributable, so faceting requires pulling every matching document to one node first.",
+       ok:false,
+       fb:"Counts are very much distributable: per-category counts are additive and merge by summation across shards (L21's mergeable counters), so you never need to centralize all 600k documents. The real issue is narrower — truncating each shard to a local top-N before merging can hide a global winner; the counts themselves combine fine."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

@@ -1655,15 +1655,48 @@
     selectivity trap); join-less stores (Cassandra/Dynamo) model the table around the QUERY, denormalize up front, own
     consistency (L13); the read:write bet turns → migrate back (L24/79). Deepest point: a normalized fact is the truth, a
     denormalized fact is a cache of it — the real question is WHERE is the truth and what is a fast copy. (Lesson 0082)
-83. Full-text & relevance pipelines end-to-end — beyond L12/16: analyzers/tokenizers, the index-build vs query-time
-    split, near-real-time indexing (L16/29 freshness), typo tolerance & synonyms, and faceted search over shards (L79).
-    Trade: index richness & freshness vs build cost & query latency.
+83. ✅ **Full-text & relevance pipelines end-to-end** — one document ("Men's Running Shoes — Blue Runner") and one
+    typo'd query ("runing shose") over a 10M-product / 5,000-q/s catalog (L12/16), traced through both halves of the
+    machine. Estimate: ~1 GB compressed RAM-resident index (500M postings, delta-encoded L80/29); the build-vs-query
+    ASYMMETRY (~1 min to rebuild 10M docs on 32 cores vs a <20 ms query — L15 precompute-the-read); naive fuzzy = 1.5M
+    dictionary comparisons/term → impossible without a Levenshtein automaton/FST. Model = the ANALYZER (char filter →
+    tokenizer → lowercase → stopword → STEMMING → synonyms; "Running Shoes" → terms run, shoe) + the IRON SYMMETRY RULE
+    (index-time & query-time analysis must be identical or a perfect match silently returns NOTHING — the #1 "search is
+    broken" bug); recall-broad-then-rank (L16 BM25 funnel); typos & synonyms = deliberate recall-widening term
+    expansions (synonym index-time vs query-time = the L15/82 precompute-vs-flex trade). Trace: index write (heavy,
+    once), clean query, typo query (repaired back onto the same terms → converges with the clean path). First
+    bottleneck = you CAN'T update an inverted index in place (sorted+compressed postings = O(rewrite)) → immutable
+    SEGMENTS + REFRESH (the freshness event; interval = freshness-vs-query-speed dial) + background MERGE (L47 LSM),
+    tombstone deletes (L15/20). Walls: sharded FACETS — counts merge by addition (L21) but top-N facets hit the
+    top-K-from-shards / deep-pagination trap (L18/79); an analyzer change = a full reindex-and-atomic-swap (L24/31);
+    the index is a DERIVED read model (L82) fed by CDC/outbox (L33) whose lag = search staleness (L06). Deepest point:
+    the index is a disposable, lossy, pre-shaped copy of the text — text isn't searchable, TERMS are, and the analyzer
+    turns one into the other the same way on both sides. Trade: index richness & freshness vs build cost & query
+    latency. (Lesson 0083)
 84. Graph & recommendation traversal at scale — "people you may know" over a billion-edge graph (L41): BFS fan-out
     explosion, precompute vs traverse-at-read (L15), edge sharding & the supernode problem (L79 hot key), and offline
     vs online candidate generation (L53). Trade: traversal freshness vs precompute cost.
 85. Multi-region data placement & residency — where a row is legally allowed to live: geo-partitioning by user home
     region (L23/79), data-residency/GDPR constraints (L56), follow-the-sun latency (L14/23), and the cross-region join
     tax. Trade: local latency & compliance vs global query simplicity.
+
+### Advanced topics (next batch — queued so the course never runs dry; added after L83)
+86. Recommendation & candidate-ranking systems — "products you may like" as a pipeline: offline candidate generation
+    (collaborative filtering / embeddings, L65/53) → cheap retrieval → expensive re-rank (L16 two-phase funnel) →
+    business filters (in-stock, dedup, diversity); the cold-start problem (new user/item), feedback loops, and
+    online vs batch features (L53 feature store). Trade: recommendation quality & freshness vs compute cost.
+87. A/B testing & experimentation platforms — deciding whether a change actually helped: deterministic bucketing by
+    hash (L03/04), the exposure-logging pipeline (L64 stream), sample-ratio-mismatch & peeking traps, guardrail
+    metrics, and overlapping experiments (layered assignment). Trade: statistical rigor & velocity vs blast radius.
+88. Notification systems end-to-end — one "your order shipped" across email/SMS/push/in-app: preference & dedup
+    (L73), per-channel delivery + retries/DLQ (L09/68), rate-limiting a user's inbox (L08), template rendering, and
+    the quiet-hours / batching digest. Trade: reach & timeliness vs user annoyance & cost.
+89. Data quality & pipeline observability — trusting the numbers: schema/contract enforcement at ingest (L80),
+    freshness & volume & distribution checks, the "silent bad data" failure (a null flood no alarm caught), lineage,
+    and backfill-safe reprocessing (L57). Trade: data trust & coverage vs pipeline complexity & latency.
+90. Compaction, garbage collection & space reclamation — the cost of append-only everything: LSM compaction
+    (L47/83 merge), tombstone GC (L15/20), MVCC bloat & vacuum, write/space amplification, and reclaiming without
+    stalling live traffic (L28 backpressure). Trade: read/space efficiency vs write amplification & GC pauses.
 
 ## Lesson format conventions
 - Four reusable "moves" framing introduced in Lesson 01: estimate → model →
