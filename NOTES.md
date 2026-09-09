@@ -1673,9 +1673,20 @@
     the index is a disposable, lossy, pre-shaped copy of the text — text isn't searchable, TERMS are, and the analyzer
     turns one into the other the same way on both sides. Trade: index richness & freshness vs build cost & query
     latency. (Lesson 0083)
-84. Graph & recommendation traversal at scale — "people you may know" over a billion-edge graph (L41): BFS fan-out
-    explosion, precompute vs traverse-at-read (L15), edge sharding & the supernode problem (L79 hot key), and offline
-    vs online candidate generation (L53). Trade: traversal freshness vs precompute cost.
+84. ✅ **Graph & recommendation traversal at scale** — "people you may know" over a billion-edge graph (L41): one PYMK
+    request traced end to end. Estimate the graph (1B users × 200 friends × 8 B ≈ 2 TB, sharded ~100 nodes) and the
+    BFS fan-out explosion (200 → 40k → 8M → 1.6B per hop → why PYMK stops at 2 hops: strong signal + tractable size);
+    the mutual-friend score falls out of the hop-2 MULTIPLICITY for free (dedup histogram = #2-hop paths = #mutual
+    friends). Model = sharded adjacency lists (hash by vertex → a 2-hop walk scatters across ~200 shards; can't keep
+    friends co-located because balanced min-cut is NP-hard + small-world resists any cut → locality vs balance);
+    PYMK = candidate-generation → ranking (L16/L53 two-phase). Trace = traverse-at-read (~1M adjacency reads/s, fresh
+    but heavy) vs precompute-offline (nightly ~4e13 touches ≈ 7 min, then a KV lookup — L15) vs the SUPERNODE (a 10M-edge
+    celebrity = both cost bomb AND noise source → hot shard L79 → cap/skip high-degree expansion fixes cost & signal in
+    one stroke). First bottleneck = the fan-out concentrated in supernodes → precompute (bounds how OFTEN) + degree-cap
+    (bounds how BIG). Walls: freshness (offline base + online patch = L29/L53 lambda), cross-shard traversal tax
+    (replicate hot vertices, storage-for-latency L02/L48), offline↔online candidate-gen spectrum (L53). Deepest point:
+    a graph query's cost is set by the DEGREE of the vertices it touches, not the hop count — the discipline is bounding
+    and pre-shaping the explosion. Trade: traversal freshness vs precompute cost. (Lesson 0084)
 85. Multi-region data placement & residency — where a row is legally allowed to live: geo-partitioning by user home
     region (L23/79), data-residency/GDPR constraints (L56), follow-the-sun latency (L14/23), and the cross-region join
     tax. Trade: local latency & compliance vs global query simplicity.

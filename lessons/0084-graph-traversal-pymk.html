@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 84 — Graph &amp; Recommendation Traversal at Scale: One "People You May Know" Request Across a Billion-Edge Graph</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 84 · Worked Example</div>
+  <h1>Graph &amp; Recommendation Traversal at Scale: One "People You May Know" Request Across a Billion-Edge Graph</h1>
+  <p class="lead">Lesson 41 built the social graph — users are <b>vertices</b>, friendships are <b>edges</b>, and "who is connected to whom" is a query you answer by walking the edges. This lesson runs the query that made graphs famous: <b>People You May Know</b> (PYMK). It looks simple — "show me friends of my friends" — but at a billion users it is the sharpest fan-out problem in this whole course, and the place where a single celebrity in your friend list can take down a shard. We take <span class="key">one PYMK request for one user and trace it end to end</span>: the friends we read, the friends-of-friends we expand into, how we score them by <b>mutual friends</b>, and what happens when one of those friends has ten million edges. We'll <b>estimate</b> the graph's size and watch the fan-out explode hop by hop (200 → 40,000 → 8,000,000). We'll <b>model</b> the graph as sharded adjacency lists and see why a two-hop query scatters across the whole cluster. We'll <b>trace</b> three paths — traverse-at-read, precompute-offline, and the supernode that blows both up. And we'll find <span class="key">the first bottleneck: the fan-out itself — the cost of a graph query is set by the <i>degree</i> of the nodes it touches, not the number of hops.</span> The trade under all of it: <b>traversal freshness vs precompute cost.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0084-graph-traversal-pymk.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>A social network: <b>1 billion users</b>, each with about <b>200 friends</b>. Friendship is mutual, so an edge runs both ways. We serve <b>People You May Know</b>: given a user, suggest people they aren't friends with yet but probably know — ranked so the best suggestion is on top. One very specific request travels through the system in this lesson, and we'll follow it step by step:</p>
+<ul>
+  <li><b>One request:</b> compute PYMK for a user we'll call <b>Alice</b> — find her friends-of-friends, rank them by how many friends they share with her, return the top 50.</li>
+  <li><b>One toy graph</b> to make it concrete: Alice's friends are <b>Bob, Carol, Dave</b> (real Alice has 200; we use 3 so the arithmetic fits on the page), and we'll watch the two-hop expansion turn into a ranked list.</li>
+</ul>
+
+<p>Here is the whole query on one page. The signal we want — "how well do I probably know this person" — is just <b>how many of my friends are also their friends</b>. Watch the two-hop walk produce exactly that count:</p>
+<div class="diagram"><pre>
+  ALICE's friends (hop 1)          their friends (hop 2 = friends-of-friends)
+  -----------------------          -------------------------------------------
+        Bob   ───────────────────▶  Carol*, Eve,   Frank
+        Carol ───────────────────▶  Bob*,   Eve,   Grace
+        Dave  ───────────────────▶  Eve,    Frank, Heidi
+                                        (* = already Alice's friend, drop it)
+
+  Collect every hop-2 person, DROP Alice + Alice's existing friends,
+  then COUNT how many times each name appears:
+
+        Eve   appears 3×  (via Bob, Carol, Dave)  -> 3 mutual friends
+        Frank appears 2×  (via Bob, Dave)         -> 2 mutual friends
+        Grace appears 1×  (via Carol)             -> 1 mutual friend
+        Heidi appears 1×  (via Dave)              -> 1 mutual friend
+
+  RANK by that count  ->  PYMK: [ Eve(3), Frank(2), Grace(1), Heidi(1) ]
+                          Eve is friends with ALL of Alice's friends -> top pick
+</pre></div>
+
+<p class="note"><span class="key">The one idea the whole lesson turns on:</span> a PYMK query is a <b>two-hop breadth-first walk</b> (out to my friends, then out to <i>their</i> friends), and the number of times a person shows up in that second hop <i>is</i> the number of mutual friends we share — the dedup and the scoring are the same operation. That walk is cheap for one user drawn on paper. The entire engineering problem is that each hop multiplies the work by the average number of friends (the <b>degree</b>), so the walk that touches 200 people at hop 1 touches 40,000 at hop 2 and 8,000,000 at hop 3 — and one abnormally connected person (a celebrity) makes a single hop touch millions on its own. Everything hard about graph systems is <b>bounding and pre-shaping that fan-out</b>.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Vertex (node)</b> — one thing in the graph. Here, a user.</li>
+  <li><b>Edge</b> — a connection between two vertices. Here, a friendship. Mutual friendship = an edge in both directions.</li>
+  <li><b>Degree</b> — how many edges a vertex has: a user's friend count. Average degree here is 200; a celebrity's degree can be millions.</li>
+  <li><b>Adjacency list</b> — how the graph is stored: for each vertex, the list of its neighbors' ids. Alice → <code>[Bob, Carol, Dave]</code>. Reading one vertex's neighbors is one list read.</li>
+  <li><b>Hop</b> — one step along an edge. Friends are 1 hop away; friends-of-friends are 2 hops away.</li>
+  <li><b>BFS (breadth-first search)</b> — explore the graph level by level: everything 1 hop out, then everything 2 hops out. PYMK is a 2-hop BFS.</li>
+  <li><b>Fan-out</b> — how the work multiplies at each hop: at average degree <i>d</i>, hop 1 touches <i>d</i> vertices, hop 2 touches ~<i>d</i>², hop 3 ~<i>d</i>³.</li>
+  <li><b>Friends-of-friends (FoF)</b> — the vertices exactly 2 hops away. The candidate pool for PYMK.</li>
+  <li><b>Mutual friends</b> — people who are friends with both me and a candidate; the count is the main PYMK ranking signal.</li>
+  <li><b>Supernode</b> — a vertex with a huge degree (a celebrity, a brand). Expanding it reads millions of edges at once — the graph's version of L79's <b>hot key</b>.</li>
+  <li><b>Edge sharding / graph partitioning</b> — splitting the graph across machines by vertex (L79). The trouble: neighbors land on different shards, so a multi-hop walk crosses machines.</li>
+  <li><b>Traverse-at-read</b> — compute the answer by walking the graph live, on each request. Fresh, but expensive per request.</li>
+  <li><b>Precompute</b> — walk the graph offline in a batch, store each user's answer, and read it back with one lookup (L15). Cheap read, but stale between runs.</li>
+  <li><b>Candidate generation</b> — the cheap step that produces a pool of possibilities (here, the FoF) before an expensive ranker scores them (L16/L53's two-phase shape).</li>
+</ul>
+
+<h2>Move 1 — Estimate: the graph's size, and the fan-out explosion</h2>
+<p>Three numbers set up every decision: how big the graph is, how fast the walk explodes hop by hop, and how lopsided traversing-live is versus precomputing.</p>
+
+<div class="card calc">
+  <p><b>How big is the graph?</b> One edge is just a neighbor id in an adjacency list. Friendship is mutual, so every friendship is stored as two directed edges (Alice→Bob and Bob→Alice), which is what makes a walk in either direction a single list read:</p>
+  <div class="diagram"><pre>
+  users          N = 1,000,000,000            (1 billion vertices)
+  avg friends    d = 200                       (average degree)
+  directed edges E = N × d = 200,000,000,000   (200 billion edges)
+
+  one stored edge = one 8-byte neighbor id
+     200,000,000,000 × 8 B = 1.6 TB of edges
+     + vertex records / list overhead        ≈ ~2 TB total
+
+  won't fit one machine -> shard across ~100 nodes
+     ~2 TB / 100 = ~20 GB of graph per node    (fits in RAM)
+  </pre></div>
+  <p><span class="key">The graph is ~2 TB — small enough to hold in memory across a hundred nodes, but far too big for one.</span> So it is <b>sharded</b> (L79): each user's adjacency list lives on one shard, chosen by hashing the user id. Remember that fact — it is the reason a two-hop walk is about to become a scatter across the whole cluster.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The fan-out explosion: each hop multiplies by the degree.</b> This is the single fact that shapes everything. Start at Alice, walk outward, and count how many vertices each hop reaches at average degree 200:</p>
+  <div class="diagram"><pre>
+  hop 0:  Alice                                  1 vertex
+  hop 1:  her friends           200^1  =            200
+  hop 2:  friends-of-friends    200^2  =         40,000   <- PYMK candidates
+  hop 3:  FoF-of-friends        200^3  =      8,000,000
+  hop 4:  one more hop          200^4  =  1,600,000,000   <- 1.6× the ENTIRE
+                                                             user base
+
+  By hop 4 the walk has "eaten the graph": it touches more vertices
+  than exist. The small-world effect (everyone ~6 hops apart) is the
+  same fact from the cost side -- a few hops reach everyone.
+  </pre></div>
+  <p><span class="key">This is why PYMK stops at exactly 2 hops.</span> Hop 2 is the sweet spot on both axes: the <b>signal</b> is strong (a friend-of-a-friend you share several friends with is very likely someone you know), and the <b>fan-out</b> is still tractable (~40,000 raw candidates). Hop 3 is worse on both — the signal is thin ("a friend of a friend of a friend" barely means anything) and the count jumps to 8 million. The design rule the arithmetic forces: <b>never take a hop you don't need, because every hop costs a factor of the degree.</b></p>
+</div>
+
+<div class="card calc">
+  <p><b>Dedup and scoring are the same pass.</b> Those 40,000 hop-2 hits are a <i>multiset</i> — the same person is reached along many paths. Collapsing the duplicates is where the ranking signal falls out for free:</p>
+  <div class="diagram"><pre>
+  raw hop-2 hits (with multiplicity)  ~40,000
+     -> build a histogram: id -> how many of my friends point at it
+     -> that count = number of 2-hop paths from me to id
+                   = number of MUTUAL FRIENDS we share
+  after dedup (friend circles overlap heavily) unique FoF ≈ ~30,000
+     minus the people already my friends, minus me
+  keep the top 50 by mutual-friend count  ->  the PYMK list
+  </pre></div>
+  <p><span class="key">The count that dedups the list is the score.</span> A candidate reached along 8 different paths is a candidate you share 8 mutual friends with — no separate scoring pass, no second graph walk. (In production the mutual-friend count is one signal among several — recency, shared workplace, whether they're in your contacts — layered on top exactly like L16's re-rank, but the mutual-friend count from this one walk is the backbone.) Trade already visible: a wider candidate pool (more hops, higher degree kept) catches more true suggestions but costs more to expand and score — recall vs cost, the same funnel as search (L16).</p>
+</div>
+
+<div class="card calc">
+  <p><b>The asymmetry: traversing live is heavy per request; precomputing is heavy once.</b> This is L15's precompute-the-read, now on a graph.</p>
+  <div class="diagram"><pre>
+  TRAVERSE-AT-READ (per PYMK request):
+     read the adjacency list of each of Alice's 200 friends
+       = 200 random list reads, scattered across ~200 shards
+       -> ~40,000 candidate ids -> histogram -> rank -> top 50
+     at 100M PYMK requests/day (~1,200/s avg, ~5,000/s peak):
+       5,000 req/s × 200 reads = 1,000,000 adjacency reads/second
+     ==> heavy, paid on EVERY request.
+
+  PRECOMPUTE (offline batch, run nightly):
+     for all 1B users: expand hop-2, score, keep top 50, store in a KV
+       work = 1e9 users × 40,000 touches = 4e13 edge-touches / run
+       at ~1e11 traversals/s across the cluster -> ~400 s ≈ 7 min
+     read path becomes: ONE key lookup "pymk:alice" -> [top 50]
+     ==> heavy ONCE per night; the read is a single cache hit.
+  </pre></div>
+  <p><span class="key">Same choice as every read-heavy system in this course.</span> Walk the graph live and every request pays the fan-out (fresh, but a million reads a second); or walk it once offline, store the answer, and serve reads from a lookup (cheap, but stale until the next run). The trade named — <b>traversal freshness vs precompute cost</b> — is the axis the rest of the lesson lives on.</p>
+</div>
+
+<p class="note why"><b>Why the whole design is a fight against fan-out:</b> a graph query looks like a tiny thing ("friends of my friends") but its cost is <i>multiplicative</i> — every hop multiplies by the average degree, and any single high-degree vertex multiplies by <i>its</i> degree. So the engineering is never about the number of hops in the abstract; it's about <b>how many edges those hops actually touch</b>. Precomputing, capping the degree you'll expand, and choosing 2 hops not 3 are all the same move: keep the number of edges the query touches bounded and small.</p>
+
+<h2>Move 2 — Model: sharded adjacency lists, and why a 2-hop walk scatters</h2>
+
+<h3>Where the graph lives: shard by vertex</h3>
+<div class="card calc">
+  <p>Each user's adjacency list lives on one shard, chosen by hashing the user id (L79 / consistent hashing L04). That keeps writes and single-user reads simple — but it scatters neighbors:</p>
+  <div class="diagram"><pre>
+  shard = hash(user_id) mod 100
+
+  Alice  -> shard 12 : adj(Alice) = [Bob, Carol, Dave]
+  Bob    -> shard 87 : adj(Bob)   = [Carol, Eve, Frank]
+  Carol  -> shard 40 : adj(Carol) = [Bob, Eve, Grace]
+  Dave   -> shard 03 : adj(Dave)  = [Eve, Frank, Heidi]
+
+  Alice's 200 real friends hash to ~200 different shards at random.
+  A 2-hop walk must therefore READ FROM up to 200 shards -> a scatter.
+  </pre></div>
+  <p><span class="key">Sharding by vertex makes hop 1 a scatter-gather (L19/L21).</span> To expand Alice's friends I must contact the shard that owns each friend's adjacency list. Two friends almost never share a shard, so the query fans out to as many shards as Alice has friends. This is the deep tension in graph storage, and Move 4's second wall: <b>a graph has no clean shard boundary</b> — cut it anywhere and you cut edges that a traversal wants to follow.</p>
+</div>
+
+<h3>Why you can't just "keep friends together"</h3>
+<div class="card calc">
+  <p>The obvious fix — put connected users on the same shard so a walk stays local — runs straight into a hard problem:</p>
+  <div class="diagram"><pre>
+  Goal: partition 1B vertices into 100 balanced shards while cutting
+        as FEW edges as possible (so walks stay on one shard).
+  This is BALANCED GRAPH PARTITIONING (min-cut) -> NP-hard at this size.
+
+  And even a perfect cut can't win: a social graph is densely tangled
+  (small-world). Alice's 200 friends belong to overlapping communities
+  that each pull toward different shards -> most edges get cut no matter
+  how you slice. Heuristics (METIS, Louvain communities) reduce the cut
+  but never eliminate the cross-shard hop.
+  </pre></div>
+  <p><span class="key">The trade named: locality vs balance.</span> Co-locate connected users and a walk touches fewer shards (fast) — but communities are lopsided in size, so shards become unbalanced (some overloaded, L79 hotspot). Hash by id and shards are perfectly balanced — but every hop scatters. You cannot maximize both; production systems pick a point on this line (usually hash-balanced with replication to soften the scatter) and live with the cross-shard tax.</p>
+</div>
+
+<h3>The two-phase shape: cheap candidates, then expensive ranking</h3>
+<div class="card calc">
+  <p>PYMK is a recommendation pipeline, and it has the same two phases as search (L16) and the feature store (L53):</p>
+  <div class="diagram"><pre>
+  CANDIDATE GENERATION (cheap, broad): the 2-hop walk
+     -> ~30,000 friends-of-friends, each with a mutual-friend count
+  RANKING (expensive, on candidates only): score the survivors
+     -> mutual friends + recency + shared org/school + contacts
+     -> an ML model on the top few thousand (L53 features, L16 re-rank)
+  FILTER (business rules): drop blocked users, people already dismissed,
+     already-friends, self  ->  keep the top 50 shown
+  </pre></div>
+  <p><span class="key">You never rank the whole graph — you rank the ~30k the walk already found.</span> The graph traversal is the cheap wide gate that produces candidates; the costly per-candidate scoring runs only on what survives. Trade: a broader gate (3 hops, keep supernodes) catches more true connections (recall) but floods the ranker and slows the query (cost) — the L16 funnel, wearing a graph hat.</p>
+</div>
+
+<h2>Move 3 — Trace the paths: traverse live, precompute offline, and the supernode</h2>
+
+<h3>Path A — traverse-at-read for a normal user (heavy, per request)</h3>
+<div class="diagram"><pre>
+   PYMK(Alice) arrives at a coordinator
+     │
+     ▼
+   read adj(Alice) from shard 12 -> [Bob, Carol, Dave]   (hop 1: 1 read)
+     │  (real Alice: 200 friends)
+     ▼
+   SCATTER: ask each friend's shard for its adjacency list  (hop 2)
+     shard 87: adj(Bob)   = [Carol, Eve, Frank]
+     shard 40: adj(Carol) = [Bob, Eve, Grace]
+     shard 03: adj(Dave)  = [Eve, Frank, Heidi]
+     │  (real Alice: ~200 reads across ~200 shards)
+     ▼
+   GATHER + histogram, drop Alice & her friends (Bob,Carol,Dave):
+     Eve:3  Frank:2  Grace:1  Heidi:1
+     ▼
+   rank by count, apply filters, keep top 50  ->  return
+</pre></div>
+<p>Fresh to the millisecond — a friendship made 5 seconds ago is already in the walk. The price is the scatter: ~200 cross-shard reads per request, ~1,000,000 reads/second across the cluster at peak. Correct and current, but expensive.</p>
+
+<h3>Path B — precompute offline (cheap read, stale by construction)</h3>
+<div class="diagram"><pre>
+   NIGHTLY BATCH (graph engine over the whole 2 TB graph):
+     for every user u:  expand hop-2, histogram, keep top 50
+     -> write  pymk:{u} -> [top 50 candidates]  into a KV store (L15)
+     total work ~4e13 touches -> ~7 min on the cluster
+
+   READ PATH at request time:
+     PYMK(Alice) -> GET pymk:alice -> [Eve, Frank, Grace, Heidi, ...]
+     -> one lookup, ~1 ms, no graph walk at all
+</pre></div>
+<p class="note"><span class="key">Path B turns a million-read scatter into a single key lookup — but the answer is as old as the last batch.</span> A friendship Alice made this morning won't influence her suggestions until tonight's run. That staleness is the whole cost of precomputing, and it's the first wall in Move 4.</p>
+
+<h3>Path C — the supernode blows both paths up</h3>
+<div class="diagram"><pre>
+   Suppose one of Alice's friends is a CELEBRITY with 10,000,000 friends.
+   Expanding that ONE friend at hop 2:
+     read adj(celebrity) -> 10,000,000 neighbor ids in a single step
+       -> the FoF set explodes from ~30k to 10,000,000+
+       -> one shard (the celebrity's) gets hammered by every PYMK query
+          that has the celebrity as a friend  ==> HOT SHARD (L79)
+   And the payoff is near zero:
+     10M people are all "friends-of-a-friend" through the celebrity,
+     so being reached via the celebrity says almost NOTHING about
+     whether Alice knows them. High cost, no signal.
+</pre></div>
+<p class="note"><span class="key">One supernode is both the cost bomb and the noise source — and that alignment is the fix.</span> Because expanding a very-high-degree vertex is expensive <i>and</i> carries almost no PYMK signal, the standard move is to <b>skip or sample high-degree nodes during expansion</b>: don't traverse through anyone with degree above some threshold (say 5,000). It bounds the fan-out and removes noise in the same stroke. Trade: you might miss a genuine connection that only exists through a hub — accepted, because keeping it would cost millions of reads to surface a near-worthless candidate.</p>
+
+<h2>Move 4 — Find the first bottleneck: the fan-out, and the walls around it</h2>
+
+<div class="card calc">
+  <p><b>The first bottleneck — the fan-out itself, concentrated in supernodes.</b> A normal 2-hop walk touches ~40,000 vertices; a single celebrity friend makes it touch 10,000,000. The cost of a graph query is set by the <i>degree of the vertices it touches</i>, not the abstract hop count. Two moves tame it:</p>
+  <div class="diagram"><pre>
+  1) PRECOMPUTE the common answer (L15): pay the 40,000-touch walk once
+     per user, nightly, and serve reads from a KV lookup. Turns 1M
+     reads/s into 1M cache hits/s.
+  2) CAP THE DEGREE you expand: skip vertices with degree > threshold
+     during traversal. Bounds any single hop to ~threshold edges and
+     strips the low-signal celebrity FoF at the same time.
+  </pre></div>
+  <p><span class="key">Precompute bounds <i>how often</i> you pay the walk; degree-capping bounds <i>how big</i> any one walk gets.</span> Together they turn an unbounded, spiky fan-out into a bounded, predictable one. The trade each buys: precompute trades freshness for read cost; degree-capping trades a little recall (a missed hub connection) for a hard ceiling on cost.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — freshness: precompute is stale, so patch it online.</b> A nightly batch means new friendships don't show for up to a day. The fix is the hybrid from L15 (push+pull) and L53 (offline+online features): a large precomputed base, patched at read time with the handful of edges that changed since the batch.</p>
+  <div class="diagram"><pre>
+   OFFLINE (nightly): the heavy 2-hop walk -> pymk:{u} base list  (bulk)
+   ONLINE (per request): read the base list, THEN cheaply fold in the
+     user's edges created since the batch:
+       new friend X made today -> read adj(X) (one list) -> merge its
+       FoF into the base list, re-rank the top 50
+   result: yesterday's expensive answer + today's cheap delta = fresh,
+     without re-walking the whole 2-hop neighborhood on every request.
+  </pre></div>
+  <p><span class="key">This is a lambda-shaped split (L29/L53): a cheap-to-serve batch base plus a small real-time patch.</span> You pay the giant walk once, but you stay current by only ever expanding the few edges that are new. Trade named: how much you push to the batch (cheaper reads, more staleness between patches) vs how much you patch online (fresher, more per-request work) — the freshness-vs-cost dial set to a middle notch.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — the cross-shard traversal tax.</b> Because the graph is sharded by vertex (Move 2), a 2-hop walk contacts up to ~200 shards, and its latency is the <i>slowest</i> of those shards (the tail-latency / straggler problem from L18/L21's scatter-gather). Two mitigations, both trading storage for speed:</p>
+  <div class="diagram"><pre>
+   REPLICATE hot / high-degree vertices onto every shard (or a cache
+     tier) so expanding a popular friend is a local read, not a network
+     hop (L02/L48 caching, L20 read replicas).
+   PARTITION for locality where you can (community detection, L79) so
+     dense friend-clusters share a shard and most hops stay local --
+     accepting some shard imbalance in return.
+  </pre></div>
+  <p><span class="key">There is no cut that keeps a tangled graph local <i>and</i> balanced (Move 2), so you buy your way around it with copies.</span> Replicating supernodes and caching hot adjacency lists turns cross-shard hops into local reads — spending memory to dodge the network, the same storage-for-latency trade as a covering index (L12) or a CDN (L14). Trade: more replication = faster local walks but more memory and more write fan-out to keep the copies in sync.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The fourth wall — offline vs online candidate generation is a spectrum, not a switch.</b> The very same freshness-vs-cost choice appears one level up, in <i>where</i> candidates are generated (L53's feature store shape). Fully offline: nightly batch, cheapest reads, stalest. Fully online: walk live on every request, freshest, most expensive. Most systems sit in between — precompute the bulk, generate a few candidates online from recent activity, and let an online ranker combine them. The graph traversal is just one candidate <i>source</i> feeding a ranker that also pulls from embeddings, contacts, and shared-attribute matches. Trade named for the last time: <b>traversal freshness vs precompute cost</b> — and the honest answer is almost always "both, split by how fast each signal changes."</p>
+</div>
+
+<p>So the honest picture: PYMK is a two-hop breadth-first walk whose cost is governed by fan-out. At average degree 200 the walk reaches 200 → 40,000 → 8,000,000 vertices per hop, which is why it stops at 2 (strong signal, tractable size). <b>Estimate</b> sized the graph (~2 TB, sharded across ~100 nodes) and showed the mutual-friend score falling out of the hop-2 multiplicity for free, and the asymmetry between traversing-live (~1M reads/s) and precomputing (heavy once, ~7 min nightly, then a lookup). <b>Model</b> put the graph in sharded adjacency lists, showed why a 2-hop walk scatters across ~200 shards, why you can't keep friends co-located (balanced min-cut is NP-hard and a tangled graph resists any clean cut), and framed PYMK as candidate-generation → ranking (L16/L53). <b>Tracing</b> a live walk, a precomputed lookup, and a supernode showed the celebrity as both the cost bomb and the noise source. The <b>first bottleneck</b> — the fan-out concentrated in supernodes — is tamed by precomputing the common answer (L15) and capping the degree you expand. Around it: freshness is bought back with an offline base + online patch (L29/L53 lambda), the cross-shard tax is softened by replicating hot vertices (storage-for-latency, L02/L48), and candidate generation lives on an offline↔online spectrum (L53). The standing tension: <b>traversal freshness vs precompute cost.</b></p>
+
+<p><span class="key">The deepest point: a graph query's cost is set by the degree of the vertices it touches, not the number of hops on the whiteboard.</span> "Friends of friends" is one line of English and a multiplicative bomb — one hop is ×200, a celebrity friend is ×10,000,000. Once you see that, every graph technique in this course is the same instinct: <b>bound the fan-out and pre-shape it.</b> Take the fewest hops that carry signal (2, not 3). Precompute the walk so you pay it once, not per request (L15). Cap the degree you expand so no single vertex can blow up a hop. Replicate the hubs so the walk stays local (L79/L48). And patch the stale precompute with a cheap online delta so you get freshness without re-walking the world (L29/L53). The genuinely new idea is small: <i>a traversal is a controlled explosion, and the whole job is keeping it controlled.</i> The trade to carry: <span class="key">traversal freshness vs precompute cost.</span></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>Find "friends of my friends"</td><td>2-hop BFS over adjacency lists (this lesson)</td><td>the candidate pool / fan-out multiplies by degree per hop</td></tr>
+  <tr><td>Rank the candidates</td><td>Mutual-friend count = hop-2 multiplicity</td><td>free scoring from the same walk / one signal among several</td></tr>
+  <tr><td>Why stop at 2 hops</td><td>hop 3 = 8M &amp; weak signal, hop 4 = whole graph</td><td>tractable + strong signal / misses distant connections</td></tr>
+  <tr><td>A million adjacency reads per second</td><td>Precompute nightly, read a KV lookup (L15)</td><td>cheap fresh-once reads / answer is stale between runs</td></tr>
+  <tr><td>New friendships don't show until tomorrow</td><td>Offline base + online patch (L29/L53 lambda)</td><td>fresh + cheap / more per-request work</td></tr>
+  <tr><td>A celebrity friend explodes one hop</td><td>Cap / sample high-degree vertices in expansion</td><td>bounded cost + less noise / may miss a hub connection</td></tr>
+  <tr><td>2-hop walk scatters across ~200 shards</td><td>Replicate hot vertices, cache hot lists (L02/L48/L79)</td><td>local reads / more memory &amp; write fan-out</td></tr>
+  <tr><td>Keep connected users on one shard</td><td>Community partitioning (best-effort, L79)</td><td>fewer cross-shard hops / min-cut is NP-hard, shards imbalance</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — taking one hop too many.</b> Every extra hop multiplies the work by the average degree (×200) and thins the signal. Three hops isn't "a bit more" than two — it's 200× the candidates for connections that barely mean anything. Take the fewest hops that carry signal.</li>
+  <li><b>Trap 2 — treating all vertices as equal.</b> A degree-200 user and a degree-10,000,000 celebrity cost wildly different amounts to expand. Ignore the degree distribution and one supernode in a friend list takes down a shard. Cap or sample high-degree expansion; the graph's cost lives in its hubs.</li>
+  <li><b>Trap 3 — sharding a graph by hashing the vertex and forgetting the edges.</b> Hashing balances storage perfectly but scatters every multi-hop walk across the cluster, and its latency becomes the slowest shard's. Plan for the cross-shard tax: replicate hot vertices, cache hot lists, or partition for locality — you cannot have balance and locality both.</li>
+  <li><b>Trap 4 — choosing precompute <i>or</i> live traversal.</b> Pure offline is stale; pure online is a fan-out bomb per request. The real answer is the hybrid: a precomputed base for the bulk of the signal plus a cheap online delta for what changed since the batch — freshness bought without re-walking the world.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We ran the query that made graph systems famous — People You May Know — for one user, end to end. <b>Estimate</b> sized the graph at ~2 TB (1B users × 200 friends × 8 B, sharded across ~100 nodes) and watched the fan-out explode 200 → 40,000 → 8,000,000 → 1.6 billion, which is exactly why PYMK stops at 2 hops; the mutual-friend score fell out of the hop-2 multiplicity for free, and traversing live (~1M adjacency reads/s at peak) proved far heavier than precomputing (one ~7-minute nightly walk, then a KV lookup — L15). <b>Model</b> stored the graph as sharded adjacency lists, showed that hashing users to shards scatters a 2-hop walk across ~200 machines, explained why keeping friends co-located fails (balanced min-cut is NP-hard and a small-world graph resists any clean cut — locality vs balance), and framed PYMK as candidate-generation → ranking (L16/L53). <b>Tracing</b> a live walk, a precomputed lookup, and a supernode revealed the celebrity as both the cost bomb (10M edges in one hop → hot shard, L79) and the noise source (FoF-via-celebrity means nothing) — the alignment that makes degree-capping the fix. The <b>first bottleneck</b> — fan-out concentrated in supernodes — is tamed by precompute (bounds how often) plus degree-capping (bounds how big); around it, freshness is bought back with an offline base + online patch (L29/L53), the cross-shard tax is softened by replicating hot vertices (storage-for-latency, L02/L48), and candidate generation lives on an offline↔online spectrum. The deepest point: a graph query's cost is set by the <i>degree of the vertices it touches</i>, and the whole discipline is bounding and pre-shaping that fan-out. The standing tension: <span class="key">traversal freshness vs precompute cost.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we've been treating the graph (and every store before it) as if a row can live anywhere. But some rows aren't <i>allowed</i> to leave a country. Lesson 85 asks where a row is legally and physically permitted to live.</b></p>
+  <p style="margin:.2rem 0">• <b>Multi-region data placement &amp; residency (Lesson 85):</b> where a row is allowed to live — <b>geo-partitioning</b> by user home region (L23/L79), <b>data-residency / GDPR</b> constraints (L56), follow-the-sun latency (L14/L23), and the cross-region join tax. Trade: local latency &amp; compliance vs global query simplicity.</p>
+  <p style="margin:.2rem 0">Say <b>next</b> and we'll pin a user's data to a legal region and watch a "global" query try — and fail — to join across the ocean.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">vertex (node)</span>
+    <span class="pill">edge</span>
+    <span class="pill">degree</span>
+    <span class="pill">adjacency list</span>
+    <span class="pill">hop</span>
+    <span class="pill">BFS</span>
+    <span class="pill">fan-out</span>
+    <span class="pill">friends-of-friends (FoF)</span>
+    <span class="pill">mutual friends</span>
+    <span class="pill">supernode / hot key</span>
+    <span class="pill">edge sharding / partitioning</span>
+    <span class="pill">min-cut</span>
+    <span class="pill">traverse-at-read</span>
+    <span class="pill">precompute</span>
+    <span class="pill">candidate generation</span>
+    <span class="pill">offline vs online</span>
+  </p>
+  <p>That's Lesson 84. It builds on: Lesson 41 (the graph model — vertices, edges, adjacency lists this lesson traverses), Lesson 15 (precompute-the-read — walk the graph once offline, serve a lookup), Lesson 16 (candidate-generation → ranking, the two-phase recall/precision funnel), Lesson 53 (offline vs online candidate/feature generation and the lambda split), Lesson 79 (sharding + scatter-gather + the hot-key/supernode problem), Lesson 04 (hashing keys to nodes), Lesson 18/21 (scatter-gather, mergeable counts, and the top-K/straggler traps facets and fan-in inherit), and Lesson 02/48 (caching/replicating hot data to dodge the network). <b>Ask me follow-ups</b> — e.g. "how does a graph database store adjacency lists on disk?", "what threshold should I cap degree at, and how do I sample a supernode?", "how does the online-patch step stay consistent with the nightly base?", "how do community-detection partitioners like Louvain actually reduce the cut?", or "how would this change for a directed follow graph (Twitter) instead of mutual friendship?" When you're ready, say <b>next</b> and we'll decide where a row is legally allowed to live.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "People You May Know suggests friends-of-friends. A teammate proposes going one hop further — friends-of-friends-of-friends — 'to surface more suggestions.' On a graph with average degree 200, why is this a bad idea, and what governs the cost of a graph traversal?",
+    options: [
+      {t:"Each hop multiplies the work by the average degree, so hop 2 touches ~200² = 40,000 vertices but hop 3 touches ~200³ = 8,000,000 — 200× more candidates — while the signal collapses (a 'friend of a friend of a friend' barely indicates you know them). The cost of a traversal is set by the DEGREE of the vertices it touches (the fan-out per hop), not by the hop count in the abstract; you take the fewest hops that carry signal, which for PYMK is 2.",
+       ok:true,
+       fb:"Exactly. Fan-out is multiplicative: every hop is a factor of the degree, and one high-degree vertex is a factor of its own degree. Three hops isn't 'a bit more' than two — it's 200× the candidates for connections that mean almost nothing. Bounding hops (and degree) is the whole game."},
+      {t:"It's fine and even preferable — more hops just means a bigger candidate list, and the ranking step at the end will sort out which suggestions are good, so the extra hop only improves recall at no real cost.",
+       ok:false,
+       fb:"The ranker only runs on candidates the traversal already produced, and producing them is the expensive part. Going from ~40,000 to ~8,000,000 candidates multiplies the walk's reads by 200 and floods the ranker — the cost is in the fan-out, not in the sort. And the extra recall is nearly all noise (3-hop connections carry little signal)."},
+      {t:"The problem is purely storage: three hops needs three copies of the adjacency lists in memory, tripling RAM. Add more memory and the third hop is safe.",
+       ok:false,
+       fb:"The blow-up isn't storage — it's the number of vertices the walk visits at read time. A 3-hop walk from one user touches ~8,000,000 vertices regardless of how the lists are stored; the graph itself doesn't grow. More RAM doesn't make an 8-million-vertex traversal cheap. The cost is the fan-out of the walk, not the footprint of the data."}
+    ]
+  },
+  {
+    stem: "In the two-hop walk, you collect every friend-of-friend of Alice into one big list (with duplicates), then dedup it. Someone asks: 'after dedup, where does the mutual-friend ranking come from — do we need a second pass over the graph to count mutual friends?' What's the answer?",
+    options: [
+      {t:"No second pass — the count that dedups the list IS the mutual-friend score. Each time a candidate appears in the hop-2 collection, it was reached via a different friend of Alice, i.e. one more 2-hop path from Alice to that person, i.e. one more mutual friend. So the histogram of the multiset (id → how many times it appeared) gives the mutual-friend count directly; you rank by that count. Dedup and scoring are the same operation.",
+       ok:true,
+       fb:"Right. A candidate reached along 8 paths shares 8 mutual friends with Alice. The multiplicity in the raw hop-2 hits is exactly the mutual-friend count, so the walk that generates candidates also scores them — no extra traversal."},
+      {t:"Yes — you must run a separate query for each candidate that intersects Alice's friend set with the candidate's friend set to count mutuals, since the dedup only removes duplicates and throws the counts away.",
+       ok:false,
+       fb:"That would work but it's wasteful and unnecessary: it re-derives, per candidate, information the first walk already produced. If you keep the counts during dedup (a histogram instead of a set), the mutual-friend number is already there. Throwing the multiplicities away and then recomputing them with N extra intersection queries is the thing to avoid."},
+      {t:"You rank by the order candidates were discovered — whoever showed up first in the breadth-first walk is the strongest suggestion, so no counting is needed at all.",
+       ok:false,
+       fb:"Discovery order is meaningless here — it just reflects which of Alice's friends was expanded first, not how well Alice knows the candidate. The signal is how MANY of Alice's friends connect to the candidate (the multiplicity), not which one happened to be visited first. Ranking by discovery order would surface arbitrary people."}
+    ]
+  },
+  {
+    stem: "One of Alice's friends is a celebrity with 10 million friends. When PYMK expands Alice's friends at hop 2, what goes wrong, and why is the standard fix — skipping very-high-degree vertices during expansion — considered a clean solution rather than a hack?",
+    options: [
+      {t:"Expanding that one friend reads 10 million neighbor ids in a single hop, exploding the candidate set and hammering the celebrity's shard (every PYMK query that includes the celebrity hits it — a hot shard, L79). Crucially, being reached via a celebrity carries almost no signal: 10M people are all 'friends-of-a-friend' through them, so it says nothing about who Alice knows. Skipping high-degree vertices bounds the fan-out AND strips low-signal candidates in the same stroke — cost and noise are aligned, so one rule fixes both.",
+       ok:true,
+       fb:"Exactly. The supernode is simultaneously the cost bomb and the noise source, so declining to traverse through it is not a compromise — it removes expensive work that was producing worthless candidates. You accept possibly missing a genuine hub-only connection, a cheap price for a hard cost ceiling."},
+      {t:"The celebrity's adjacency list is too big to fit in memory, so the query crashes with an out-of-memory error; the fix is to skip them only to avoid the crash, and it does hurt recommendation quality since those 10M people are strong candidates.",
+       ok:false,
+       fb:"Two errors. First, the issue is the read/compute cost and hot-shard load of expanding 10M edges per request, not a single OOM crash (the list can be paged/streamed). Second, FoF-via-celebrity are WEAK candidates, not strong ones — millions of unrelated people share that one hub — so skipping them improves quality, it doesn't hurt it."},
+      {t:"Nothing really goes wrong — 10 million candidates is fine because the ranker will keep only the top 50, so you should expand the celebrity fully and let ranking handle it.",
+       ok:false,
+       fb:"The damage is done before ranking: expanding the celebrity means reading 10M edges and overwhelming one shard on every such request, at 5,000 requests/second. 'The ranker keeps 50' ignores that you paid to generate and score millions of near-worthless candidates first. The cost is in the fan-out at candidate-generation time, which is exactly what capping degree prevents."}
+    ]
+  },
+  {
+    stem: "You precompute PYMK nightly (a big graph walk) and serve each user's suggestions from a single key lookup — cheap reads. But users complain that someone they friended this morning still isn't influencing their suggestions. What's the right fix, and what general pattern is it?",
+    options: [
+      {t:"Keep the nightly precomputed list as the base, but at request time cheaply fold in the edges created since the last batch: read the adjacency lists of the user's brand-new friends, expand just those, and merge/re-rank into the base list. You pay the giant 2-hop walk once offline, and stay fresh by expanding only the few edges that changed — an offline base + online patch (a lambda-shaped split, L29/L53): a cheap-to-serve batch plus a small real-time delta.",
+       ok:true,
+       fb:"Right. Full offline is stale; full online is a per-request fan-out bomb. The hybrid gives you the bulk of the signal from a precomputed base and today's freshness from a tiny online expansion of only the new edges — freshness without re-walking the whole neighborhood."},
+      {t:"Switch entirely to traverse-at-read: drop the precompute and walk the graph live on every request so results are always current. Freshness is the priority, so the per-request cost is worth it.",
+       ok:false,
+       fb:"That trades one extreme for the other. Live traversal on every request is ~200 cross-shard reads per user and ~1M reads/second at peak — the exact fan-out cost the precompute existed to avoid. You don't need to re-walk everything to reflect one new friend; you only need to expand that new edge. The hybrid keeps the cheap base and adds just the delta."},
+      {t:"Run the nightly batch more often — every 5 minutes instead of once a day. Frequent enough batches make staleness negligible without any per-request work.",
+       ok:false,
+       fb:"A full-graph 2-hop walk over 1B users costs ~4e13 edge-touches per run — running it every 5 minutes would consume the cluster continuously and still leave a 5-minute staleness window. Batches amortize a huge walk over many reads; shrinking the interval destroys that amortization. The scalable fix is a cheap online patch on top of an infrequent base, not a faster full rebuild."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
