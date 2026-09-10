@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 85 — Multi-Region Data Placement &amp; Residency: Where a Row Is Legally Allowed to Live</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 85 · Worked Example</div>
+  <h1>Multi-Region Data Placement &amp; Residency: Where a Row Is Legally Allowed to Live</h1>
+  <p class="lead">Every lesson so far has treated a row as something you can put anywhere that's fast — cache it (L02), replicate it across an ocean (L23), shard it by a hash (L79). This lesson adds a constraint that isn't about speed at all: <b>some rows aren't <i>allowed</i> to leave a country.</b> A privacy law can make copying one German user's profile to a US server a violation that costs millions — not a slow query, a <i>fine</i>. So placement stops being purely a performance choice and becomes a legal one. We take <span class="key">one concrete row — Alice's profile, a resident of Germany — and one concrete query — "total revenue by product last month, worldwide" — and watch the query try, and fail, to gather rows that legally cannot move.</span> We'll <b>estimate</b> the two forces in tension: the ~90 ms speed-of-light tax on crossing the Atlantic, and the compliance wall (a 4% fine that dwarfs any latency cost). We'll <b>model</b> the fix: partition data by the user's <b>home region</b>, a key that is now a legal attribute, with a small global <b>directory</b> that says which region owns each user. We'll <b>trace</b> three paths — Alice at home (fast, compliant), Alice traveling abroad (the roaming tax), and the global analytics join that hits the wall. And we'll find <span class="key">the first bottleneck: the cross-region query — a "global" join can't pull rows that can't leave home, so you push the computation to the data instead of the data to the computation.</span> The trade under all of it: <b>local latency &amp; compliance vs global query simplicity.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0085-data-placement-residency.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>A global marketplace: <b>300 million users</b> spread across three regions — <b>EU</b> (served from Frankfurt), <b>US</b> (Virginia), and <b>India</b> (Mumbai). Each user has a <b>profile</b> (name, email, address — <b>personal data</b>) and a stream of <b>orders</b>. A privacy law covering the EU says the personal data of EU residents must be <b>stored and processed inside the EU</b>. One row and one query travel through this lesson:</p>
+<ul>
+  <li><b>One row:</b> <b>Alice</b>, a resident of Germany. Her profile is <b>EU personal data</b> — by law it may live only in the EU region. We'll follow it as she uses the app at home and abroad.</li>
+  <li><b>One query:</b> the finance team asks for <b>"revenue by product, worldwide, last month."</b> It wants to join orders against users across all three regions — and it is about to discover it cannot legally pull Alice's region's rows into a US warehouse.</li>
+</ul>
+
+<p>Here is the whole tension on one page. Two things pull placement in opposite directions — the network wants a copy near every user, the law forbids Alice's copy from leaving the EU — and a global query sits on top wanting to read everything at once:</p>
+<div class="diagram"><pre>
+        EU region (Frankfurt)      US region (Virginia)      India (Mumbai)
+        ┌──────────────────┐      ┌──────────────────┐      ┌──────────────┐
+        │ EU users' data   │      │ US users' data   │      │ IN users'    │
+        │  Alice (DE) ◀────┼──┐   │  Bob (TX)        │      │  data        │
+        │  ...120M rows    │  │   │  ...130M rows    │      │  ...50M rows │
+        └──────────────────┘  │   └──────────────────┘      └──────────────┘
+                              │            ▲
+        Alice's PII may NEVER │            │  "give me every user + order
+        leave the EU box  ────┘            │   row so I can join them here"
+                                           │              ✗  ILLEGAL
+                              ┌────────────┴─────────────┐
+                              │  GLOBAL analytics query   │  wants to gather
+                              │  revenue by product, WW   │  rows that can't move
+                              └───────────────────────────┘
+
+        GLOBAL DIRECTORY (tiny, replicated everywhere):  user_id -> home_region
+          Alice -> EU     Bob -> US     ...      (says WHERE each row lives)
+</pre></div>
+
+<p class="note"><span class="key">The one idea the whole lesson turns on:</span> once a law pins a row to a place, <b>the row's location becomes a property of the row, not a free optimization.</b> You can't cache Alice in Virginia for speed, you can't replicate her to survive an EU outage by copying her to the US, and you can't pull her into a global join. So you flip the whole design: instead of moving data to wherever the computation is, you <b>keep each user's data in its legal home and move the computation (and only non-personal results) to the data.</b> Every technique below — home-region partitioning, the directory, per-region joins that ship aggregates — is that one inversion.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Region</b> — a geographic cluster of datacenters (Frankfurt, Virginia, Mumbai). Crossing between regions costs real time and, sometimes, crosses a legal border.</li>
+  <li><b>Personal data (PII)</b> — data that identifies a person: name, email, home address, precise location. This is what privacy law protects. An anonymous product count is <i>not</i> personal data.</li>
+  <li><b>Data residency / data localization</b> — a legal requirement that certain data be stored (and sometimes processed) within a specific country or region.</li>
+  <li><b>Data sovereignty</b> — the idea that data is subject to the laws of the place it physically sits. Put a row in Virginia and US law can reach it — which is itself a reason a law may forbid the move.</li>
+  <li><b>Home region</b> — the one region a user's personal data is bound to, usually their country of residence. It is the <b>partition key</b> (L79) for placement — but a legal one.</li>
+  <li><b>Geo-partitioning</b> — sharding by home region so each region's cluster holds only its own residents' rows.</li>
+  <li><b>Directory (placement map)</b> — a small, globally replicated lookup: <code>user_id → home_region</code>. It tells any server which region owns a given user without moving the user's data.</li>
+  <li><b>Pseudonymization / tokenization</b> — replace PII with a meaningless token (L30). The token can travel; the mapping <code>token → real PII</code> stays home.</li>
+  <li><b>Follow-the-sun</b> — a user roams; requests land near wherever they physically are, even though their data stays in its home region.</li>
+  <li><b>Cross-region join</b> — a query that needs rows from more than one region at once. The central problem of this lesson.</li>
+  <li><b>Aggregate</b> — a summary number (revenue, count) with the personal detail stripped out. Aggregates can usually cross borders where raw rows cannot.</li>
+</ul>
+
+<h2>Move 1 — Estimate: the latency tax, and the compliance wall that dwarfs it</h2>
+<p>Two forces set every decision here, and they are measured in different units. One is milliseconds; the other is money. Sizing both is what shows why compliance wins.</p>
+
+<div class="card calc">
+  <p><b>Force 1 — the speed-of-light tax on crossing the ocean.</b> Frankfurt to Virginia is about 6,500 km. Light in fiber travels at ~200,000 km/s (about two-thirds of light in vacuum, L14). That sets a floor no faster server can beat:</p>
+  <div class="diagram"><pre>
+  one-way   6,500 km / 200,000 km/s = 0.0325 s = 32.5 ms
+  round trip                          = ~65 ms
+  + routing/queueing overhead         ≈ ~90 ms   (matches L23)
+
+  local read inside one region        ≈ ~1 ms
+
+  crossing the Atlantic per request   ≈ 90× a local read
+  </pre></div>
+  <p><span class="key">Serving a user from their own region is ~90× faster than reaching across the ocean.</span> This is the force that <i>wants</i> a copy of every user near every user — the same instinct as a CDN (L14) or a second live region (L23). Left alone, it says "replicate Alice everywhere." The next number is why you can't.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Force 2 — the compliance wall, priced as a fine, not a delay.</b> A privacy law like the GDPR can fine a company up to <b>4% of global annual turnover, or €20M, whichever is higher</b>. Put a number on it:</p>
+  <div class="diagram"><pre>
+  company turnover        €500,000,000 / yr
+  max fine = 4%           €20,000,000            (per violation category)
+
+  cost of a slow request  ~90 ms  -> a worse experience, measurable, PAYABLE
+  cost of an illegal copy  a €20M fine + a headline -> categorical, NOT payable
+
+  A latency cost is a number you can trade against other numbers.
+  A compliance violation is a WALL: no amount of speed buys the right
+  to cross it.
+  </pre></div>
+  <p><span class="key">This is the difference that reorders the whole design.</span> Every earlier lesson traded one cost against another — freshness vs speed, storage vs latency. Residency is not a cost on that scale; it is a <b>constraint</b>. You do not "spend €20M of compliance budget to save 90 ms." You treat the border as impassable for personal data and optimize latency <i>within</i> what the law allows. Trade named for the first time: <b>local latency &amp; compliance vs global query simplicity</b> — and compliance is the term that can't be negotiated.</p>
+</div>
+
+<div class="card calc">
+  <p><b>How big is the data, and how big is the thing that <i>can</i> move?</b> Sizing both tells you the shape of the fix before we design it.</p>
+  <div class="diagram"><pre>
+  users        300,000,000  (EU 120M, US 130M, India 50M)
+  profile row  ~2 KB each   -> 300M × 2 KB = ~600 GB of personal data
+     ... which must stay split across its 3 legal homes, never pooled.
+
+  the DIRECTORY that says where each row lives:
+     user_id (8 B) + region (1 B) = 9 B/user
+     300M × 9 B = ~2.7 GB   -> tiny, holds NO personal data,
+                               safe to replicate to ALL regions.
+  </pre></div>
+  <p><span class="key">The personal data is heavy and stuck; the map of where it lives is tiny and free to travel.</span> That split — 600 GB pinned in place, 2.7 GB copied everywhere — is the seed of the design. You never move the 600 GB across a border. You replicate the 2.7 GB directory so any server, anywhere, can find out which region owns a user and route to it (the same shape as L34's service directory, but for <i>data</i> instead of services).</p>
+</div>
+
+<p class="note why"><b>Why the whole design inverts the usual instinct:</b> for 84 lessons the reflex has been "move the data closer to the work" — cache it, replicate it, precompute it. Residency forbids that move for personal data. So the reflex flips to <b>"move the work to the data, and let only non-personal results come back."</b> A €20M wall can't be optimized away; it can only be designed around, and the way you design around it is to stop trying to gather rows in one place and instead compute where they already sit.</p>
+
+<h2>Move 2 — Model: home-region partitioning and the directory</h2>
+
+<h3>The placement key is a column now — a legal one</h3>
+<div class="card calc">
+  <p>Give every user a <b>home_region</b> — normally their country of residence, resolved at signup. It looks like an ordinary sharding key (L79), but it is chosen by law, not by hash, and it decides which regional cluster physically stores the row:</p>
+  <div class="diagram"><pre>
+  users table (conceptually — physically split per region):
+     user_id | home_region | name  | email        | address ...
+     Alice   |   EU         | ...   | ...          | ...   -> stored in EU
+     Bob     |   US         | ...   | ...          | ...   -> stored in US
+     Priya   |   IN         | ...   | ...          | ...   -> stored in IN
+
+  placement rule:  a user's PII lives ONLY in its home_region cluster.
+  Alice's row exists in the EU database and NOWHERE else. No cache in
+  Virginia, no read-replica in Mumbai. The column IS the law applied.
+  </pre></div>
+  <p><span class="key">Sharding by a hash (L79) balances load; sharding by home region satisfies a statute.</span> The difference matters: a hash key you can change for performance, but you cannot rehash Alice into Virginia to balance load, because the key encodes a legal boundary. The trade this locks in: you give up the freedom to place a row wherever it's fastest, in exchange for never having to prove a copy didn't leak across a border.</p>
+</div>
+
+<h3>The directory: find the region without moving the row</h3>
+<div class="card calc">
+  <p>Any server, anywhere, needs to answer "which region owns Alice?" before it can serve or route her request — <i>without</i> reading her personal data. That's the directory's whole job (L34's registry idea, pointed at data):</p>
+  <div class="diagram"><pre>
+   DIRECTORY:  user_id -> home_region     (2.7 GB, no PII, replicated to
+                                            all 3 regions, read-mostly)
+
+   request for Alice lands anywhere
+     -> look up "Alice" in the LOCAL directory replica  (~1 ms, no border)
+     -> answer: EU
+     -> route the request (or the data call) to the EU cluster
+  </pre></div>
+  <p><span class="key">The directory is small, personal-data-free, and globally replicated — the opposite of the user rows it points to.</span> It's safe to copy everywhere precisely because it carries no protected content: a mapping from an opaque id to a region name identifies no one. Because every region has a local copy, the "where does this row live?" lookup never itself crosses a border. Trade: the directory must be highly available everywhere (a stale or missing directory can't route anyone), so it's an <b>AP, fail-static</b> dependency (L34/L11) — better to serve a slightly stale region map than to block; region assignments change rarely, so staleness is cheap.</p>
+</div>
+
+<h3>Split data by sensitivity, not just by region</h3>
+<div class="card calc">
+  <p>Not all of a user's data is equally protected. The design that makes global features possible at all is to <b>separate the personal from the non-personal</b>, so the non-personal part is free to travel:</p>
+  <div class="diagram"><pre>
+   PINNED to home region (personal data):
+     name, email, address, phone, precise location, payment details
+       -> Alice's identity. Never leaves the EU.
+
+   FREE to replicate globally (non-personal / pseudonymized):
+     product catalog (no person in it)          -> copy to every region
+     order FACTS keyed by a TOKEN, not a name    -> token travels, PII home
+     aggregates: "product P sold 40,000 units"   -> a number, identifies no one
+
+   the bridge: tokenization (L30)
+     Alice's PII  <->  token "u_9f3a"  (mapping stays in the EU)
+     the rest of the world sees only "u_9f3a bought product P"
+  </pre></div>
+  <p><span class="key">A token can cross the border; the person cannot.</span> Pseudonymization (L30) lets an order fact travel the world as "<code>u_9f3a</code> bought product P" while the map from <code>u_9f3a</code> back to Alice stays locked in the EU. Trade: you gain global features (analytics, recommendations) on the pseudonymized stream, at the cost of an extra hop — to turn a token back into a name you must ask the home region, which re-crosses the border. So you design features that never need the name: they operate on tokens and aggregates and only re-identify inside the home region when strictly necessary.</p>
+</div>
+
+<h2>Move 3 — Trace the paths: home, roaming, and the global join</h2>
+
+<h3>Path A — Alice at home in Frankfurt (fast and compliant)</h3>
+<div class="diagram"><pre>
+   Alice opens the app in Berlin
+     │
+     ▼
+   request lands at the EU edge (nearest region)
+     │
+     ▼
+   directory lookup (local EU replica): Alice -> EU        (~1 ms, no border)
+     │
+     ▼
+   read/write Alice's profile in the EU cluster            (~1 ms, local)
+     │
+     ▼
+   respond  ->  total ~a few ms, and her PII never left the EU
+</pre></div>
+<p>The common case is the easy case: a user in their home region reads and writes locally, fast, and the law is satisfied for free because nothing crossed a border. This is the payoff of geo-partitioning — <b>most requests are local because most users are home.</b></p>
+
+<h3>Path B — Alice travels to New York (the roaming tax)</h3>
+<div class="diagram"><pre>
+   Alice (home_region = EU) opens the app in New York
+     │
+     ▼
+   request lands at the US edge (nearest to her body)
+     │
+     ▼
+   directory lookup (local US replica): Alice -> EU
+     │      the US region has NO copy of Alice's data — by law it can't.
+     ▼
+   two legal choices:
+     (1) PROXY the data call back to the EU cluster     (+~90 ms round trip)
+     (2) ROUTE the whole session to the EU region       (all reads ~90 ms)
+     │
+     ▼
+   Alice sees her data, ~90 ms slower — the data did NOT follow her.
+</pre></div>
+<p class="note"><span class="key">Follow-the-sun means the <i>request</i> follows the user, never the personal data.</span> When Alice roams, you do not spin up a copy of her profile in Virginia — that copy would be the violation. Instead the nearby edge either proxies to her home region or hands the session back to it, and she pays the ~90 ms Atlantic tax for as long as she's abroad. Trade named: a traveling user gets slower reads (a latency cost you <i>can</i> pay) so that you never duplicate PII outside its legal home (a wall you <i>can't</i> cross). The rare traveler pays; the common home user doesn't.</p>
+
+<h3>Path C — the global analytics join (hits the wall)</h3>
+<div class="diagram"><pre>
+   Finance: "revenue by product, worldwide, last month."
+   NAIVE plan: pull every region's orders + user rows into a US
+               warehouse and JOIN them there.
+     EU orders + EU users --ship to US-->  ✗  moves EU PII to the US.
+                                              ILLEGAL. Do not do this.
+
+   LEGAL plan: push the computation to the data; ship only aggregates.
+     in EACH region, locally join orders×products and SUM:
+        EU:    product P -> €40,000
+        US:    product P -> €55,000
+        IN:    product P -> €12,000
+        (each row is (product_id, revenue) — NO person in it)
+     ship the small per-region aggregates to a central warehouse:
+        3 regions × ~100k products × ~20 B  ≈ ~6 MB total
+     MERGE (sum the partials, L21/L29):
+        product P worldwide = 40,000 + 55,000 + 12,000 = €107,000
+</pre></div>
+<p class="note"><span class="key">The naive join moves 300M personal rows across a border; the legal join moves ~6 MB of anonymous numbers.</span> Compare the two: shipping raw rows would be ~30M orders × ~200 B ≈ <b>6 GB</b> of personal data across the ocean — illegal <i>and</i> a thousand times bigger than the ~6 MB of aggregates. Computing the sum in each region and shipping only <code>(product, revenue)</code> pairs is smaller, faster, <i>and</i> compliant, because a revenue total identifies no one. This is L29's partition-prune-aggregate-merge and L21's mergeable sums, now with a legal reason to prefer them: <b>the person never crosses the border; only the anonymous total does.</b></p>
+
+<h2>Move 4 — Find the first bottleneck: the cross-region query, and the walls around it</h2>
+
+<div class="card calc">
+  <p><b>The first bottleneck — the "global" query that wants rows which can't move.</b> Any feature that needs to see users from more than one region at once runs into the wall: you cannot gather the rows in one place. The fix is the inversion from Move 1, made concrete:</p>
+  <div class="diagram"><pre>
+  DON'T: move data to the computation
+     gather all regions' rows into one warehouse -> illegal + huge.
+  DO:    move computation to the data
+     run the query IN each region on local rows -> emit only
+     non-personal aggregates -> ship those -> merge centrally.
+  </pre></div>
+  <p><span class="key">Push the computation down; let only anonymous results come up.</span> A global count, sum, or top-K becomes a per-region local query plus a central merge of small aggregates (L21/L29). The personal rows stay home; the answer is assembled from summaries. Trade: global queries get more complex (you write a scatter-gather-and-merge instead of one big join) and can't do arbitrary row-level analysis across regions — but they become both legal and cheaper. Global query simplicity is exactly what you spend to buy compliance.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — a join that genuinely needs two people from two regions.</b> Some queries aren't aggregates: a message from Alice (EU) to Bob (US), a shared document, a friendship (L84) that spans regions. You cannot co-locate both people — each is pinned to their own home. Two moves:</p>
+  <div class="diagram"><pre>
+   STORE PER-ENDPOINT: keep a copy of the interaction in EACH
+     participant's home region, holding only THAT participant's data
+     + a TOKEN for the other side.
+       EU copy: Alice's message body + "to: token(Bob)"
+       US copy: Bob's inbox entry   + "from: token(Alice)"
+     -> each region holds only its own resident's PII; the counterparty
+        is a token, re-identified only in ITS home region if needed.
+
+   or KEEP ONLY PSEUDONYMOUS REFERENCES across the edge (L30), so the
+     cross-region link carries tokens, never names.
+  </pre></div>
+  <p><span class="key">You don't join two people in one place — you store each person's slice in their own place and link by token.</span> The relationship exists as two half-rows, one per home region, joined only by opaque ids. Trade: you duplicate the <i>interaction</i> (once per participant) and accept that showing the counterparty's name means a call to their home region — more storage and an extra hop, in exchange for never pooling two jurisdictions' PII in one row.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — a user permanently relocates.</b> Alice moves from Germany to Texas for good. Her <b>home_region</b> must change EU→US, which means physically moving her personal data across the border (now legal <i>because</i> she is a US resident) and updating the directory. This is a live migration (L24) of one user:</p>
+  <div class="diagram"><pre>
+   1. copy Alice's EU rows to the US cluster        (expand, L24)
+   2. verify the copy, then flip the directory       Alice -> US (cutover)
+   3. new requests route to US; drain in-flight EU reads
+   4. DELETE the EU copy after bake                  (contract, L24 + L56)
+   the directory flip is the atomic switch; the delete is the
+   irreversible step, so it comes last, after verification.
+  </pre></div>
+  <p><span class="key">Relocation is expand→cutover→contract (L24) applied to one row's legal home, with the directory flip as the cutover.</span> The order is the safety: copy first, flip the pointer, drain, then delete — because the delete (L56) is the one step you can't undo. Trade: relocations are rare but must be exact; you accept a careful multi-step migration per moving user rather than risk either two live copies (a residency violation) or a lost row.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The fourth wall — the directory is everyone's dependency.</b> Every request, in every region, hits the directory to find a user's home. If it's slow or down, nothing routes. So it inherits L34's rules exactly: replicate it to every region, make it <b>fail-static</b> (serve the last-known map rather than block), and choose <b>AP over CP</b> (L11) — a slightly stale "Alice → EU" is cheap to be wrong about (region assignments change only on relocation), whereas blocking every request on a strongly-consistent global lookup would re-import the ~90 ms tax onto the common path. Trade: the directory trades perfect freshness for always-available local reads — the right call because the thing it stores barely ever changes.</p>
+</div>
+
+<p>So the honest picture: residency turns placement from an optimization into a constraint. <b>Estimate</b> sized the two forces — the ~90 ms Atlantic tax (which <i>wants</i> a copy near every user) and the €20M compliance wall (which forbids the copy for personal data) — and showed they live in different units, so the wall wins and reorders everything. <b>Model</b> made <code>home_region</code> the placement key (a legal column, not a hash), added a tiny globally-replicated <b>directory</b> that finds a row's region without moving it, and split data by sensitivity so tokens and aggregates can travel while PII stays home. <b>Tracing</b> Alice at home (fast, compliant), Alice roaming (the request follows her, the data doesn't — ~90 ms tax), and the global join (naive = illegal 6 GB move; legal = ~6 MB of aggregates merged centrally) showed the inversion in action. The <b>first bottleneck</b> — the cross-region query that can't gather immovable rows — is solved by pushing computation to the data and merging anonymous results; around it, cross-region interactions store per-endpoint linked by token, relocations run as expand→cutover→contract migrations (L24), and the directory is an AP fail-static dependency (L34). The standing tension: <b>local latency &amp; compliance vs global query simplicity.</b></p>
+
+<p><span class="key">The deepest point: once a law pins a row to a place, location becomes part of the data model, not a knob you turn for speed.</span> For every prior lesson the reflex was "move the data closer to the work." Residency inverts it: <b>keep the data in its legal home and move the work to it</b>, letting only tokens and aggregates cross the border. That single flip explains the whole design — home-region partitioning is the row staying put, the directory is how you find it without moving it, per-region joins that ship aggregates are the work coming to the data, and tokenization is the one safe thing that's allowed to travel. The genuinely new idea is small and sharp: <i>a compliance boundary is a wall, not a cost — you cannot pay to cross it, you can only design so you never need to.</i> The trade to carry: <span class="key">local latency &amp; compliance vs global query simplicity.</span></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>Where is a row legally allowed to live?</td><td><code>home_region</code> as the placement key (this lesson, L79)</td><td>compliance by construction / lose free placement</td></tr>
+  <tr><td>Find a user's region without moving the row</td><td>Tiny globally-replicated directory (L34)</td><td>local ~1 ms lookup everywhere / must be HA + fail-static</td></tr>
+  <tr><td>Fast reads for users at home</td><td>Serve locally from the home region</td><td>~1 ms + compliant / only works when the user is home</td></tr>
+  <tr><td>A user travels abroad</td><td>Route the request, not the data (follow-the-sun, L23)</td><td>no illegal copy / ~90 ms roaming tax while away</td></tr>
+  <tr><td>A "global" query over immovable rows</td><td>Per-region compute → ship aggregates → merge (L21/L29)</td><td>legal + ~1000× smaller transfer / more complex query</td></tr>
+  <tr><td>Something must cross the border</td><td>Tokenize / pseudonymize the PII (L30)</td><td>tokens &amp; aggregates travel / re-identify needs a home-region hop</td></tr>
+  <tr><td>Two people from two regions in one query</td><td>Store per-endpoint, link by token</td><td>no pooled PII / duplicated interaction + extra hop</td></tr>
+  <tr><td>A user permanently relocates</td><td>Expand → cutover (flip directory) → contract (L24/L56)</td><td>legal home change / careful, irreversible delete last</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — treating residency as a latency cost.</b> "We'll cache EU users in the US to speed them up" isn't a slow-but-fine trade; it's a violation with a fine attached. A compliance boundary is a wall, not a number on the same axis as milliseconds — you design so you never cross it, you don't "spend" against it.</li>
+  <li><b>Trap 2 — pooling everything into one global warehouse to make analytics easy.</b> The convenient "just copy all regions' rows to one place and join" moves personal data across borders. Push the computation to each region and merge only anonymous aggregates; the person never crosses, only the total does.</li>
+  <li><b>Trap 3 — forgetting the directory is a single global dependency.</b> If the "which region owns this user" lookup is slow, strongly-consistent, or centralized, every request pays for it and an outage blocks everyone. Replicate it, make it fail-static, choose AP (L11/L34) — it stores something that barely changes, so stale-but-available is right.</li>
+  <li><b>Trap 4 — copying a row during relocation and never deleting the old one.</b> Moving a user's home region leaves two live copies unless the old one is deleted — and two copies in two jurisdictions is itself the violation. Relocation is expand→cutover→contract with the delete (L56) as the deliberate, verified, irreversible last step.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We asked a question no prior lesson allowed itself to ask: not "where is a row <i>fastest</i>?" but "where is a row <i>legally allowed</i> to live?" <b>Estimate</b> weighed the ~90 ms Atlantic tax against a €20M compliance fine and found they aren't on the same axis — latency is a cost you can pay, residency is a wall you can't — so the wall reorders the design. <b>Model</b> made <code>home_region</code> a legal placement key (L79), added a tiny personal-data-free <b>directory</b> replicated everywhere to find a row's region without moving it (L34), and split data by sensitivity so tokens and aggregates travel while PII stays pinned (L30). <b>Tracing</b> Alice at home (local, compliant), Alice abroad (the request follows her, the data stays — a ~90 ms roaming tax), and the finance team's worldwide join (naive = an illegal 6 GB cross-border move; legal = ~6 MB of per-region aggregates merged centrally, L21/L29) showed the core inversion: move the computation to the data, not the data to the computation. The <b>first bottleneck</b> — the cross-region query over rows that can't move — is solved by that inversion; around it, cross-region interactions store per-endpoint linked by token, relocations run as expand→cutover→contract (L24/L56), and the directory is an AP fail-static dependency (L11/L34). The deepest point: a compliance boundary is part of the data model, and you design so you never need to cross it. The standing tension: <span class="key">local latency &amp; compliance vs global query simplicity.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we've placed data by law and served it by region. But how do you decide <i>which</i> products to show a user in the first place? Lesson 86 builds the recommendation pipeline that turns a catalog into a ranked "products you may like."</b></p>
+  <p style="margin:.2rem 0">• <b>Recommendation &amp; candidate-ranking systems (Lesson 86):</b> "products you may like" as a pipeline — offline candidate generation (collaborative filtering / embeddings, L65/L53) → cheap retrieval → expensive re-rank (L16's two-phase funnel) → business filters (in-stock, dedup, diversity); the cold-start problem, feedback loops, and online vs batch features (L53). Trade: recommendation quality &amp; freshness vs compute cost.</p>
+  <p style="margin:.2rem 0">Say <b>next</b> and we'll turn a 10M-product catalog into a ranked shortlist for one user, and watch the funnel narrow millions of candidates to ten.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">region</span>
+    <span class="pill">personal data (PII)</span>
+    <span class="pill">data residency / localization</span>
+    <span class="pill">data sovereignty</span>
+    <span class="pill">home region</span>
+    <span class="pill">geo-partitioning</span>
+    <span class="pill">directory / placement map</span>
+    <span class="pill">pseudonymization / tokenization</span>
+    <span class="pill">follow-the-sun</span>
+    <span class="pill">cross-region join</span>
+    <span class="pill">aggregate</span>
+    <span class="pill">fail-static (AP)</span>
+    <span class="pill">expand→cutover→contract</span>
+  </p>
+  <p>That's Lesson 85. It builds on: Lesson 23 (multi-region, the ~90 ms cross-ocean tax, follow-the-sun), Lesson 79 (sharding by a partition key — here the key is legal), Lesson 56 (GDPR / deletion, the irreversible delete), Lesson 14 (the speed-of-light floor), Lesson 34 (a globally-replicated, fail-static directory), Lesson 21/29 (scatter-gather, mergeable aggregates, compute-then-merge), Lesson 30 (tokenization / pseudonymization so a token can travel while PII stays home), Lesson 24 (expand→cutover→contract migration, applied to a relocating user), and Lesson 11 (AP vs CP for the directory). <b>Ask me follow-ups</b> — e.g. "how does the GDPR actually permit cross-border transfers (adequacy decisions, SCCs) and when can data leave at all?", "how do you keep the per-region aggregates from re-identifying someone (k-anonymity, differential privacy)?", "what happens to a global unique constraint (like a unique email) when users are split across regions?", "how does a database like CockroachDB or Spanner do row-level geo-partitioning under the hood?", or "how do you handle a user whose residency is ambiguous or disputed?" When you're ready, say <b>next</b> and we'll build the recommendation pipeline that ranks what a user sees.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "Your EU users are ~90 ms slower whenever they hit a US-hosted feature. An engineer proposes caching EU users' profiles in the US region 'just like we cache everything else — the 90 ms is killing us.' Under a data-residency law that says EU personal data must stay in the EU, why is this different from every other caching decision in the course?",
+    options: [
+      {t:"Because residency is a WALL, not a cost on the same axis as latency. Caching normally trades a bit of staleness or memory for speed — costs you can weigh against each other. But copying EU personal data to the US is a legal violation with a fine attached (up to 4% of global turnover), which is categorical: no amount of latency saved buys the right to cross it. So you can't 'spend compliance to save 90 ms'; you optimize latency only WITHIN what the law allows (serve EU users from the EU) and accept the ~90 ms tax when they're elsewhere.",
+       ok:true,
+       fb:"Exactly. Latency is a number you trade against other numbers; a compliance boundary is a constraint you design around. The cache-everywhere reflex is right up until a law pins the row — then location becomes part of the data model, not a free optimization."},
+      {t:"It's the same as any cache — you just need to set a short TTL so the EU copy in the US expires quickly, which keeps the data 'fresh enough' to satisfy the law while still giving EU users fast reads from Virginia.",
+       ok:false,
+       fb:"A TTL controls staleness, not legality. The moment EU personal data is stored in the US it has crossed the border — a short expiry doesn't un-cross it, because the violation is the copy existing there at all, not how old it is. Residency isn't a freshness problem; it's a placement constraint."},
+      {t:"It's different only because the cache would be too big — 120M EU profiles won't fit in the US cache tier, so it's a capacity problem. Add more cache memory in Virginia and the plan is fine.",
+       ok:false,
+       fb:"Size isn't the issue — even caching one EU profile in the US is the violation. The blocker is legal placement, not capacity. More memory in Virginia just lets you break the law at greater scale."}
+    ]
+  },
+  {
+    stem: "Finance wants 'revenue by product, worldwide, last month.' The data warehouse team's first plan is to copy every region's order and user rows into one US warehouse and run a single big join there. What's wrong, and what's the right shape?",
+    options: [
+      {t:"The naive plan moves EU (and other regions') personal rows across the border into the US — illegal — and it's also enormous (~30M order rows × ~200 B ≈ 6 GB shipped). The right shape inverts it: run the join IN EACH region on local rows, emit only NON-personal aggregates like (product_id, revenue), ship those (~6 MB total), and MERGE the partials centrally (sum them, L21/L29). The person never crosses the border; only the anonymous total does — legal, and ~1000× less data.",
+       ok:true,
+       fb:"Right. Push the computation to the data and let only aggregates come back. A revenue total identifies no one, so it can travel where the raw rows can't — and merging per-region sums is both smaller and compliant. This is L29's aggregate-and-merge with a legal reason to prefer it."},
+      {t:"Nothing is wrong with the plan as long as the US warehouse is encrypted at rest — encryption means the EU data isn't really 'in' the US in a legal sense, so the single global join is fine.",
+       ok:false,
+       fb:"Encryption at rest protects against theft of the storage medium; it doesn't change WHERE the data is or who can compel access to it. Encrypted EU personal data sitting in a US datacenter has still crossed the residency boundary. Encryption is necessary hygiene, not a residency loophole."},
+      {t:"The plan is fine, but it's just slow — you should add more network bandwidth between regions so the 6 GB transfer completes faster, and run it at night to avoid contention.",
+       ok:false,
+       fb:"Bandwidth and timing address speed, not legality. The problem isn't that shipping 6 GB of personal rows across the ocean is slow — it's that it's not allowed. Faster illegal is still illegal. The fix is to not ship the personal rows at all: compute locally, ship only aggregates."}
+    ]
+  },
+  {
+    stem: "Alice's home_region is EU. She flies to New York and opens the app; her request lands at the US edge, which has no copy of her data. What should happen, and what's the general principle?",
+    options: [
+      {t:"The US edge looks Alice up in its local directory replica (Alice → EU), then either proxies her data calls back to the EU cluster or routes her whole session to the EU — she pays a ~90 ms round-trip tax while abroad. The data does NOT get copied to the US to make her fast. Principle: follow-the-sun means the REQUEST follows the user, never her personal data — a rare traveler eats a latency cost so you never create an illegal copy.",
+       ok:true,
+       fb:"Exactly. Spinning up a US copy of Alice's profile to speed up her trip is precisely the violation. The nearby edge routes to her home region instead; she's slower while roaming, but her PII stays put. Latency cost (payable) vs an illegal copy (not payable) — you take the latency."},
+      {t:"The US edge should replicate Alice's profile from the EU to Virginia on first access ('lazy caching') so that this and future requests during her trip are fast, then delete it when she flies home.",
+       ok:false,
+       fb:"That lazy copy is the residency violation the whole design exists to prevent — the instant her EU personal data lands in Virginia, it's crossed the border, and 'delete it later' doesn't undo that it was there. The request may follow her to the US edge; her data must not."},
+      {t:"The request should be rejected with an error until Alice returns to the EU, since her data can only be served inside its home region and she is physically outside it.",
+       ok:false,
+       fb:"Residency restricts where the data is STORED, not where the user's body is. Alice can absolutely use the app from New York — the request just routes back to her EU-hosted data (paying the cross-ocean latency). Blocking a roaming user isn't required by the law and would be a terrible product; routing the request home is the answer."}
+    ]
+  },
+  {
+    stem: "Every request in every region must first find out which region owns a given user (via the directory: user_id → home_region). How should this directory be built, and why?",
+    options: [
+      {t:"Replicate it to every region and make it AP / fail-static (L11/L34): it holds NO personal data (just id → region), it's tiny (~2.7 GB), and region assignments change only when someone relocates — so it's read-mostly and rarely-changing. Every region serves the lookup locally in ~1 ms with no border crossing, and if an update hasn't propagated, serving a slightly stale map is fine. A strongly-consistent global lookup on the hot path would re-impose the ~90 ms cross-region tax on every request.",
+       ok:true,
+       fb:"Right. The directory is the opposite of the rows it points to: small, personal-data-free, and safe to copy everywhere. Because what it stores barely changes, stale-but-available (AP, fail-static) beats fresh-but-blocking — the same call as L34's service registry."},
+      {t:"Keep it as a single strongly-consistent (CP) service in one region, so there's exactly one authoritative copy and no chance of a stale region assignment ever routing a user wrong.",
+       ok:false,
+       fb:"A single CP service in one region means every request worldwide pays a cross-region round trip just to find out where a user lives — re-importing the ~90 ms tax onto the common path — and it becomes a global single point of failure. Since region assignments almost never change, the tiny risk of a briefly stale map is far cheaper than blocking or centralizing. AP fail-static wins here."},
+      {t:"Don't build a directory at all — store each user's home_region inside their own profile row, and look it up there when you need it.",
+       ok:false,
+       fb:"Circular: to read the home_region from Alice's profile you'd first need to know which region her profile is in — which is exactly what the directory tells you. The whole point of a separate, personal-data-free directory is that it can be replicated everywhere (the profile can't) so any server can resolve the region locally before touching the pinned data."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

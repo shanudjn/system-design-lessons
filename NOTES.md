@@ -1687,9 +1687,26 @@
     (replicate hot vertices, storage-for-latency L02/L48), offline↔online candidate-gen spectrum (L53). Deepest point:
     a graph query's cost is set by the DEGREE of the vertices it touches, not the hop count — the discipline is bounding
     and pre-shaping the explosion. Trade: traversal freshness vs precompute cost. (Lesson 0084)
-85. Multi-region data placement & residency — where a row is legally allowed to live: geo-partitioning by user home
-    region (L23/79), data-residency/GDPR constraints (L56), follow-the-sun latency (L14/23), and the cross-region join
-    tax. Trade: local latency & compliance vs global query simplicity.
+85. ✅ **Multi-region data placement & residency** — where a row is legally ALLOWED to live: one row (Alice, a
+    German resident whose PII may live only in the EU) + one query ("revenue by product, worldwide, last month")
+    traced end to end. Estimate the two forces in different units — the ~90 ms Atlantic tax (which WANTS a copy near
+    every user, L14/23) vs the compliance WALL (up to 4% of turnover ≈ €20M; a latency cost is payable, a violation is
+    categorical) — so the wall reorders the design: stop moving data to the work, move the work to the data. Model =
+    home_region as a LEGAL placement key (L79, chosen by law not hash) + a tiny personal-data-free DIRECTORY
+    (user_id→region, ~2.7 GB, replicated everywhere, L34) to find a row's region without moving it + split data by
+    SENSITIVITY (PII pinned home; catalog/tokens/aggregates free to travel, L30 tokenization: a token crosses the
+    border, the person doesn't). Trace = Alice home (~1 ms, compliant), Alice roaming to NYC (the REQUEST follows her,
+    the data stays → proxy/route back = ~90 ms tax; never a US copy), and the global join (naive = ship 300M rows /
+    ~6 GB PII across the ocean = ILLEGAL; legal = per-region local join → ship only (product,revenue) aggregates
+    ~6 MB → MERGE the partials, L21/29 → ~1000× smaller AND compliant). First bottleneck = the cross-region query over
+    rows that can't move → push computation to the data, let only anonymous aggregates come back. Walls: a join needing
+    two people from two regions → store PER-ENDPOINT linked by token; permanent relocation → expand→cutover(flip
+    directory)→contract, delete last (L24/L56); the directory is everyone's dependency → AP fail-static (L11/34,
+    stale-but-available beats blocking since assignments rarely change). Four traps: residency-as-latency-cost,
+    pooling-all-into-one-warehouse, a CP/centralized directory on the hot path, copy-without-deleting-old on relocation.
+    Deepest point: once a law pins a row, LOCATION is part of the data model, not a knob for speed — a compliance
+    boundary is a wall you design around, not a cost you pay to cross. Trade: local latency & compliance vs global
+    query simplicity. (Lesson 0085)
 
 ### Advanced topics (next batch — queued so the course never runs dry; added after L83)
 86. Recommendation & candidate-ranking systems — "products you may like" as a pipeline: offline candidate generation
