@@ -1709,10 +1709,13 @@
     query simplicity. (Lesson 0085)
 
 ### Advanced topics (next batch — queued so the course never runs dry; added after L83)
-86. Recommendation & candidate-ranking systems — "products you may like" as a pipeline: offline candidate generation
-    (collaborative filtering / embeddings, L65/53) → cheap retrieval → expensive re-rank (L16 two-phase funnel) →
-    business filters (in-stock, dedup, diversity); the cold-start problem (new user/item), feedback loops, and
-    online vs batch features (L53 feature store). Trade: recommendation quality & freshness vs compute cost.
+86. ✅ **Recommendation & candidate-ranking systems** — "products you may like" as a pipeline: offline candidate
+    generation (collaborative filtering / embeddings, L65/53) → cheap retrieval → expensive re-rank (L16 two-phase
+    funnel) → business filters (in-stock, dedup, diversity); the cold-start problem (new user/item), feedback loops,
+    and online vs batch features (L53 feature store). Trade: recommendation quality & freshness vs compute cost.
+    Worked example: 10M-product catalog → 10 cards for Alice; full scan = 10M × 0.1 ms ≈ 16.7 min (10,000× over a
+    ~100 ms budget) forces the funnel; ~500 candidates = the most re-rank affords in ~50 ms; feedback loop / training-
+    serving skew / freshness as the walls. (Lesson 0086)
 87. A/B testing & experimentation platforms — deciding whether a change actually helped: deterministic bucketing by
     hash (L03/04), the exposure-logging pipeline (L64 stream), sample-ratio-mismatch & peeking traps, guardrail
     metrics, and overlapping experiments (layered assignment). Trade: statistical rigor & velocity vs blast radius.

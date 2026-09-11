@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 86 — Recommendation &amp; Candidate-Ranking: Narrowing 10M Products to 10 Cards for One User</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 86 · Worked Example</div>
+  <h1>Recommendation &amp; Candidate-Ranking Systems: Narrowing 10M Products to 10 Cards for One User</h1>
+  <p class="lead">Lesson 85 decided <i>where</i> a row is allowed to live. This lesson decides <i>which</i> rows a person should even see. A shopping site has <b>10 million products</b> and one small strip on the home page — <b>"Products you may like"</b> — that shows <b>10</b> of them. Picking the right 10 for one user, in under a tenth of a second, is the whole problem. The obvious plan — score all 10M products with a good model and take the top 10 — is off by <span class="key">four orders of magnitude</span>: we'll show it would take <b>~16.7 minutes per request</b>. So recommendation is not one model; it's a <b>funnel</b> that narrows the catalog cheaply, then ranks a short list expensively. We take <span class="key">one concrete user — Alice, who has browsed tents and hiking boots — and one concrete request — render her "Products you may like" strip — and trace it end to end.</span> We'll <b>estimate</b> the compute wall that forbids the full scan and the latency budget that shapes the funnel. We'll <b>model</b> the pipeline: offline <b>candidate generation</b> (collaborative filtering + embeddings, L65/L53) → cheap <b>retrieval</b> → an expensive <b>re-rank</b> (L16's two-phase funnel) → <b>business filters</b> (in-stock, dedup, diversity). We'll <b>trace</b> three paths — the nightly offline build, Alice's warm online request, and a brand-new user with no history (<b>cold start</b>). And we'll find <span class="key">the first bottleneck: the re-rank stage's per-candidate cost, and beneath it the feedback loop that makes the system recommend what it already shows.</span> The trade under all of it: <b>recommendation quality &amp; freshness vs compute cost.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0086-recommendation-ranking.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>An online marketplace with a <b>10 million-product catalog</b> and <b>5 million daily active users</b>. On the home page sits one module: <b>"Products you may like"</b>, ten cards, personalized per user. One user and one request travel through this lesson:</p>
+<ul>
+  <li><b>One user:</b> <b>Alice</b>, who over the last month has viewed several <b>tents</b> and bought a pair of <b>hiking boots</b>. She has a history — she is a <b>warm</b> user. Three seconds ago she clicked a specific 2-person tent.</li>
+  <li><b>One request:</b> render Alice's <b>"Products you may like"</b> strip — turn 10M products into a ranked 10, in under ~100 ms.</li>
+</ul>
+
+<p>Here is the whole machine on one page. It is a funnel: each stage is cheaper per item but sees more items; the next stage is more expensive per item but sees far fewer. The catalog goes in the top; ten cards come out the bottom:</p>
+<div class="diagram"><pre>
+   10,000,000 products in the catalog
+        │
+        │   OFFLINE (nightly batch): build the candidate sources
+        ▼
+   ┌──────────────────────────────────────────────────┐
+   │ CANDIDATE GENERATION  (cheap recall — L16 phase 1)│
+   │   · collaborative filtering:  "bought X → also Y" │
+   │   · embedding ANN (L65):  items near Alice's taste│
+   │   · trending / recently-viewed / category affinity│
+   └───────────────┬──────────────────────────────────┘
+                   │  union + dedup across sources
+                   ▼   ~500 candidates        (20,000× smaller)
+   ┌──────────────────────────────────────────────────┐
+   │ RE-RANK  (expensive precision — L16 phase 2)      │
+   │   heavy model scores each of the ~500 with rich   │
+   │   user × item × context features (feature store,  │
+   │   L53). ~0.1 ms per candidate.                    │
+   └───────────────┬──────────────────────────────────┘
+                   │  sort by predicted score
+                   ▼   top ~50
+   ┌──────────────────────────────────────────────────┐
+   │ BUSINESS FILTERS   in-stock · dedup · diversity · │
+   │                    business rules (margin, policy)│
+   └───────────────┬──────────────────────────────────┘
+                   ▼
+              10 products shown to Alice     (~70 ms total)
+</pre></div>
+
+<p class="note"><span class="key">The one idea the whole lesson turns on:</span> you cannot afford to run the good model on the whole catalog, so you split the job into <b>recall</b> and <b>precision</b>. A cheap, broad stage (<b>candidate generation</b>) throws a wide net to pull a few hundred plausible items out of millions without missing the good ones. A costly, narrow stage (<b>re-rank</b>) then scores only that short list carefully. Every technique below — collaborative filtering, embedding retrieval, the heavy re-ranker, the feature store, cold-start fallbacks — is a piece of that one split: <b>get the candidate set cheap and complete, then rank it dear and precise.</b></p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Recommender / recommendation system</b> — a system that picks, from a huge set, the few items one user is most likely to want, without the user searching for them.</li>
+  <li><b>Candidate generation (retrieval / recall)</b> — the cheap first stage: cut the catalog from millions to hundreds of plausible items. Its job is to <i>not miss</i> good items, not to rank them.</li>
+  <li><b>Re-ranking (scoring / precision)</b> — the expensive second stage: score the short candidate list with a rich model and sort it. Its job is to get the <i>order</i> right.</li>
+  <li><b>Two-phase funnel (L16)</b> — the recall-then-precision pattern: a cheap wide filter feeds an expensive narrow one. The same shape used for search ranking.</li>
+  <li><b>Collaborative filtering</b> — recommend from behavior, not content: "people who interacted with X also interacted with Y." Needs no knowledge of what the product <i>is</i>.</li>
+  <li><b>Item-item similarity</b> — a precomputed table: for each product, its top-K most co-interacted products. The engine behind "customers also bought."</li>
+  <li><b>Embedding (L65)</b> — a product or user compressed into a short vector of numbers so that "similar taste" becomes "vectors that are close together."</li>
+  <li><b>ANN — approximate nearest neighbor (L65)</b> — find the vectors closest to a query vector without comparing against all of them; sublinear, not a full scan.</li>
+  <li><b>Feature store (L53)</b> — the system that serves the model its inputs (features) the <i>same way</i> at training time and serving time. Holds <b>batch</b> (precomputed, hours stale) and <b>online</b> (fresh, per-request) features.</li>
+  <li><b>Cold start</b> — you have no behavior to learn from: a brand-new <b>user</b> (no history) or a brand-new <b>item</b> (no interactions).</li>
+  <li><b>Feedback loop / popularity bias</b> — the model recommends an item, that exposure creates clicks, the clicks make the model recommend it more. The system learns from what it itself showed.</li>
+  <li><b>Exploration vs exploitation</b> — show the known-best item (exploit) vs occasionally show an uncertain one to learn about it (explore).</li>
+  <li><b>Diversity</b> — deliberately not showing ten near-identical items, even if each scores highly on its own.</li>
+</ul>
+
+<h2>Move 1 — Estimate: the compute wall that forbids the full scan</h2>
+<p>One number decides the entire architecture: how much it costs to run the good model once, times how many products there are. Size that and the funnel is no longer a choice.</p>
+
+<div class="card calc">
+  <p><b>The naive plan: score every product with the re-rank model, take the top 10.</b> A good re-ranker — a gradient-boosted tree or a small neural net with rich features — costs roughly <b>~0.1 ms</b> to score one <code>(user, product)</code> pair on a serving box. Now multiply by the catalog:</p>
+  <div class="diagram"><pre>
+  catalog                     10,000,000 products
+  cost to score one pair      ~0.1 ms
+  full scan per request       10,000,000 × 0.1 ms
+                            = 1,000,000 ms
+                            = 1,000 seconds
+                            ≈ 16.7 MINUTES   for ONE strip, for ONE user
+
+  home-page latency budget    ~100 ms
+  over budget by              ~10,000×  (four orders of magnitude)
+  </pre></div>
+  <p><span class="key">Scoring the whole catalog with the good model misses the budget by ~10,000×.</span> And that is per request — multiply by every user loading every page and the fleet cost is absurd. Buying faster CPUs does not save you: even a 100× faster model still needs ~10 seconds. The problem is <b>10 million × anything expensive</b>. The only fix is to make the expensive stage see far fewer than 10 million items. That is the funnel's whole reason to exist.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The latency budget, split across the funnel.</b> The strip must render in ~100 ms. Give each stage a slice, and the candidate count falls out of what fits:</p>
+  <div class="diagram"><pre>
+  candidate generation (retrieval)   ~10 ms   millions → ~500 candidates
+  re-rank ~500 × 0.1 ms              ~50 ms   ~500 → sorted
+  business filters + diversity       ~10 ms   ~50 → 10
+  ─────────────────────────────────────────
+  total                              ~70 ms   inside the ~100 ms budget
+
+  the funnel ratio:   10,000,000  →  500  →  10
+                       20,000× cheaper     50× cheaper
+  </pre></div>
+  <p><span class="key">The candidate count (~500) is not arbitrary — it's the largest set the expensive stage can score inside its time slice.</span> Re-rank gets ~50 ms; at ~0.1 ms each that's ~500 candidates. So retrieval's target ("give me the best ~500") is set by the re-ranker's budget, not the other way round. Trade named for the first time: a bigger candidate set means better <b>recall</b> (less chance of missing a great item) but more <b>compute</b> in re-rank — <b>recommendation quality vs compute cost</b>, the tension under the whole lesson.</p>
+</div>
+
+<div class="card calc">
+  <p><b>How big are the precomputed sources, and how much traffic do they serve?</b> Sizing them shows why candidate generation is done <i>offline</i> and mostly reduces to a lookup at request time.</p>
+  <div class="diagram"><pre>
+  item-item similarity table:
+     10M products × top-100 neighbors × (id 8B + score 4B)
+     = 10^7 × 100 × 12 B = ~12 GB        (built nightly, read-only)
+
+  product embeddings (for ANN retrieval, L65):
+     10M × 128 dims × 4 B (float32) = ~5.12 GB
+
+  brute-force nearest-neighbor per request (what ANN avoids):
+     10M × 128 × 2 flops = ~2.56 billion flops  ≈ seconds
+     ANN (L65) instead:   sublinear, ~1 ms       ≈ 1000× faster
+
+  traffic:
+     5M DAU × 3 page-loads/day = 15M req/day
+     15M / 86,400 s ≈ ~174 req/s average, ~520 req/s at 3× peak
+     re-rank CPU: 520 req/s × (500 × 0.1 ms) = ~26 CPU-seconds/s
+        -> ~26 cores just to re-rank at peak (plus headroom)
+  </pre></div>
+  <p><span class="key">The heavy work is precomputed once, offline; the request just gathers and ranks.</span> Building the 12 GB similarity table or the embedding index is a batch job that runs nightly (L64/L29) — far too slow to do per request. At request time, candidate generation is a handful of lookups plus one ANN query, and the only per-request model work is the ~500-item re-rank. That split — <b>precompute the expensive things, keep the request path cheap</b> — is the same instinct as L15 (precompute) and L84's offline PYMK build.</p>
+</div>
+
+<p class="note why"><b>Why the funnel, and not a single smarter model?</b> You might hope for one model good enough to rank 10M items fast. But cost scales with <i>catalog size × model richness</i>, and those fight: a richer model ranks better but costs more per item, so it can afford fewer items. The funnel resolves the fight by using <b>two different models</b> — a cheap one that can afford to look at everything (retrieval), and a rich one that can only afford a short list (re-rank). You spend model richness exactly where it's affordable. That division of labor <i>is</i> the architecture.</p>
+
+<h2>Move 2 — Model: the pipeline, stage by stage</h2>
+
+<h3>Stage 1 — candidate generation: cheap, broad, "don't miss the good ones"</h3>
+<div class="card calc">
+  <p>Retrieval's job is <b>recall</b>: pull a few hundred plausible items out of millions, cheaply, without missing what Alice would love. No single source is complete, so you <b>union several cheap sources</b> and dedup:</p>
+  <div class="diagram"><pre>
+  SOURCE A — collaborative filtering (item-item, precomputed):
+     Alice interacted with {tent_42, boots_9}.
+     look up each item's top-100 co-bought neighbors:
+        tent_42  -> {sleeping_bag, tent_stakes, camp_stove, ...}
+        boots_9  -> {hiking_socks, trail_poles, gaiters, ...}
+     "people who bought this also bought" — needs NO idea what the item is.
+
+  SOURCE B — embedding ANN (L65):
+     Alice -> a taste vector (avg of items she touched).
+     ANN query over 10M product vectors -> ~200 nearest items.
+     catches items with NO co-purchase history but similar "vibe".
+
+  SOURCE C — cheap heuristics:
+     trending in her categories, recently-viewed follow-ups,
+     "complete the set" for the boots she bought.
+
+  UNION all sources, dedup -> ~500 candidates.
+  </pre></div>
+  <p><span class="key">Each source is blind in a different way, so you combine them.</span> Collaborative filtering knows what sells together but is blind to brand-new items (no co-purchases yet). Embeddings know "similar-looking taste" but can drift into items nobody actually buys together. Heuristics catch the obvious. Trade: more sources means better recall but a larger, noisier candidate set for re-rank to clean up — you buy completeness with a little extra re-rank work.</p>
+</div>
+
+<h3>Stage 2 — re-rank: expensive, narrow, "get the order right"</h3>
+<div class="card calc">
+  <p>Now score the ~500 candidates with the rich model. This is L16's second phase: precision, not recall. The model reads <b>features</b> — signals about the user, the item, and the pair — from the <b>feature store</b> (L53):</p>
+  <div class="diagram"><pre>
+  for each of the ~500 candidates, assemble features:
+     user features   : Alice's 30-day category affinity, price band,
+                       purchase frequency        (BATCH, precomputed)
+     item features   : price, rating, return rate, category  (BATCH)
+     cross features  : has Alice viewed this category this session?
+                       is this the exact tent she clicked 3s ago?
+                       (ONLINE, fresh per request)
+     context         : device, time of day, page
+
+  score = model(features)  ~0.1 ms each  ->  sort desc  ->  top ~50
+  </pre></div>
+  <p><span class="key">Retrieval decides <i>which</i> items are in the running; re-rank decides their <i>order</i>.</span> The re-ranker can be expensive precisely because it only ever sees ~500 items. Its quality depends entirely on features — and features have two speeds. <b>Batch features</b> (Alice's month-long affinity) are precomputed nightly, cheap to serve, but up to a day stale. <b>Online features</b> (the tent she clicked 3 seconds ago) are fresh but must be computed per request. Trade: batch is cheap-but-stale, online is fresh-but-costly — you use batch for slow-moving taste and online for in-session intent, and combine them (the L53/L84 lambda shape: an offline base plus an online patch).</p>
+</div>
+
+<h3>Stage 3 — business filters: turn a good ranking into a good page</h3>
+<div class="card calc">
+  <p>A high model score is not the same as a good card to show. The last stage applies rules the model doesn't own:</p>
+  <div class="diagram"><pre>
+  in-stock       drop out-of-stock items (a great rec you can't buy = bad)
+  dedup          don't recommend the boots she JUST bought
+  diversity      not 10 near-identical blue 2-person tents; spread across
+                 tents / bags / stoves even if 10 tents score highest
+  business rules margin, promotions, policy (no restricted items)
+  ->  final 10 cards
+  </pre></div>
+  <p><span class="key">The model optimizes per-item relevance; the page needs variety and validity.</span> Ten items that each score highest are often ten versions of the same thing — technically optimal, actually boring, and if she doesn't want tents at all the page is a total miss. Diversity deliberately lowers the average predicted score to raise the odds the <i>page</i> contains something she wants. Trade: <b>relevance vs diversity</b> — you sacrifice a little top-item score for a page that covers more of her possible intents.</p>
+</div>
+
+<h2>Move 3 — Trace the paths: offline build, warm request, cold start</h2>
+
+<h3>Path A — the nightly offline build (heavy, batch, not on the request path)</h3>
+<div class="diagram"><pre>
+   raw logs (views, clicks, purchases)   ── billions of events/day
+     │
+     ▼
+   BATCH JOB (nightly, L64/L29):
+     · recompute item-item similarity  -> 12 GB table
+     · retrain / refresh embeddings     -> 5 GB vectors, rebuild ANN index
+     · recompute batch features         -> user, item feature tables
+     │
+     ▼
+   PUBLISH new tables + ANN index  (versioned, atomic swap, L24/L31)
+     │
+     ▼
+   the online serving path reads these read-only artifacts
+</pre></div>
+<p>The expensive learning happens here, away from any user request. It's a scheduled pipeline over the last day's behavior, publishing read-only artifacts the serving path just looks things up in. Trade: everything built here is <b>as fresh as the last run</b> — up to a day stale. That staleness is fine for slow-moving taste but useless for "what Alice did 3 seconds ago," which is exactly why the online path exists.</p>
+
+<h3>Path B — Alice's warm request (the full funnel, ~70 ms)</h3>
+<div class="diagram"><pre>
+   Alice loads the home page; the strip service gets (user=Alice, context)
+     │
+     ▼  candidate generation (~10 ms)
+   item-item lookups on {tent_42, boots_9}   -> ~300 items
+   + ANN query on Alice's taste vector        -> ~200 items
+   + trending in "camping"                     -> ~50 items
+   union + dedup                               -> ~500 candidates
+     │
+     ▼  re-rank (~50 ms)
+   fetch batch features (affinity, price band) + ONLINE features
+     (the tent she clicked 3s ago is a strong cross-feature)
+   score 500 × 0.1 ms -> sort -> top ~50
+     │
+     ▼  business filters (~10 ms)
+   in-stock · drop the boots she bought · diversify tents/bags/stoves
+     │
+     ▼
+   10 cards, ~70 ms total. The 3-second-old tent click lifts related
+   gear to the top — because it entered as an ONLINE feature, not from
+   last night's batch.
+</pre></div>
+<p class="note"><span class="key">The offline build gives the base ranking; the online features patch in what happened seconds ago.</span> Alice's month of tent-browsing shaped last night's tables (batch), but her click 3 seconds ago can only reach the ranking through an online feature computed this request. Combine the two — a stale-but-cheap base plus a fresh-but-small patch — and you get both long-term taste and in-session intent. This is the same offline-base + online-patch lambda shape as L84's PYMK and L53's feature store.</p>
+
+<h3>Path C — a brand-new user with no history (cold start)</h3>
+<div class="diagram"><pre>
+   new user Dana signs up; opens the home page.
+     │
+     ▼  collaborative filtering has NOTHING:
+        Dana interacted with 0 items -> item-item lookups return {}
+        Dana's taste vector is undefined -> ANN has no query
+     │
+     ▼  FALL BACK to non-personalized + content signals:
+        · trending / best-sellers (global popularity)
+        · popular in Dana's coarse context (region, entry category,
+          the item she landed on)
+        · content-based: if she views one item, use ITS embedding as a
+          stand-in taste vector (item content, not her history)
+     │
+     ▼  add light EXPLORATION:
+        mix in a few uncertain items to LEARN Dana's taste fast
+     │
+     ▼  as Dana clicks, online features personalize within the session;
+        tomorrow's batch job gives her real collaborative-filtering recs.
+</pre></div>
+<p class="note"><span class="key">Cold start is the absence of the very behavior collaborative filtering needs, so you bridge it with popularity + content until behavior arrives.</span> You can't learn Dana's taste from nothing, so you start with what's popular (a safe prior), lean on <b>content</b> (an item's own embedding, which exists even with zero interactions — this also solves <b>item</b> cold-start for brand-new products), and <b>explore</b> a little to gather signal quickly. Trade: cold-start recs are weaker (generic, not personal), and exploration spends a few impressions on uncertain items to buy the data that makes future recs personal — quality now vs learning for later.</p>
+
+<h2>Move 4 — Find the first bottleneck: re-rank cost, and the feedback loop beneath it</h2>
+
+<div class="card calc">
+  <p><b>The first bottleneck — the re-rank stage's per-candidate cost.</b> Re-rank is the one place you run the expensive model per request, and its cost is <b>candidates × cost-per-score</b>. Everything about the design is bounding that product:</p>
+  <div class="diagram"><pre>
+  re-rank cost = (#candidates) × (cost per score)
+
+  push #candidates DOWN:  a tighter retrieval stage (fewer, better
+                          candidates) -> cheaper re-rank, but risk
+                          dropping a great item (lower recall).
+  push cost-per-score DOWN: a lighter model, or a cheap "pre-rank"
+                          stage between retrieval and re-rank that
+                          trims 500 -> 100 before the heavy model.
+
+  the funnel can have MORE than two stages:
+     10M -> (retrieval) -> 500 -> (pre-rank, cheap) -> 100
+          -> (re-rank, heavy) -> 50 -> (filters) -> 10
+  </pre></div>
+  <p><span class="key">The funnel is elastic: add stages so each model only ever sees a set it can afford.</span> When ~500 is still too many for the heaviest model, insert a cheap <b>pre-ranker</b> that cuts 500→100 first. Each stage trades a little recall for a lot of compute saved. Trade: more stages means more places a good item can be wrongly dropped early (each cut risks recall) in exchange for affording a richer final model — the same recall-vs-cost dial, applied at every narrowing.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The deeper bottleneck — the feedback loop.</b> The system logs what users click, and trains on those logs. But users can only click what the system <i>showed</i> them. So the model learns from its own past choices, and a popular item spirals:</p>
+  <div class="diagram"><pre>
+  item is recommended  ->  gets shown a lot  ->  gets clicks
+       ▲                                              │
+       │                                              ▼
+  ranked higher next time  <-  model learns "high CTR"
+
+  result: the same ~20 best-sellers dominate every page; genuinely
+  good but less-shown items never get a chance to prove themselves.
+  the logs can't tell "actually best" from "merely shown most".
+  </pre></div>
+  <p><span class="key">Exposure confounds the signal: an item's clicks measure how often it was shown as much as how good it is.</span> Left alone, recommendations ossify — popularity bias. Three fixes, each a trade: <b>exploration</b> (a bandit / epsilon-greedy that sometimes shows uncertain items) spends immediate clicks to keep learning; <b>diversity</b> injection breaks the monoculture; and <b>debiasing</b> the training labels (down-weight clicks on always-top items by their exposure / position) teaches the model to separate quality from exposure. Trade: <b>exploitation vs exploration</b> — pure exploitation maximizes clicks today but blinds the system tomorrow.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — training-serving skew.</b> The re-ranker was trained on features computed one way (a batch job over logs) and serves on features computed another way (live, per request). If the two disagree — a different default, a different time window, a units mismatch — the model sees inputs at serving time it never saw in training, and quality silently drops:</p>
+  <div class="diagram"><pre>
+  TRAIN:  "30-day category affinity" computed in a batch SQL job
+  SERVE:  "30-day category affinity" computed in the request path
+  if these two computations differ AT ALL, the model's inputs are
+  wrong at serving time -> predictions degrade, no error thrown.
+
+  fix: the FEATURE STORE (L53) computes each feature ONCE and serves
+       the SAME value to training and serving. one definition, two
+       readers. (the same symmetry rule as L83's analyzer.)
+  </pre></div>
+  <p><span class="key">A feature must be computed identically for training and serving, or the model is fed lies at request time.</span> This is exactly L83's symmetry rule (index and query must analyze text the same way) in a new costume: train and serve must feature-ize the same way. The feature store (L53) exists to guarantee that parity — one definition, read by both sides. Trade: the feature store is extra infrastructure and a hard dependency, bought to eliminate a class of silent, hard-to-debug quality bugs.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The fourth wall — freshness of candidates.</b> A product added this morning isn't in last night's item-item table (no co-purchases yet) or the batch feature tables. If the pipeline only trusts the nightly build, new and trending items are invisible until tomorrow:</p>
+  <div class="diagram"><pre>
+  offline base (nightly)      +   online patch (now)
+   item-item, embeddings,          fresh items via content embeddings,
+   batch features                  real-time trending, session signals
+   (up to a day stale)             (seconds fresh)
+              └──────────── merged at request time ────────────┘
+  new/trending items reach the user TODAY via the online patch,
+  not next night's batch.
+</pre></div>
+  <p><span class="key">Batch gives coverage and depth; the online patch gives freshness — you need both.</span> A brand-new item enters via its <b>content</b> embedding (which exists with zero interactions) and real-time trending, not via collaborative filtering (which needs history it doesn't have yet). This is the item-cold-start fix and the freshness fix in one, and it's the same lambda shape as Path B. Trade: <b>freshness vs compute cost</b> — the online path costs real per-request work to surface what the cheap nightly batch can't yet know.</p>
+</div>
+
+<p>So the honest picture: recommendation is a funnel, and the funnel exists because of one number. <b>Estimate</b> showed scoring all 10M products with the good model would take ~16.7 minutes per request — ~10,000× over a ~100 ms budget — so the expensive stage must see hundreds, not millions; the candidate count (~500) is simply the most the re-ranker can afford in its ~50 ms slice. <b>Model</b> split the work into cheap-broad <b>candidate generation</b> (collaborative filtering + embedding ANN + heuristics, unioned for recall, L65), expensive-narrow <b>re-rank</b> (the rich model over ~500, fed by a feature store, L16/L53), and <b>business filters</b> (in-stock, dedup, diversity) that turn a good ranking into a good page. <b>Tracing</b> the nightly build (heavy, batch, stale-by-a-day), Alice's warm request (offline base + online patch, the 3-second-old click lifting related gear), and cold-start Dana (popularity + content + exploration until behavior arrives) showed the pipeline in motion. The <b>first bottleneck</b> — re-rank's candidates × cost — is bounded by the elastic funnel (add a pre-rank stage); beneath it, the feedback loop is broken by exploration and diversity and label debiasing, training-serving skew is closed by the feature store's parity rule (L53/L83), and candidate freshness is bought with an online patch over the offline base (L84 lambda). The standing tension: <b>recommendation quality &amp; freshness vs compute cost.</b></p>
+
+<p><span class="key">The deepest point: you can't run the good model on everything, so recommendation is the art of deciding what the good model is allowed to see.</span> Retrieval is a bet about where the good items are; re-rank is precision applied only where retrieval bet. Every hard part is downstream of that split — the feedback loop is the system training on its own bets, cold start is having no basis to bet, freshness is betting on things too new for the nightly odds, and the feature store is making sure the bet at serving time matches the bet you trained on. The genuinely new idea is small and sharp: <i>a recommender is not one model but a funnel of cheaper-to-costlier models, each sized to the set it can afford, and its quality is capped by what the cheap first stage remembers to include.</i> The trade to carry: <span class="key">recommendation quality &amp; freshness vs compute cost.</span></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>Can't score 10M items per request</td><td>Two-phase funnel: retrieval → re-rank (L16)</td><td>fits the ~100 ms budget / a cheap stage can drop good items</td></tr>
+  <tr><td>Cut millions → hundreds cheaply</td><td>Candidate generation: item-item CF + ANN + heuristics (L65)</td><td>broad recall / noisier set, several sources to maintain</td></tr>
+  <tr><td>Find similar taste without a full scan</td><td>Embeddings + ANN retrieval (L65)</td><td>sublinear ~1 ms vs ~2.5B-flop brute force / approximate</td></tr>
+  <tr><td>Rank the short list well</td><td>Heavy re-rank model over ~500 (L16)</td><td>precise order / ~0.1 ms/item, sets the candidate cap</td></tr>
+  <tr><td>Same feature at train &amp; serve time</td><td>Feature store, one definition (L53/L83)</td><td>no training-serving skew / extra infra + hard dependency</td></tr>
+  <tr><td>In-session intent (clicked 3s ago)</td><td>Online features patched onto batch base (L53/L84)</td><td>fresh signal / per-request compute</td></tr>
+  <tr><td>New user / new item</td><td>Cold-start: popularity + content + exploration</td><td>a usable page from nothing / generic until signal arrives</td></tr>
+  <tr><td>Same 20 items dominate everything</td><td>Exploration (bandit) + diversity + label debiasing</td><td>keeps learning &amp; varied / spends clicks today</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — thinking a faster model fixes the full scan.</b> The wall is 10M × cost-per-score, so even a 100× faster model still blows the budget by ~100×. The fix isn't a quicker score; it's fewer items to score — a retrieval stage that hands the good model hundreds, not millions.</li>
+  <li><b>Trap 2 — trusting click logs as ground truth.</b> Users click what you showed, so an item's clicks measure exposure as much as quality. Train naively and the popular get more popular forever. You must explore, diversify, and debias labels to separate "actually good" from "merely shown."</li>
+  <li><b>Trap 3 — computing features differently offline and online.</b> If "30-day affinity" is one formula in training and another in serving, the model is fed inputs it never trained on and quality drops with no error. A feature store enforces one definition read by both sides — the same symmetry rule as L83's analyzer.</li>
+  <li><b>Trap 4 — relying only on the nightly batch.</b> A batch-only pipeline can't reflect the click from 3 seconds ago or the product added this morning. Pair the stale-but-deep offline base with a fresh-but-small online patch; freshness lives in the patch, coverage in the base.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We asked how to turn a 10M-product catalog into 10 good cards for one user in under ~100 ms. <b>Estimate</b> found the wall: scoring everything with the good model is ~16.7 minutes per request, ~10,000× over budget, so the expensive stage must see hundreds — and ~500 is exactly what the re-ranker can afford in ~50 ms. <b>Model</b> built the funnel: cheap-broad <b>candidate generation</b> (collaborative filtering + embedding ANN + heuristics, L65) for recall, expensive-narrow <b>re-rank</b> (a rich model fed by a feature store, L16/L53) for precision, and <b>business filters</b> (in-stock, dedup, diversity) for a page that's valid and varied. <b>Tracing</b> the nightly build (batch, day-stale), Alice's warm request (offline base + a 3-second-fresh online patch), and cold-start Dana (popularity + content + exploration) showed the whole machine run. The <b>first bottleneck</b> — re-rank's candidates × cost — is bounded by an elastic multi-stage funnel; beneath it, the feedback loop is broken by exploration/diversity/debiasing, training-serving skew is closed by the feature store's parity rule (L53/L83), and candidate freshness is bought with an online patch over the offline base (L84). The deepest point: recommendation is deciding what the good model is allowed to see. The standing tension: <span class="key">recommendation quality &amp; freshness vs compute cost.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we built a recommender and claimed the new ranking is "better." But better by how much, and how would you actually know? Lesson 87 builds the experimentation platform that decides whether a change helped at all.</b></p>
+  <p style="margin:.2rem 0">• <b>A/B testing &amp; experimentation platforms (Lesson 87):</b> deciding whether a change actually helped — deterministic bucketing by hash (L03/L04), the exposure-logging pipeline (L64 stream), sample-ratio-mismatch and peeking traps, guardrail metrics, and overlapping experiments via layered assignment. Trade: statistical rigor &amp; velocity vs blast radius.</p>
+  <p style="margin:.2rem 0">Say <b>next</b> and we'll ship the new re-ranker to 1% of users, measure whether it moved the needle, and watch all the ways a naive A/B test lies to you.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">recommender system</span>
+    <span class="pill">candidate generation / recall</span>
+    <span class="pill">re-ranking / precision</span>
+    <span class="pill">two-phase funnel</span>
+    <span class="pill">collaborative filtering</span>
+    <span class="pill">item-item similarity</span>
+    <span class="pill">embedding</span>
+    <span class="pill">ANN</span>
+    <span class="pill">feature store</span>
+    <span class="pill">batch vs online features</span>
+    <span class="pill">cold start</span>
+    <span class="pill">feedback loop / popularity bias</span>
+    <span class="pill">exploration vs exploitation</span>
+    <span class="pill">diversity</span>
+    <span class="pill">training-serving skew</span>
+  </p>
+  <p>That's Lesson 86. It builds on: Lesson 16 (the two-phase recall→precision funnel, now for recommendations), Lesson 65 (embeddings + ANN for sublinear retrieval), Lesson 53 (the feature store, batch vs online features, offline↔online serving), Lesson 84 (the offline-base + online-patch lambda shape, from PYMK), Lesson 15 (precompute the expensive things off the request path), Lesson 64/29 (nightly batch jobs and aggregate-then-merge), Lesson 83 (the symmetry rule — here train and serve must feature-ize identically), and Lesson 24/31 (versioned atomic swap of the published tables/index). <b>Ask me follow-ups</b> — e.g. "how does a bandit (Thompson sampling / UCB) actually pick which uncertain items to explore?", "how do two-tower embedding models learn a user vector and an item vector that live in the same space?", "how do you evaluate a recommender offline (recall@k, NDCG) before risking a live A/B test?", "how do you keep diversity from tanking your click-through metric?", or "what changes when the catalog is videos or a news feed instead of products?" When you're ready, say <b>next</b> and we'll build the experimentation platform that proves whether this recommender is actually better.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "You have 10M products and want the best 10 for a user. An engineer proposes: 'just run our good re-rank model on every product and take the top 10 — and if it's slow, we'll buy faster servers.' At ~0.1 ms to score one (user, product) pair, why doesn't 'faster servers' rescue this plan?",
+    options: [
+      {t:"Because the wall is 10M × cost-per-score: a full scan is 10,000,000 × 0.1 ms = 1,000 s ≈ 16.7 minutes per request, ~10,000× over a ~100 ms budget. Even a 100× faster model still needs ~10 s, and it's per request for every user on every page. The fix isn't a quicker score — it's scoring far fewer items: a cheap retrieval stage narrows 10M → ~500, and the good model only ranks those.",
+       ok:true,
+       fb:"Exactly. The cost is dominated by the catalog size times anything expensive, so speeding up the expensive part still leaves you multiples over budget. The funnel exists to make the expensive stage see hundreds, not millions."},
+      {t:"Faster servers do fix it — 0.1 ms is already fast, and modern machines score millions of items per second, so 10M is well under 100 ms once you use a big enough box.",
+       ok:false,
+       fb:"Do the arithmetic: 10M × 0.1 ms = 1,000 seconds, not milliseconds. That's ~16.7 minutes on one core; you'd need thousands of cores per request, times every user and page. No single box closes a ~10,000× gap. The answer is fewer candidates, not more hardware."},
+      {t:"The plan is fine as-is if you cache each product's score, so the 10M scores are computed once and then reused for every user.",
+       ok:false,
+       fb:"Scores are per (user × item × context) and shift with in-session behavior (the item she clicked 3 seconds ago), so a cached score isn't reusable across users or even across a session. You'd need 10M scores per user, refreshed constantly — that's not a cache, it's the same full scan hidden."}
+    ]
+  },
+  {
+    stem: "Alice has a month of tent-browsing (captured in last night's batch tables) and clicked a specific tent 3 seconds ago. The nightly item-item table and batch features can't possibly know about a click from 3 seconds ago. How does that fresh click still reach her ranking this request?",
+    options: [
+      {t:"It enters as an ONLINE feature computed in the request path (e.g. 'clicked this item / category this session'), which is combined with the stale-but-deep batch base at re-rank time. The offline build gives the base ranking from her long-term taste; the online patch injects in-session intent. Merging an offline base with an online patch (the L53/L84 lambda shape) gives both long-term taste and seconds-fresh signal.",
+       ok:true,
+       fb:"Right. Batch features are cheap but up to a day stale; online features are fresh but per-request. You use batch for slow-moving taste and online for in-session intent, and combine them — the same offline-base + online-patch pattern as L84's PYMK."},
+      {t:"You trigger a rebuild of the nightly item-item table the moment she clicks, so the new interaction is in the batch data before you rank.",
+       ok:false,
+       fb:"The batch job processes a day of behavior and takes far too long to run per click — that's why it's nightly. You can't rebuild 12 GB of similarity tables inside a 100 ms request. Fresh signal has to come from an online feature, not by re-running the batch."},
+      {t:"It doesn't and shouldn't — a single 3-second-old click is noise, so you correctly ignore it until tomorrow's batch incorporates it.",
+       ok:false,
+       fb:"A click that fresh is often the strongest available signal of current intent — she's shopping for a tent right now. Ignoring it until tomorrow wastes the best information you have. The whole point of online features is to capture exactly this."}
+    ]
+  },
+  {
+    stem: "A brand-new user, Dana, opens the home page with zero history. Collaborative filtering returns nothing (no interactions to look up) and she has no taste vector for ANN. What's the right way to fill her 'Products you may like' strip?",
+    options: [
+      {t:"Fall back to non-personalized and content signals, then personalize as she acts: show trending / best-sellers and items popular in her coarse context (region, the category she landed on), use an item's OWN content embedding as a stand-in taste vector, and mix in a little exploration to learn her taste fast. As she clicks, online features personalize within the session; tomorrow's batch gives her real CF recs.",
+       ok:true,
+       fb:"Exactly. Cold start is the absence of the behavior CF needs, so you bridge it with popularity (a safe prior) and content (which exists with zero interactions — this also fixes brand-new ITEMS), plus light exploration to gather signal. Generic now, personal soon."},
+      {t:"Show her 10 uniformly random products from the 10M catalog, since with no data every product is equally likely to be relevant and random sampling is the least biased choice.",
+       ok:false,
+       fb:"Pure random gives a terrible first impression and wastes the strong prior you already have — popularity. Some exploration is good, but you anchor on trending/popular and content signals and explore lightly, rather than showing 10 random items from a 10M catalog."},
+      {t:"Hide the recommendation strip entirely until Dana has enough history for collaborative filtering to work, so you never show a low-quality rec.",
+       ok:false,
+       fb:"That bootstraps nothing — she generates no signal if she sees no recs, and a blank module is a worse experience than a popularity-based one. Every user starts cold; the system must degrade gracefully to non-personalized recs, not switch off."}
+    ]
+  },
+  {
+    stem: "Over a few weeks you notice the same ~20 best-selling products dominate almost every user's strip, and newer good items rarely appear. An analyst says 'the model is just right — those really are the best products.' What's actually going on, and what fixes it?",
+    options: [
+      {t:"It's a feedback loop / popularity bias: the model recommends an item → it gets shown a lot → it collects clicks → the logs show high CTR → it's ranked higher → shown even more. Users can only click what they were shown, so clicks measure exposure as much as quality; the logs can't tell 'actually best' from 'merely shown most.' Fix with exploration (a bandit / epsilon-greedy showing uncertain items), diversity injection, and debiasing training labels for exposure/position.",
+       ok:true,
+       fb:"Right. Exposure confounds the signal, so naive training ossifies onto whatever was already popular. You must spend some impressions exploring, inject diversity, and correct labels for how much exposure each item got — otherwise the rich just get richer."},
+      {t:"The analyst is correct — high click-through is ground truth for quality, so if those 20 items have the highest CTR they are objectively the best and the system is working as intended.",
+       ok:false,
+       fb:"CTR isn't clean ground truth: an item shown to everyone will rack up clicks partly because it was shown so much. You can't conclude it's best when its exposure and its clicks are tangled. That confounding is exactly the feedback loop, and treating CTR as truth is what entrenches it."},
+      {t:"The retrieval stage is too small — just raise the candidate count from ~500 to ~5,000 so more items reach re-rank, and the domination will resolve itself.",
+       ok:false,
+       fb:"A bigger candidate set doesn't help if re-rank and the training labels still favor the already-popular items — the newcomers get retrieved but still ranked below the entrenched 20. The loop is in the learning/exposure dynamics, so the fix is exploration, diversity, and label debiasing, not just wider retrieval."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
