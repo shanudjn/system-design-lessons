@@ -1716,9 +1716,23 @@
     Worked example: 10M-product catalog → 10 cards for Alice; full scan = 10M × 0.1 ms ≈ 16.7 min (10,000× over a
     ~100 ms budget) forces the funnel; ~500 candidates = the most re-rank affords in ~50 ms; feedback loop / training-
     serving skew / freshness as the walls. (Lesson 0086)
-87. A/B testing & experimentation platforms — deciding whether a change actually helped: deterministic bucketing by
-    hash (L03/04), the exposure-logging pipeline (L64 stream), sample-ratio-mismatch & peeking traps, guardrail
-    metrics, and overlapping experiments (layered assignment). Trade: statistical rigor & velocity vs blast radius.
+87. ✅ **A/B testing & experimentation platforms** — did L86's new re-ranker (reranker_v2) actually help? A
+    before/after CTR climb proves nothing (the number wobbles daily), so run old vs new IN PARALLEL on comparable
+    users — the control group cancels external noise; that split is what earns "the change caused the outcome."
+    Estimate the size: n ≈ 16·p(1−p)/δ² (the 16 = (1.96+0.84)²·2) → 720k users to catch a 2% lift on a 10% baseline,
+    and n ∝ 1/δ² so half the effect costs 4× the users; sample-size floor met in ~1.5 days but run ≥1 week for the
+    weekly cycle + novelty washout (rigor vs velocity). Model = deterministic salted hash bucketing (bucket =
+    hash("exp:"+user)%10000, stateless/consistent/comparable, L03/04) → exposure-logging stream (log who actually SAW
+    it, analyze EXPOSED not ASSIGNED, both arms logged identically, L64) → layered assignment (same layer = mutually
+    exclusive, different layer = orthogonal via independent salt → hundreds of concurrent experiments without
+    confounding). First bottleneck = TRUST IN THE SPLIT: every metric is fiction unless groups are comparable → SRM
+    check is the tripwire BEFORE any metric (a "tiny" 0.3% imbalance at millions = ~6.4σ = a bug, invalidates
+    everything, never adjust-and-interpret). Walls: peeking (stop at first p<0.05 → false-positive rate 5%→>20%→~100%;
+    fix = pre-register fixed horizon or sequential/always-valid tests); metric-gaming (CTR up via clickbait, revenue
+    down) → guardrail metrics (latency/revenue/complaints) veto a primary win; interference/SUTVA broken (treatment
+    eats shared inventory → cannibalizes control, lift overstated) → cluster/geo/switchback randomization (L23/34,
+    fewer units → bigger MDE). Deepest point: an experiment measures whether the difference beats the noise GIVEN a
+    valid split — verify the split, never assume it. Trade: statistical rigor & safety vs shipping velocity. (Lesson 0087)
 88. Notification systems end-to-end — one "your order shipped" across email/SMS/push/in-app: preference & dedup
     (L73), per-channel delivery + retries/DLQ (L09/68), rate-limiting a user's inbox (L08), template rendering, and
     the quiet-hours / batching digest. Trade: reach & timeliness vs user annoyance & cost.

@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 87 — A/B Testing &amp; Experimentation: Proving the New Re-Ranker Actually Helped</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 87 · Worked Example</div>
+  <h1>A/B Testing &amp; Experimentation Platforms: Proving the New Re-Ranker Actually Helped</h1>
+  <p class="lead">Lesson 86 built a recommender and shipped a new re-rank model. Then someone asked the only question that matters: <b>did it actually help?</b> Our instinct is to launch it and watch the click-through rate — but that number wobbles day to day for a hundred reasons (weekend, a holiday, a marketing email), so a rise after launch proves nothing. The honest way to know is to run the old and new rankers <span class="key">at the same time, on comparable users, and compare</span> — an <b>A/B test</b>. Doing that once is easy. Doing it so the answer is <i>trustworthy</i> — and doing hundreds of them at once without them poisoning each other — is a real system. We take <span class="key">one concrete change (the new re-ranker from L86, "reranker_v2") and one concrete metric (click-through rate on the "Products you may like" strip), and trace the experiment end to end.</span> We'll <b>estimate</b> how many users the test needs and how long it must run — a number most people guess wrong by 10×. We'll <b>model</b> the platform: <b>deterministic bucketing</b> by hash (L03/L04), an <b>exposure-logging</b> stream (L64), and <b>layered assignment</b> so many experiments run at once. We'll <b>trace</b> three paths — one user through assignment, a clean readout, and a <b>broken</b> one. And we'll find <span class="key">the first bottleneck: every number the test produces is worthless unless the split itself is valid — so the sample-ratio check is the tripwire you run before you believe anything.</span> The trade under all of it: <b>statistical rigor &amp; safety vs shipping velocity.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0087-ab-testing-experimentation.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>The marketplace from L86: <b>5 million daily active users</b>, one home-page strip ("Products you may like"). We have a candidate change and one question:</p>
+<ul>
+  <li><b>The change:</b> <b>reranker_v2</b> — the new re-rank model from Lesson 86. We believe it ranks better. We must prove it before it reaches all 5M users.</li>
+  <li><b>The metric:</b> <b>strip click-through rate (CTR)</b> — the fraction of users who, when shown the strip, click at least one card. Today's baseline is <b>10%</b>. We hope v2 lifts it.</li>
+  <li><b>The unit:</b> we randomize by <b>user</b> — a given user always sees the same version, so their whole experience is consistent and their behavior isn't split across both arms.</li>
+</ul>
+
+<p>Here is the whole experiment on one page. Users are split by a hash into a <b>control</b> group (sees the old ranker) and a <b>treatment</b> group (sees v2); we log who actually <i>saw</i> each version and what they did; then we compare — but only after checking the split itself is sound:</p>
+<div class="diagram"><pre>
+                     5,000,000 users
+                          │
+                          ▼
+     ┌─────────────────────────────────────────────────┐
+     │ ASSIGNMENT (deterministic, stateless — L03/L04)   │
+     │   bucket = hash("reranker_v2:" + user_id) % 10000 │
+     │     buckets    0– 499  → CONTROL   (old ranker)   │  5%
+     │     buckets  500– 999  → TREATMENT (reranker_v2)  │  5%
+     │     buckets 1000–9999  → not in this experiment   │  90%
+     └───────────────────┬───────────────────────────────┘
+                         │  user loads the strip
+                         ▼
+     ┌─────────────────────────────────────────────────┐
+     │ EXPOSURE LOG  (event stream — L64)                │
+     │   {user, exp, variant, shown_ts, clicked}         │  who actually
+     │   log the user only when they SAW the strip       │  SAW it, not
+     └───────────────────┬───────────────────────────────┘  just assigned
+                         ▼
+     ┌─────────────────────────────────────────────────┐
+     │ ANALYSIS  (over EXPOSED users only)               │
+     │   1. SRM check  — is the split really 50/50?      │  ← trust gate
+     │   2. CTR_control vs CTR_treatment  (+ confidence) │
+     │   3. guardrails — did latency / revenue regress?  │
+     └───────────────────┬───────────────────────────────┘
+                         ▼
+                 ship  ·  kill  ·  iterate
+</pre></div>
+
+<p class="note"><span class="key">The one idea the whole lesson turns on:</span> an experiment is a machine for telling a <b>real effect</b> apart from <b>random noise</b>. Everything below — the sample-size math, deterministic bucketing, exposure logging, the SRM tripwire, guardrails, layered assignment — exists to protect that one distinction. Get the split clean and the counting honest, and the comparison is trustworthy; break either, and every decimal place downstream is a lie told with confidence.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>A/B test (controlled experiment)</b> — run two versions at the same time on randomly split, comparable users, and compare a metric. The random split is what lets you attribute a difference to the change and nothing else.</li>
+  <li><b>Control / treatment</b> — control (A) is the current version; treatment (B) is the change. Control is the "what would have happened anyway" baseline the world doesn't otherwise give you.</li>
+  <li><b>Randomization unit</b> — the thing you split on (here, the user). Same unit always gets the same variant.</li>
+  <li><b>Primary metric</b> — the one number the experiment is designed to move (here, strip CTR). Decided <i>before</i> the test.</li>
+  <li><b>Guardrail metric</b> — a metric that must <i>not</i> get worse, even if the primary metric wins (latency, revenue, crash rate).</li>
+  <li><b>Statistical significance / p-value</b> — the chance you'd see a difference this big <i>if the change actually did nothing</i>. Small p = the noise-only explanation is unlikely.</li>
+  <li><b>Statistical power</b> — the chance the test <i>detects</i> a real effect of a given size if one exists. Low power = a real win slips through as "no result."</li>
+  <li><b>Minimum detectable effect (MDE)</b> — the smallest true lift the test can reliably catch. Smaller MDE needs more users.</li>
+  <li><b>Sample-ratio mismatch (SRM)</b> — the observed split (e.g. 50.6% / 49.4%) differs from the intended split (50/50) by more than chance allows → the assignment or logging is broken.</li>
+  <li><b>Peeking</b> — repeatedly checking significance and stopping the moment it crosses 0.05. It quietly inflates the false-positive rate far past 5%.</li>
+  <li><b>Exposure vs assignment</b> — <i>assigned</i> = the hash put you in a group; <i>exposed</i> = you actually saw the thing. You analyze the exposed.</li>
+  <li><b>Layered / orthogonal assignment</b> — a scheme that lets many experiments run at once without correlating: same layer = mutually exclusive, different layers = independent.</li>
+  <li><b>SUTVA / interference</b> — the assumption that one user's treatment doesn't affect another user's outcome. Marketplaces and social networks break it.</li>
+</ul>
+
+<h2>Move 1 — Estimate: how many users, and for how long?</h2>
+<p>Before writing any code, one calculation decides whether the experiment is even possible: how many users you need to tell a real lift apart from noise. Guess too small and you'll "detect" nothing real; the answer shapes the ramp and the runtime.</p>
+
+<div class="card calc">
+  <p><b>The sample-size formula for comparing two rates.</b> To catch a lift of size <code>δ</code> (absolute, in the same units as the rate) on a baseline rate <code>p</code>, with the usual 95% confidence and 80% power, the users needed <i>per arm</i> is:</p>
+  <div class="diagram"><pre>
+  n per arm  ≈  16 · p·(1−p) / δ²
+
+  where 16 ≈ (z₉₅ + z₈₀)² · 2 = (1.96 + 0.84)² · 2 = 15.68
+        p   = baseline rate           (here 0.10 = 10% CTR)
+        δ   = the lift you want to catch (absolute)
+
+  detect a 2% RELATIVE lift  (10.0% → 10.2%,  δ = 0.002):
+     n = 16 × 0.10×0.90 / 0.002²
+       = 16 × 0.09 / 0.000004
+       = 1.44 / 0.000004
+       = 360,000  users per arm   → 720,000 total
+
+  detect a 4% RELATIVE lift  (10.0% → 10.4%,  δ = 0.004):
+     n = 1.44 / 0.000016 = 90,000 per arm → 180,000 total
+  </pre></div>
+  <p><span class="key">The smaller the effect you want to catch, the far more users you need — and it grows with the <i>square</i>.</span> Because <code>n ∝ 1/δ²</code>, halving the effect you can detect costs <b>4×</b> the users (and 4× the time). This is the sensitivity dial: a test sized for a 2% lift needs 720,000 users; wanting to catch a 1% lift would need ~2.9 million. You decide the MDE up front — chasing tinier effects is exponentially expensive, so pick the smallest lift that would actually change your decision, and no smaller.</p>
+</div>
+
+<div class="card calc">
+  <p><b>How long must it run?</b> Turn the user count into calendar time from the traffic you're willing to expose. We ramp carefully — 5% of users to control, 5% to treatment (the other 90% untouched, so a bad v2 can hurt at most 5%):</p>
+  <div class="diagram"><pre>
+  exposed to treatment   = 5% × 5,000,000 DAU = 250,000 users/day
+  need (2% MDE)          = 360,000 per arm
+  time to accumulate     = 360,000 / 250,000  ≈ 1.5 days
+
+  BUT run ≥ 1 full week anyway:
+     · weekday and weekend users behave differently — a 2-day
+       readout is a biased sample of "users"
+     · novelty effect: a change looks great for 2 days because it's
+       NEW, then fades — a week lets that wash out
+  </pre></div>
+  <p><span class="key">The sample-size floor and the representativeness floor are two different limits — you wait for whichever is longer.</span> Here the math is satisfied in ~1.5 days, but you still run a full week (often two) so the sample spans a whole weekly cycle and any short-lived novelty bump settles. Trade named for the first time: <b>rigor vs velocity</b> — every extra day of runtime is a day the winning change isn't shipped and the losing one keeps costing, but cutting the test short buys a fast answer that's wrong.</p>
+</div>
+
+<p class="note why"><b>Why can't we just launch it and watch the CTR climb?</b> Because CTR moves on its own every single day — weekends, holidays, a push notification, a viral product, a competitor's outage. A "before vs after" comparison confounds <i>your change</i> with <i>everything else that changed at the same time</i>, and you can never untangle them. The control group is the fix: it rides all those same external swings <i>in parallel</i>, so subtracting control from treatment cancels the noise and leaves only the effect of the change. No control group, no attribution — that's the whole reason the experiment exists.</p>
+
+<h2>Move 2 — Model: assignment, logging, and running many at once</h2>
+
+<h3>Stage 1 — assignment: deterministic bucketing by hash</h3>
+<div class="card calc">
+  <p>Every request must decide, fast and consistently, which variant a user sees — with no database lookup and no way for the same user to flip between arms. The tool is a hash (L03/L04), exactly as we routed keys to shards:</p>
+  <div class="diagram"><pre>
+  variant(user, exp):
+     h = hash(exp_name + ":" + user_id)   # e.g. "reranker_v2:U-8842"
+     bucket = h % 10000                    # 10,000 stable buckets
+     if   bucket <  500:  return CONTROL
+     elif bucket < 1000:  return TREATMENT
+     else:                return NOT_IN_EXPERIMENT
+
+  · DETERMINISTIC: same user → same bucket → same variant, forever,
+    on every server, with zero shared state (L03/L04, stateless).
+  · SALTED with exp_name: the SAME user gets an INDEPENDENT bucket
+    in a different experiment (why that matters: next stage).
+  </pre></div>
+  <p><span class="key">Hashing the user id gives a random-but-repeatable split with no lookup table.</span> Randomness makes the two groups comparable on everything (age, country, past spend) — known and unknown alike — so the only systematic difference between them is the change itself. Repeatability keeps a user's experience stable and their data on one side. Trade: hashing is free and stateless, but the split is fixed by the id — you can't hand-pick who's in which arm (and you shouldn't: that's how bias sneaks in).</p>
+</div>
+
+<h3>Stage 2 — exposure logging: count who actually SAW it</h3>
+<div class="card calc">
+  <p>Assignment is not experience. A user hashed into treatment who never scrolled to the strip saw <i>nothing different</i> — counting them just dilutes the signal with people the change never touched. So log an <b>exposure event</b> the moment the strip is actually shown, and analyze on those:</p>
+  <div class="diagram"><pre>
+  when the strip renders for a user IN the experiment, emit:
+     { user_id, exp:"reranker_v2", variant, shown_ts, clicked }
+        → an append-only event stream (L64), 100k+ events/s
+
+  ASSIGNED  = the hash chose a variant for this user
+  EXPOSED   = the user actually saw the strip  (log THIS)
+  analyze CTR over EXPOSED users only ("triggered" analysis)
+
+  danger: the exposure log must fire IDENTICALLY for both arms.
+     if treatment logs on render but control logs on scroll,
+     the two counts aren't comparable → a built-in bias (and SRM).
+  </pre></div>
+  <p><span class="key">You measure the effect on the people who experienced the change, not the people a hash merely labeled.</span> This is a high-volume stream problem (L64): exposures pour in, get joined to outcomes (clicks, purchases), and roll up into per-variant metrics. The subtle rule: exposure must be logged <b>the same way in both arms</b>, or the very act of measuring introduces the difference you're trying to detect — a leading cause of the broken tests we'll see in Move 3.</p>
+</div>
+
+<h3>Stage 3 — layered assignment: hundreds of experiments at once</h3>
+<div class="card calc">
+  <p>A big product runs hundreds of experiments simultaneously. Two problems appear: they'd fight for the same users, and if two changes touch the same surface their effects <b>confound</b>. The fix is <b>layers</b>:</p>
+  <div class="diagram"><pre>
+  LAYER = a full copy of the traffic with its own hash salt.
+
+  same layer   → experiments are MUTUALLY EXCLUSIVE
+                 (a user is in at most one; use when changes
+                  interact — two ranking tweaks on the same strip)
+
+  different layer → assignment is INDEPENDENT / orthogonal
+                 (different salt → uncorrelated buckets; a user can
+                  be in BOTH a ranking test and a checkout-button
+                  test, and the two effects don't tangle)
+
+  ranking-layer   hash("layer:ranking:"  + user) → picks a ranking exp
+  checkout-layer  hash("layer:checkout:" + user) → picks a checkout exp
+       independent salts ⇒ every combination of the two occurs,
+       so each layer's effect averages cleanly over the other.
+  </pre></div>
+  <p><span class="key">Put experiments that could interact in the same layer (mutually exclusive); put independent ones in different layers (concurrent and orthogonal).</span> Orthogonality is exactly why salting the hash with the experiment/layer name mattered in Stage 1: without independent salts, the same users would always cluster together across experiments, and you could never tell which change caused an effect. Trade: same-layer experiments don't overlap so you can run fewer at once (less throughput), but their results are clean; cross-layer experiments run concurrently (high velocity) at the cost of assuming they don't interact.</p>
+</div>
+
+<h2>Move 3 — Trace the paths: one user, a clean readout, a broken one</h2>
+
+<h3>Path A — one user through assignment (no state, no lookup)</h3>
+<div class="diagram"><pre>
+   user U-8842 loads the home page
+     │
+     ▼  the strip service computes, inline:
+   h = hash("reranker_v2:U-8842") % 10000  → bucket 641
+   641 is in [500,1000) → TREATMENT → serve reranker_v2
+     │
+     ▼  the strip renders
+   emit exposure { U-8842, reranker_v2, TREATMENT, ts, clicked=? }
+     │
+     ▼  U-8842 returns 3 hours later, different server
+   hash is deterministic → bucket 641 again → still TREATMENT
+   (consistent experience, data stays on one side)
+</pre></div>
+<p>No database was consulted to decide the variant, and no coordination between servers was needed — the same property that let L03/L04 route a key to a shard from the key alone. The user's whole experience is stable, and their clicks never get split across both arms (which would contaminate both).</p>
+
+<h3>Path B — a clean readout after one week</h3>
+<div class="diagram"><pre>
+   after 7 days, over EXPOSED users:
+     control (old):   1,800,000 exposed,  180,000 clicks → CTR 10.00%
+     treatment (v2):  1,800,000 exposed,  187,200 clicks → CTR 10.40%
+
+   1. SRM check: 1,800,000 vs 1,800,000 → split is 50/50 ✓ (trust the rest)
+   2. lift: 10.40% − 10.00% = +0.40pp  (a +4.0% relative lift)
+      is it real, or noise? 95% confidence interval on the lift:
+         ≈ [+0.34pp, +0.46pp]  — excludes 0 → significant (p < 0.001)
+   3. guardrails: p99 latency +2 ms (ok), revenue/user flat, crashes flat ✓
+     │
+     ▼
+   DECISION: v2 wins on CTR, breaks no guardrail → SHIP (ramp to 100%)
+</pre></div>
+<p class="note"><span class="key">A result is a decision only when the split is valid, the effect clears noise, AND no guardrail regressed.</span> All three gates passed here: the 50/50 split held (so the comparison is fair), the confidence interval on the lift excludes zero (so it's unlikely to be noise), and latency/revenue/crashes didn't get worse (so the CTR win isn't paid for elsewhere). Only then does "+0.4pp CTR" become "ship it."</p>
+
+<h3>Path C — the same readout, but the split is broken (SRM)</h3>
+<div class="diagram"><pre>
+   after 7 days, over exposed users:
+     control:    1,750,000 exposed
+     treatment:  1,762,000 exposed        "only 2% off, close enough?"
+
+   SRM check (χ², expected 1,756,000 each of 3,512,000 total):
+     σ of a count under 50/50 = √(3,512,000 × 0.25) ≈ 937
+     deviation = 6,000  →  6,000 / 937 ≈ 6.4 standard deviations
+     χ² = 2 × 6,000² / 1,756,000 ≈ 41   (vs 3.84 threshold, 1 df)
+     p  ≈ 0.00000000002   → this split is NOT chance.
+
+   → SOMETHING IS BROKEN in assignment or exposure logging:
+       · a bug drops some treatment users before they log exposure
+       · treatment errors out for slow phones (survivorship bias)
+       · the two arms log exposure on different triggers
+   → the CTR comparison is now MEANINGLESS. Do not interpret it.
+     Fix the pipeline, discard this run, rerun.
+</pre></div>
+<p class="note"><span class="key">A "small" 2% imbalance at this scale is 6.4 standard deviations — impossible by chance, so it's a bug, and it invalidates every other number.</span> SRM is the experiment's smoke alarm: it doesn't tell you what's on fire, only that the room is full of smoke and you must not trust anything inside it. The usual culprit — a crash or a filter that removes users <i>unevenly across arms</i> — also silently biases the CTR itself (the users who fell out weren't random), so a mismatched split and a corrupted metric are the same wound. You never "adjust for" SRM; you fix the cause and rerun.</p>
+
+<h2>Move 4 — Find the first bottleneck: trust, and the ways it leaks</h2>
+
+<div class="card calc">
+  <p><b>The first bottleneck — the result is only as trustworthy as the split.</b> The platform's entire output is one comparison, and that comparison assumes the two groups differ <i>only</i> by the change. The <b>SRM check is the tripwire</b> that guards that assumption, and you run it before reading any metric:</p>
+  <div class="diagram"><pre>
+  the chain of trust:
+     valid split  →  fair comparison  →  believable lift  →  decision
+        ↑
+     if this link breaks, EVERYTHING downstream is fiction —
+     a beautiful p-value computed on two non-comparable groups.
+
+  so the analysis ORDER is fixed:
+     1. SRM?  (broken → stop, fix, rerun — do not interpret)
+     2. only then: is the lift beyond noise?
+     3. only then: did guardrails hold?
+  </pre></div>
+  <p><span class="key">Statistics can't rescue a broken randomization — no confidence interval means anything if the two groups weren't comparable to begin with.</span> This is why mature platforms compute SRM automatically on every experiment and refuse to show results when it fails. Trade: the SRM gate occasionally blocks a real (but slightly unbalanced) result and forces a rerun — a little velocity spent to keep every shipped decision honest.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — peeking inflates false positives.</b> The dashboard updates live, and the temptation is to check every hour and ship the instant p &lt; 0.05. Each look is another roll of the dice, and the false-positive rate climbs far past the 5% you think you're holding:</p>
+  <div class="diagram"><pre>
+  a single fixed-horizon test:   false positive rate = 5%   (as designed)
+
+  peek repeatedly, stop at the first p < 0.05:
+     each new look is another chance to cross 0.05 by luck.
+     a handful of daily peeks pushes the REAL false-positive rate
+     from 5% to well over 20%; keep peeking on a null test long
+     enough and you WILL eventually "find" significance (→ ~100%).
+
+  fixes:
+   · pre-register a fixed sample size + duration; read ONCE at the end.
+   · or use SEQUENTIAL tests (always-valid p-values / group-sequential
+     boundaries / Bayesian) that are DESIGNED to be watched continuously.
+  </pre></div>
+  <p><span class="key">Looking many times and stopping at the first "win" is not the same test as looking once — it silently multiplies your chances of a false alarm.</span> The honest options are to decide the horizon in advance and read the result once, or to switch to a method built for continuous monitoring (which pays for the right to peek by demanding a larger effect early on). Trade: fixed-horizon is simplest and most powerful but you must wait for the end; sequential methods let you stop early and safely at the cost of some sensitivity. Either way, <b>never</b> a naive peek-and-grab.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — a metric win that breaks the product (guardrails).</b> Optimizing one number invites wrecking others. A re-ranker can lift CTR by surfacing loud, clickbait-y items that people click and regret — CTR up, satisfaction and revenue down:</p>
+  <div class="diagram"><pre>
+  reranker_v3 result:
+     primary:   CTR        +6%   (significant! looks like a big win)
+     guardrail: revenue/user  −3%   (people click more, BUY less)
+     guardrail: p99 latency  +45 ms (extra feature fetch, past L27's knee)
+     guardrail: "hide this rec" rate +20%
+
+  → a primary-metric win is GATED on guardrails: this ships NOTHING.
+     the CTR lift was bought by degrading the things that matter more.
+  </pre></div>
+  <p><span class="key">A metric is a proxy, and any proxy can be gamed — so you protect the things you actually care about with guardrails that must not regress.</span> The metric hierarchy makes the decision honest: a <b>primary</b> metric to move, <b>secondary</b> metrics for context, and <b>guardrails</b> (latency, revenue, complaint rate, crash rate) that veto a launch no matter how good the primary looks. Trade: guardrails slow shipping and occasionally block a genuine local win — the price of not optimizing yourself off a cliff (the L27 latency knee, the L28 goodput cliff, all reachable by "winning" one metric).</p>
+</div>
+
+<div class="card calc">
+  <p><b>The fourth wall — interference: one user's treatment leaks into another's (SUTVA breaks).</b> A/B math assumes control users are unaffected by what treatment users do. In a two-sided marketplace, that's false — buyers and sellers share the same inventory:</p>
+  <div class="diagram"><pre>
+  reranker_v2 makes treatment buyers snap up the best-value tents faster.
+     → fewer good tents left in stock for CONTROL buyers
+     → control's CTR/conversion DROPS — not because control got worse,
+       but because treatment ATE the shared supply.
+  the "lift" is partly treatment cannibalizing control → OVERSTATED.
+
+  fixes (pick per interference type):
+   · cluster/geo randomization: split by MARKET, not user, so a whole
+     market is all-A or all-B and the shared pool isn't split.
+   · budget/switchback tests for shared-resource or network effects.
+   · measure the ecosystem metric, not just the per-user one.
+  </pre></div>
+  <p><span class="key">When users compete for a shared resource or influence each other, splitting individuals mixes the two worlds and the comparison lies.</span> This is the same shape as L23's shared invariant and L34's shared dependency: independence assumed where it doesn't hold. The fix is to randomize at a unit that <i>contains</i> the interference — a market, a region, a time slice — so each unit lives entirely in one world. Trade: cluster randomization removes interference bias but slashes your effective sample size (you have far fewer markets than users → bigger MDE, longer tests) — rigor bought with a lot of velocity.</p>
+</div>
+
+<p>So the honest picture: an experiment is a machine for separating a real effect from noise, and every part of it defends that separation. <b>Estimate</b> showed the size question decides feasibility — <code>n ≈ 16·p(1−p)/δ²</code> means 720,000 users to catch a 2% lift and 4× that to catch half as much, and you run a full week regardless so the sample spans the weekly cycle and novelty washes out. <b>Model</b> built the platform: <b>deterministic hash bucketing</b> (stateless, comparable, repeatable, salted per experiment — L03/L04), an <b>exposure-logging</b> stream that counts who actually saw the change and logs both arms identically (L64), and <b>layered assignment</b> that runs hundreds of experiments at once (mutually exclusive within a layer, orthogonal across layers). <b>Tracing</b> one user's stateless assignment, a clean three-gate readout, and a broken run showed the machine in motion. The <b>first bottleneck</b> — trust in the split — makes SRM the tripwire you check before any metric; beneath it, peeking is disarmed by pre-registration or sequential tests, metric-gaming by guardrails, and interference by cluster randomization. The standing tension: <b>statistical rigor &amp; safety vs shipping velocity.</b></p>
+
+<p><span class="key">The deepest point: an A/B test doesn't measure whether your change is good — it measures whether the difference you see is bigger than the noise, given a valid split.</span> Every failure mode is a way that second clause quietly breaks. SRM is the split going invalid. Peeking is manufacturing a difference out of noise by looking until luck obliges. Guardrails are admitting your one metric isn't the whole good. Interference is the split failing to actually separate the two worlds. The genuinely new idea is small and sharp: <i>experimentation is the discipline of earning the right to say "this change caused that outcome" — and that right rests entirely on a randomization you must constantly verify, not assume.</i> The trade to carry: <span class="key">statistical rigor &amp; safety vs shipping velocity.</span></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>"CTR went up after launch" proves nothing</td><td>A control group run in parallel</td><td>cancels external noise / needs a share of traffic held on the old version</td></tr>
+  <tr><td>How many users / how long?</td><td>Sample size <code>n ≈ 16·p(1−p)/δ²</code></td><td>a real MDE / smaller effects cost 4× per halving (n ∝ 1/δ²)</td></tr>
+  <tr><td>Decide a variant fast, consistently, no lookup</td><td>Deterministic hash bucketing, salted (L03/L04)</td><td>stateless + comparable groups / split fixed by id, can't hand-pick</td></tr>
+  <tr><td>Measure the effect on people it touched</td><td>Exposure logging over a stream (L64)</td><td>no dilution / both arms must log identically or bias creeps in</td></tr>
+  <tr><td>Run hundreds of experiments at once</td><td>Layered / orthogonal assignment</td><td>concurrency without confounding / same-layer ones can't overlap</td></tr>
+  <tr><td>Is the comparison even fair?</td><td>SRM check before any metric</td><td>catches a broken split / occasionally blocks a real result → rerun</td></tr>
+  <tr><td>Stopping the moment p&lt;0.05</td><td>Pre-registration or sequential tests</td><td>false-positive rate stays honest / wait to the end, or lose some power</td></tr>
+  <tr><td>A metric win that harms the product</td><td>Guardrail metrics veto the launch</td><td>can't optimize off a cliff / slows shipping, blocks some local wins</td></tr>
+  <tr><td>Users affect each other (shared supply)</td><td>Cluster / geo / switchback randomization (L23/L34)</td><td>removes interference bias / far fewer units → bigger MDE, longer test</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — before/after instead of A/B.</b> Comparing CTR before and after launch confounds your change with every other thing that changed that week. Only a control group running <i>in parallel</i> cancels the external noise and lets you attribute the difference to the change.</li>
+  <li><b>Trap 2 — peeking until it's significant.</b> Checking the dashboard repeatedly and shipping at the first p&lt;0.05 inflates the false-positive rate from 5% to well over 20%. Pre-register the sample size and read once, or use a sequential test built for continuous monitoring.</li>
+  <li><b>Trap 3 — trusting a metric with no guardrails.</b> Any single metric can be gamed (CTR up via clickbait, revenue down). A primary-metric win must clear guardrails — latency, revenue, complaint rate — or it ships nothing.</li>
+  <li><b>Trap 4 — reading results without checking the split.</b> A gorgeous confidence interval computed on two non-comparable groups is fiction. SRM is the first thing you check; if the split is broken, you fix the pipeline and rerun — you never "adjust for it" and interpret anyway.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We asked how to prove Lesson 86's new re-ranker actually helped — and how to run hundreds of such tests at once without them lying to us. <b>Estimate</b> sized the test: <code>n ≈ 16·p(1−p)/δ²</code> → 720,000 users to catch a 2% CTR lift (and 4× that per halving of the effect), run a full week so the sample spans the weekly cycle and novelty fades. <b>Model</b> built the platform: deterministic, salted <b>hash bucketing</b> (stateless comparable groups, L03/L04), an <b>exposure-logging</b> stream analyzed on who actually saw the change, both arms logged identically (L64), and <b>layered assignment</b> for concurrency without confounding. <b>Tracing</b> a stateless assignment, a clean three-gate readout (SRM → lift → guardrails), and a broken split showed the machine and its smoke alarm. The <b>first bottleneck</b> — trust in the split — puts the SRM check before every metric; beneath it, peeking is disarmed by pre-registration/sequential tests, metric-gaming by guardrails, and interference by cluster randomization (L23/L34). The deepest point: an experiment measures whether the difference beats the noise <i>given a valid split</i> — and you must verify that split, never assume it. The standing tension: <span class="key">statistical rigor &amp; safety vs shipping velocity.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — the experiment said "ship it," so now we ship it: one "your order shipped" message that must reach a real person across email, SMS, push, and in-app without spamming them. Lesson 88 builds the notification system that decides which channel, how often, and when to stay quiet.</b></p>
+  <p style="margin:.2rem 0">• <b>Notification systems end-to-end (Lesson 88):</b> one event fanned to email/SMS/push/in-app — preference &amp; dedup (L73), per-channel delivery with retries and a DLQ (L09/L68), rate-limiting a single user's inbox (L08), template rendering, and the quiet-hours / batching digest. Trade: reach &amp; timeliness vs user annoyance &amp; cost.</p>
+  <p style="margin:.2rem 0">Say <b>next</b> and we'll route one message down four channels, dedup it so the user isn't hit four times, and learn when the kindest thing a system can do is not send.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">A/B test</span>
+    <span class="pill">control / treatment</span>
+    <span class="pill">randomization unit</span>
+    <span class="pill">primary metric</span>
+    <span class="pill">guardrail metric</span>
+    <span class="pill">statistical significance / p-value</span>
+    <span class="pill">statistical power</span>
+    <span class="pill">minimum detectable effect (MDE)</span>
+    <span class="pill">sample size</span>
+    <span class="pill">deterministic bucketing</span>
+    <span class="pill">exposure vs assignment</span>
+    <span class="pill">sample-ratio mismatch (SRM)</span>
+    <span class="pill">peeking</span>
+    <span class="pill">sequential testing</span>
+    <span class="pill">layered / orthogonal assignment</span>
+    <span class="pill">SUTVA / interference</span>
+  </p>
+  <p>That's Lesson 87. It builds on: Lesson 86 (the re-ranker we're now testing), Lesson 03/04 (hashing a key to a bucket — here to a variant, stateless and consistent), Lesson 64 (the high-volume event stream that carries exposures), Lesson 27/28 (the latency knee and goodput cliff a guardrail exists to catch), and Lesson 23/34 (shared invariant / shared dependency — here interference breaking the independent-split assumption). <b>Ask me follow-ups</b> — e.g. "how does a sequential test (always-valid p-value / mSPRT) actually let you peek safely?", "what's a CUPED variance-reduction trick and how does it shorten a test?", "how do you run an experiment when the unit is a seller, not a buyer?", "when do you use a holdback group that never gets the change for months?", or "how do you detect a novelty effect vs a real durable lift?" When you're ready, say <b>next</b> and we'll build the notification system that delivers the change we just proved.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "You launch reranker_v2 to 100% of users on Monday and watch strip CTR climb from 10.0% to 10.6% by Friday. A teammate says 'clear win, +6% — the new ranker works.' Why is this not yet evidence the change helped?",
+    options: [
+      {t:"Because a before/after comparison confounds your change with everything else that changed that week — a weekend, a promo email, a viral product, a competitor outage. CTR moves on its own daily, so the rise could be entirely external. Only a CONTROL group running in parallel (same week, comparable users, still on the old ranker) rides those same swings, so subtracting control from treatment cancels the noise and isolates the change's effect.",
+       ok:true,
+       fb:"Exactly. Without a parallel control there's nothing to subtract the week's noise against, so you can never attribute the lift to your change rather than to the calendar. That's the entire reason A/B tests split traffic instead of comparing time periods."},
+      {t:"Because +6% isn't statistically significant — you always need at least a 10% lift before a change counts as a real improvement.",
+       ok:false,
+       fb:"There's no universal 'must be 10%' threshold — significance depends on sample size and variance, and a well-powered test can detect a 1% lift. The problem here isn't the size of the number; it's that a before/after comparison has no control group, so there's no valid comparison at all, whatever the percentage."},
+      {t:"Because you should have launched to 100% more slowly — the CTR would have been accurate if you'd ramped over two weeks instead of all at once.",
+       ok:false,
+       fb:"Ramping speed doesn't fix this: a slow before/after is still a before/after, and still confounds the change with the week's external swings. The missing ingredient is a concurrent control group, not a gentler rollout."}
+    ]
+  },
+  {
+    stem: "You split users 50/50 by hashing their id. After a week, the exposure log shows 1,750,000 control users and 1,762,000 treatment. An analyst shrugs: 'it's only 0.3% off, basically 50/50 — let's read the CTR.' What should you actually do?",
+    options: [
+      {t:"Stop and treat it as a sample-ratio mismatch: at this scale a count's standard deviation under 50/50 is ~937, so a 6,000 gap is ~6.4 standard deviations — astronomically unlikely by chance (p ≈ 2e-11). That means assignment or exposure logging is broken (e.g. treatment crashes on some phones before logging, or the two arms log exposure differently), which ALSO biases the CTR. Fix the pipeline and rerun; don't interpret the metric.",
+       ok:true,
+       fb:"Right. A 'tiny' 0.3% imbalance is 6+ sigma when you have millions of users, so it can't be luck — it's a bug. And whatever unevenly dropped or mislogged users also corrupts the CTR itself, so the comparison is meaningless. SRM is the tripwire you check before believing any number."},
+      {t:"Add 12,000 randomly chosen control users to rebalance the counts to 50/50, then read the CTR — that corrects the mismatch.",
+       ok:false,
+       fb:"You can't paper over SRM by padding counts — the mismatch is a symptom that users were dropped or mislogged NON-randomly, which has already biased who's in each arm and what their CTR is. Adding bodies doesn't undo the selection bias; only finding and fixing the cause (then rerunning) does."},
+      {t:"Ignore it — 50/50 is only a target, and real experiments are always a bit off, so any split within a few percent is fine to analyze.",
+       ok:false,
+       fb:"A few percent off would be fine with a few hundred users, but with millions the expected wobble is a fraction of a percent — 6.4 sigma is not 'a bit off,' it's a broken pipeline. Mature platforms auto-check SRM and refuse to show results when it fails, precisely because 'basically 50/50' hides real bugs at scale."}
+    ]
+  },
+  {
+    stem: "Your experiment dashboard updates live. reranker_v3 hits p = 0.04 on day 2, so you're tempted to ship immediately. What's wrong with checking every day and stopping the first time p < 0.05?",
+    options: [
+      {t:"It's peeking: each look is another chance to cross 0.05 by luck, so stopping at the first crossing is NOT the 5%-false-positive test you designed — a handful of daily peeks pushes the real false-positive rate well past 20%, and on a truly-null change, peek long enough and you'll eventually 'find' significance. Fix it by pre-registering a fixed sample size/duration and reading once, or by using a sequential test (always-valid p-values / group-sequential boundaries) built to be watched continuously.",
+       ok:true,
+       fb:"Exactly. A p-value's 5% guarantee is for looking ONCE at a fixed horizon; repeated looks multiply the chances of a fluke crossing. Either commit to the horizon in advance and read at the end, or switch to a method designed for peeking (which demands a bigger early effect in exchange)."},
+      {t:"Nothing — p = 0.04 is below 0.05, which is the definition of significant, so stopping early just ships the win faster with no downside.",
+       ok:false,
+       fb:"p < 0.05 is only a 5% false-positive guarantee if you look once at a predetermined sample size. When you look repeatedly and stop at the first crossing, you've taken many shots, so a 0.04 seen on day 2 is far more likely to be a fluke than it looks. That's the peeking trap."},
+      {t:"The problem is only that day 2 is too early for the novelty effect to fade — if you peek but wait until day 7 to actually stop, repeated checking is fine.",
+       ok:false,
+       fb:"Novelty is a separate issue. Even ignoring it, the act of repeatedly checking and stopping at the first significant result inflates false positives regardless of which day you stop — the fix is a pre-set horizon or a sequential test, not just waiting longer while still peeking."}
+    ]
+  },
+  {
+    stem: "reranker_v4 lifts strip CTR by a significant +6%, the split is clean, and there's no peeking. But it also raises p99 latency by 45 ms, drops revenue-per-user 3%, and increases the 'hide this recommendation' rate 20%. Ship it?",
+    options: [
+      {t:"No — a primary-metric win is gated on guardrail metrics, and this fails them. CTR is a proxy that can be gamed (surface loud clickbait → more clicks, less satisfaction and revenue). The 45 ms latency pushes toward L27's knee, revenue-per-user is the thing you actually care about and it dropped, and rising 'hide' rate signals annoyance. A metric win bought by degrading latency, revenue, and satisfaction ships nothing.",
+       ok:true,
+       fb:"Right. Guardrails exist precisely so you can't optimize one number off a cliff. The CTR lift here was purchased by harming things that matter more, so despite a clean, significant primary result, the guardrail regressions veto the launch."},
+      {t:"Yes — CTR is the primary metric and it won significantly with a clean split, so by definition the experiment succeeded; the other metrics are secondary and don't block a launch.",
+       ok:false,
+       fb:"Guardrails aren't optional 'secondary' context — they're metrics that must NOT regress no matter how good the primary looks. Revenue-per-user falling while clicks rise is the classic sign the primary metric was gamed; shipping it would trade a proxy win for real harm."},
+      {t:"Yes, but only after you rerun the test with a bigger sample so the +6% CTR becomes even more significant, which will justify the latency and revenue costs.",
+       ok:false,
+       fb:"More significance on CTR doesn't change that latency, revenue, and satisfaction got worse — a more certain win on a gamed proxy is still a loss on the things you care about. The decision isn't 'is CTR real?' (it is); it's 'did we break a guardrail?' (yes), and that blocks the ship."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>
