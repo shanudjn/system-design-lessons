@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SD Lesson 88 — Notification Systems End to End: One "Your Order Shipped" Across Four Channels</title>
+<style>
+  :root{
+    --bg:#0e0e16; --card:#16161f; --ink:#e8e8f2; --muted:#9a9ab0;
+    --accent:#a594ff; --code:#1d1d28; --line:#2a2a3a;
+    --green:#7ee787; --red:#ff7b72; --amber:#ffd479; --blue:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:0 0 6rem;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 1.25rem}
+  header.top{
+    border-bottom:1px solid var(--line); padding:2rem 0 1.4rem; margin-bottom:2rem;
+  }
+  .kicker{color:var(--accent); font-weight:700; letter-spacing:.04em; font-size:.8rem; text-transform:uppercase}
+  h1{font-size:1.9rem; margin:.3rem 0 .6rem; line-height:1.25}
+  h2{font-size:1.35rem; margin:2.6rem 0 .8rem; padding-top:.4rem}
+  h3{font-size:1.05rem; margin:1.6rem 0 .5rem; color:var(--accent)}
+  p{margin:.7rem 0}
+  .lead{color:var(--muted); font-size:1.02rem}
+  code,kbd{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.9em}
+  .open{
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:.55rem .8rem; color:var(--muted); font-size:.84rem; display:inline-block;
+  }
+  .open code{color:var(--blue)}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem 1.25rem; margin:1.1rem 0;
+  }
+  .diagram{
+    background:var(--code); border:1px solid var(--line); border-radius:12px;
+    padding:1.1rem; overflow-x:auto;
+  }
+  pre{margin:0; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.82rem; line-height:1.5; color:var(--ink)}
+  .pill{display:inline-block; background:var(--code); border:1px solid var(--line); border-radius:999px; padding:.1rem .6rem; font-size:.78rem; color:var(--muted); margin:.15rem .2rem}
+  table{width:100%; border-collapse:collapse; margin:1rem 0; font-size:.92rem}
+  th,td{text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+  th{color:var(--accent); font-weight:600}
+  td code{color:var(--blue)}
+  .note{border-left:3px solid var(--accent); padding:.2rem 0 .2rem 1rem; margin:1rem 0; color:var(--muted)}
+  .why{border-left:3px solid var(--amber)}
+  .key{background:linear-gradient(transparent 60%, rgba(165,148,255,.22) 0); padding:0 .1em}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .calc{font-size:.88rem; color:var(--muted)}
+  .calc b{color:var(--ink)}
+  /* quiz */
+  .quiz .q{margin:1.4rem 0}
+  .quiz .stem{font-weight:600; margin-bottom:.5rem}
+  .quiz button{
+    display:block; width:100%; text-align:left; margin:.4rem 0;
+    background:var(--code); color:var(--ink); border:1px solid var(--line);
+    border-radius:9px; padding:.6rem .8rem; cursor:pointer; font-size:.95rem;
+    transition:border-color .15s, background .15s;
+  }
+  .quiz button:hover{border-color:var(--accent)}
+  .quiz button.correct{border-color:var(--green); background:rgba(126,231,135,.12)}
+  .quiz button.wrong{border-color:var(--red); background:rgba(255,123,114,.12)}
+  .quiz .fb{font-size:.9rem; margin-top:.5rem; color:var(--muted); display:none}
+  .quiz .fb.show{display:block}
+  .quiz .fb b{color:var(--ink)}
+  footer{margin-top:3rem; padding-top:1.4rem; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">System Design · Lesson 88 · Worked Example</div>
+  <h1>Notification Systems End to End: One "Your Order Shipped" Across Four Channels</h1>
+  <p class="lead">Lesson 87's experiment said "ship it," so now the system has something to tell a real person: <b>your order shipped.</b> That sounds like one line of code — call the SMS API. It isn't. The same event might reach Alice by <b>push, email, SMS, or in-app</b>, and each has a different cost, speed, and annoyance. She might have turned some of them off. The event might arrive <i>twice</i> (the upstream pipeline is at-least-once, L68). It might land at 3 a.m. her time. She might already have gotten five notifications this hour. And a sent notification, unlike a database row, <span class="key">can't be un-sent</span> — you can't un-ring a phone. We take <span class="key">one concrete event ("order.shipped" for user U-8842, Alice) on one concrete marketplace (5M DAU, from L86/L87) and trace it end to end.</span> We'll <b>estimate</b> the volume and — the number that reshapes the whole design — the <b>cost</b> per channel, where one SMS campaign costs 75× an email one. We'll <b>model</b> the pipeline: preference &amp; eligibility, <b>dedup</b> (L73), inbox <b>rate limiting</b> (L08), <b>quiet hours &amp; digests</b>, template rendering, and per-channel <b>delivery with retries &amp; a DLQ</b> (L09/L68). We'll <b>trace</b> three paths — the happy send, a duplicate event, and a 3 a.m. promo that gets held and batched. And we'll find <span class="key">the first bottleneck, which is not throughput at all: it's the user's standing permission to be reached — their notifications-on setting and your sender reputation with the providers — both destroyed by over-sending and nearly impossible to win back.</span> The trade under all of it: <b>reach &amp; timeliness vs user annoyance &amp; cost.</b></p>
+  <p class="open">Open me again later:&nbsp; <code>open "lessons/0088-notification-systems.html"</code></p>
+</header>
+
+<h2>The one system we'll build</h2>
+<p>The marketplace from L86/L87: <b>5 million daily active users</b>. Many things want to tell a user something — an order update, a price drop, a security alert, a promo. One notification service owns all of it. We follow a single event:</p>
+<ul>
+  <li><b>The event:</b> <b>order.shipped</b> for user U-8842 ("Alice") — emitted by the orders pipeline (L68) the moment a package leaves the warehouse.</li>
+  <li><b>The channels:</b> <b>push</b> (a phone banner via APNs/FCM), <b>email</b>, <b>SMS</b> (a text), and <b>in-app</b> (a bell icon inside the app). Each differs in cost, speed, reach, and how much it annoys.</li>
+  <li><b>The job:</b> get the right message to Alice on the right channel, exactly once, at a decent hour, without training her to turn notifications off.</li>
+</ul>
+
+<p>Here is the whole pipeline on one page. One event fans out, but every stage can <i>drop</i> it (already sent, not wanted, over the limit, wrong hour) — a notification system spends most of its effort deciding <b>not</b> to send:</p>
+<div class="diagram"><pre>
+        order.shipped {user:U-8842, event_id:E-551}      (at-least-once, L68)
+                          │
+                          ▼
+     ┌─────────────────────────────────────────────────┐
+     │ 1. DEDUP (L73)   key = user+event+type+channel    │  seen before? drop
+     │ 2. PREFERENCE    does Alice want this, this way?   │  opted out?  drop
+     ├─────────────────────────────────────────────────┤
+     │ 3. ROUTE         pick channel(s) + fallback ladder │  push→email→SMS
+     │ 4. RATE LIMIT (L08)  per-user inbox token bucket   │  over cap?  digest
+     │ 5. QUIET HOURS   is it night in Alice's timezone?  │  night?     hold
+     ├─────────────────────────────────────────────────┤
+     │ 6. RENDER        template + data → per-channel msg │  localize, trim
+     │ 7. DELIVER (L09/68)  provider send + retry + DLQ    │  bounce? suppress
+     └───────────────────┬───────────────────────────────┘
+                         ▼
+             delivery receipt · bounce · unsubscribe
+                         │  feeds back into
+                         ▼
+             preferences · suppression list · sender reputation
+</pre></div>
+
+<p class="note"><span class="key">The one idea the whole lesson turns on:</span> a send is an <b>irreversible side effect on a scarce, non-renewable resource</b> — the user's attention and your permission to reach them. A database write can be corrected; a 3 a.m. text cannot be recalled, and the opt-out it triggers is close to permanent. So the system is not built to send fast — it's built to <b>decide, carefully, whether to send at all</b>, and every stage above is a filter that protects that permission.</p>
+
+<h3>Words we'll earn before we lean on them</h3>
+<ul>
+  <li><b>Channel</b> — a way to reach a user: push, email, SMS, in-app. Differs in cost, latency, reach, and intrusiveness.</li>
+  <li><b>Push token</b> — an id from Apple (APNs) or Google (FCM) that lets you send a banner to one installed app. No token (app deleted / never installed) = no push.</li>
+  <li><b>Transactional vs marketing</b> — transactional = a message the user's own action earned (order update, receipt, 2FA); marketing = something you want to send them (promos). Different consent rules and different urgency.</li>
+  <li><b>Preference / opt-out</b> — the user's stored choice of what to receive on which channel. Legally binding for marketing.</li>
+  <li><b>Dedup (idempotency)</b> — suppressing a second notification for the same logical event (L13/L73), because upstream delivery is at-least-once (L68).</li>
+  <li><b>Fan-out</b> — one event turning into many sends (across channels and, for a campaign, across users).</li>
+  <li><b>Fallback ladder</b> — try the cheap/preferred channel first; if it can't deliver, fall to the next (push → email → SMS).</li>
+  <li><b>Inbox rate limit</b> — a per-user cap on how many notifications reach them in a window (L08 token bucket), so no single user is flooded.</li>
+  <li><b>Digest / batching</b> — rolling several held notifications into one summary ("3 items back in stock") instead of sending each.</li>
+  <li><b>Quiet hours</b> — a per-user window (their night) when non-urgent notifications are held, not sent.</li>
+  <li><b>Provider</b> — the downstream service that actually delivers: APNs/FCM (push), SES/SendGrid (email), Twilio (SMS). Each has its own rate limits and its own view of your reputation.</li>
+  <li><b>Bounce (hard/soft)</b> — a failed email: hard = address doesn't exist (suppress forever); soft = temporary (mailbox full → retry later).</li>
+  <li><b>Suppression list</b> — addresses/tokens you must never send to again (unsubscribed, hard-bounced, complained).</li>
+  <li><b>Sender reputation</b> — the providers' trust score in you, driven by your bounce and spam-complaint rates. Low reputation = your messages go to spam or get blocked, <i>for every user</i>.</li>
+  <li><b>DLQ (dead-letter queue)</b> — where a message goes after retries are exhausted or the failure is permanent (L09/L68).</li>
+</ul>
+
+<h2>Move 1 — Estimate: the volume is easy; the cost is the whole story</h2>
+<p>Two numbers decide the design. The first — how many notifications per second — turns out to be modest and handled by a queue. The second — what each channel <i>costs</i> — is where the real design pressure comes from.</p>
+
+<div class="card calc">
+  <p><b>Volume.</b> Transactional traffic is tied to orders, not to page views:</p>
+  <div class="diagram"><pre>
+  2,000,000 orders/day × 3 lifecycle events (placed, shipped, delivered)
+     = 6,000,000 transactional notifications/day
+     = 6,000,000 / 86,400 s  ≈  70 per second average
+     evening peak ~4×          ≈  300 per second
+
+  a MARKETING campaign is a different beast — a burst, not a stream:
+     one flash-sale blast to 4,000,000 eligible users, "send now"
+     = 4,000,000 sends dropped into the queue in one instant
+  </pre></div>
+  <p><span class="key">The steady stream is small (~300/s peak); the campaign burst (4M at once) is 13,000× larger for a few minutes.</span> This is exactly L09's shape: a queue absorbs the burst and workers drain it at a controlled rate, with a <b>priority lane</b> so a marketing blast never delays a password-reset or an "order shipped." Trade: buffering adds a little latency to campaigns to protect the latency of the messages that matter.</p>
+</div>
+
+<div class="card calc">
+  <p><b>Cost — the number that reshapes everything.</b> The four channels are not interchangeable; they differ by ~100× in price and ~1000× in throughput:</p>
+  <div class="diagram"><pre>
+  channel   $ / message   4M-user campaign      throughput / notes
+  ───────   ───────────   ────────────────      ──────────────────
+  push       ~$0          ~$0,  ~instant        free, needs an installed app + token
+  email      ~$0.0001     4M×0.0001 = $400      ~5,000/s → drains in ~13 min
+  SMS        ~$0.0075     4M×0.0075 = $30,000   ~100/s  → 4M/100 = 11 HOURS
+  in-app     ~$0          ~$0                   only seen when app is opened
+
+  same campaign, two channels:  email $400   vs   SMS $30,000   → 75×
+  </pre></div>
+  <p><span class="key">SMS costs 75× email and delivers 50× slower, so it can never be your bulk channel — it is a scalpel for the few messages that must arrive.</span> This is what forces the <b>fallback ladder</b>: prefer <b>push</b> (free, instant) → then <b>email</b> (cheap, rich) → and reach for <b>SMS</b> only for critical messages when there's no push token. Trade named for the first time: <b>reach vs cost</b> — SMS reaches almost anyone (no app needed) and is read within minutes, but at a price and a throughput ceiling that make it unusable at scale.</p>
+</div>
+
+<p class="note why"><b>Why not just push everything to every channel and let the user sort it out?</b> Because the fan-out multiplies the two things you're trying to conserve. Four channels means 4× the cost (and SMS's cost is real money), and — worse — it means Alice gets buzzed four times for one shipped package. Do that a few times and she turns notifications off. Now you've lost the free, instant channel (push) forever and are left paying for SMS or reaching no one. The abundance of channels is a trap: <span class="key">every extra send spends a resource that doesn't refill.</span></p>
+
+<h2>Move 2 — Model: the pipeline that mostly decides NOT to send</h2>
+
+<h3>Stage 1 — dedup: the send you can't take back</h3>
+<div class="card calc">
+  <p>The event comes off an at-least-once pipeline (L68), so "order.shipped E-551" can arrive twice. For a database write, a duplicate is harmless (L13 — write the same row twice). For a notification, a duplicate is a <i>second buzz</i> you can never recall. So dedup happens <b>before</b> the send, with an atomic claim (L13's unique-key trick):</p>
+  <div class="diagram"><pre>
+  key = hash(user_id + ":" + event_id + ":" + type + ":" + channel)
+        e.g. "U-8842:E-551:order.shipped:push"
+
+  claim(key) in a dedup store with a TTL:      (atomic INSERT-if-absent)
+     · first arrival  → row created → PROCEED to send
+     · second arrival → key exists  → DROP (already handled)
+
+  the claim must be ATOMIC (L06/L13 check-then-act race): two workers
+  processing the duplicate at once must not BOTH see "absent" and send.
+  </pre></div>
+  <p><span class="key">Because a send is irreversible, dedup is a correctness requirement, not an optimization — and the check must be atomic or a concurrent redelivery double-buzzes.</span> This is L13's "exactly-once <i>effect</i> on at-least-once <i>delivery</i>" applied to a side effect that leaves the building. Trade: the dedup store needs a TTL long enough to outlive redelivery (hours) but not forever (storage) — the same TTL trap as L13: forget too soon and a late redelivery double-sends.</p>
+</div>
+
+<h3>Stage 2 — preference &amp; routing: does she want it, and how?</h3>
+<div class="card calc">
+  <p>Before choosing a channel, check what Alice has allowed. Preferences are per-user, per-category, per-channel — and for marketing they're legally binding:</p>
+  <div class="diagram"><pre>
+  Alice's prefs:   order updates → push ON, email ON,  SMS OFF
+                   promotions    → push OFF, email ON,  SMS OFF
+                   security      → all channels ON  (can't fully disable)
+
+  route(order.shipped, Alice):
+     category = "order updates"  → allowed on push + email
+     fallback ladder: try PUSH first (free, instant, and she has a token)
+        push fails / no token → fall to EMAIL
+        (SMS is OFF for this category → never used here)
+  </pre></div>
+  <p><span class="key">Routing is preference ∩ fallback ladder: send on the cheapest allowed channel that can actually deliver, and only climb the ladder on failure.</span> Security messages are the exception — a fraud alert can't be silenced, because the user's safety outranks their annoyance. Trade: granular preferences (per-category, per-channel) respect the user and lift engagement, but every extra knob is one more thing to store, honor everywhere, and get right — silence where they asked for silence is a promise you can't break.</p>
+</div>
+
+<h3>Stage 3 — inbox rate limiting &amp; digests: protecting attention</h3>
+<div class="card calc">
+  <p>Even wanted notifications, sent too often, become noise. A per-user token bucket (L08) caps the flow; overflow isn't dropped — it's <b>batched into a digest</b>:</p>
+  <div class="diagram"><pre>
+  per-user bucket:  capacity = 3 (burst),  refill = 1 token / 4 h
+     → sustained ceiling ~6 notifications/day for non-urgent traffic
+
+  4 "back in stock" alerts fire for Alice in 10 minutes:
+     alert 1,2,3 → take a token each → SENT   (bucket now empty)
+     alert 4     → no token → HELD → rolled into tonight's digest:
+                   "3 items you follow are back in stock"  (one message)
+
+  PRIORITY bypasses the bucket:
+     critical (2FA, fraud)      → always immediate, never batched
+     transactional (shipped)    → bypass the cap (low frequency, earned)
+     marketing / social         → fully subject to the bucket + digest
+  </pre></div>
+  <p><span class="key">The scarce thing being rationed isn't bandwidth — it's the user's willingness to keep looking, so overflow is summarized, not discarded.</span> A digest turns ten buzzes into one, preserving the information while spending one unit of attention. Trade: batching cuts annoyance and cost but adds delay and blurs individual events — right for "back in stock," wrong for "your driver is arriving," which is why priority tiers bypass the bucket.</p>
+</div>
+
+<h3>Stage 4 — quiet hours &amp; rendering: the right hour, the right words</h3>
+<div class="card calc">
+  <p>A notification's value depends on <i>when</i> it lands. Quiet hours hold non-urgent messages through the user's night; rendering then turns the template + data into a per-channel message — where the SMS character budget hides a cost trap:</p>
+  <div class="diagram"><pre>
+  QUIET HOURS (Alice is in IST, UTC+5:30; quiet 22:00–08:00 local):
+     promo generated 02:00 local → HELD → released 08:00 (morning digest)
+     order.shipped   02:00 local → transactional → sent (or held to 08:00
+                     if not time-critical); a fraud alert → sent NOW.
+
+  RENDER — SMS segment math (why words cost money):
+     GSM-7 text:  160 chars / single segment, 153 / segment concatenated
+     add ONE emoji → UCS-2:  70 / single, 67 / segment concatenated
+     a 150-char message:  plain = 1 segment ;  with 1 emoji = ceil(150/67)
+                          = 3 segments = 3× the per-message cost
+  </pre></div>
+  <p><span class="key">Timezone-aware quiet hours convert a 3 a.m. intrusion into an 8 a.m. welcome — same message, opposite reception.</span> And rendering isn't just string-fill: a single emoji can flip an SMS from one billable segment to three (1 → 3 = 3× cost), so the template that "looks nicer" can triple the bill on a 4M campaign. Trade: quiet hours and batching improve reception and cut cost but delay delivery; you tune the quiet window and the priority tiers to the message's real urgency.</p>
+</div>
+
+<h3>Stage 5 — delivery: retries, bounces, and the DLQ</h3>
+<div class="card calc">
+  <p>Finally the provider send (L09/L68). Failures split in two, and treating them the same is how you wreck your sender reputation:</p>
+  <div class="diagram"><pre>
+  send to provider (APNs / SES / Twilio):
+     accepted            → await delivery receipt
+     TRANSIENT fail (429 rate-limited, 5xx, timeout)
+                         → retry with backoff + jitter (L07), then DLQ
+     PERMANENT fail (invalid token, hard bounce, unsubscribed)
+                         → do NOT retry → suppress + DLQ
+
+  bounce handling:
+     HARD bounce (no such mailbox) → suppress address FOREVER
+     SOFT bounce (mailbox full)    → retry later, give up after N
+  </pre></div>
+  <p><span class="key">Retry the transient, suppress the permanent — retrying a hard bounce or a dead token just burns reputation and money for a message that can never arrive.</span> The delivery receipts, bounces, and unsubscribes feed back into preferences and the suppression list, closing the loop. Trade: aggressive retries lift delivery of the recoverable few but, aimed at permanent failures, they raise your bounce rate — which the providers read as spam behavior and punish for <i>all</i> your users (next section).</p>
+</div>
+
+<h2>Move 3 — Trace the paths: a clean send, a duplicate, a 3 a.m. promo</h2>
+
+<h3>Path A — "your order shipped," the happy path</h3>
+<div class="diagram"><pre>
+   order.shipped {U-8842, E-551} arrives
+     │
+     ▼  dedup: claim "U-8842:E-551:order.shipped:push" → new → PROCEED
+     ▼  preference: order updates → push ON, she has a valid token
+     ▼  route: PUSH first (free, instant)
+     ▼  rate limit: transactional → bypasses the bucket
+     ▼  quiet hours: 15:00 local → fine, send now
+     ▼  render: "📦 Your order is on the way — arriving Thu. Track it →"
+     ▼  deliver: APNs accepts → delivery receipt in ~1 s
+   RESULT: one push, ~1 second, $0.  Email/SMS not used.
+</pre></div>
+<p>One event, one send. Every other channel was <i>correctly not used</i> — that restraint is the design working, not a gap in it. The whole path took no database of "who's online," just stateless preference and dedup checks.</p>
+
+<h3>Path B — the same event, delivered twice (dedup earns its keep)</h3>
+<div class="diagram"><pre>
+   order.shipped {U-8842, E-551} arrives AGAIN  (at-least-once, L68)
+     │
+     ▼  dedup: claim "U-8842:E-551:order.shipped:push"
+        → key already exists (from Path A) → DROP, do nothing
+   RESULT: zero second buzz. Alice never knows the event doubled.
+
+   contrast WITHOUT dedup:
+     → a second identical push at, say, 15:00:04 → "why did it buzz twice?"
+     → repeated across millions of events → the annoyance that ends in opt-out
+</pre></div>
+<p class="note"><span class="key">The duplicate is invisible to the user precisely because dedup ran before the send — the one place you can still stop it.</span> This is the exactly-once <i>effect</i> from L13, and it matters more here than for a DB write: a doubled row is a cleanup job, a doubled buzz is a withdrawal from the attention account you can't undo.</p>
+
+<h3>Path C — a 2 a.m. promo into a full inbox (hold, batch, ladder)</h3>
+<div class="diagram"><pre>
+   promo "flash sale" targets Alice, generated 02:00 IST
+     │
+     ▼  dedup: new → proceed
+     ▼  preference: promotions → push OFF, email ON  → channel = EMAIL
+     ▼  rate limit: marketing → subject to bucket; bucket empty → HELD
+     ▼  quiet hours: 02:00 local is inside 22:00–08:00 → HELD anyway
+     │
+     ▼  08:00 IST: release window opens; several held promos exist
+     ▼  BATCH into one morning digest email:
+        "Your flash sale + 2 items back in stock"   (one email, $0.0001)
+     ▼  deliver: SES accepts; if it HARD-bounces → suppress, DLQ
+   RESULT: zero night buzzes; one tidy morning email instead of four.
+</pre></div>
+<p class="note"><span class="key">Non-urgent traffic is shaped by when and how much, not just whether — the same four messages become one well-timed digest.</span> Two independent brakes both fired (quiet hours <i>and</i> the empty bucket), and the digest turned the overflow into a single spend of Alice's attention. Had this been a fraud alert, both brakes would have been bypassed — priority is what tells the pipeline which rules to skip.</p>
+
+<h2>Move 4 — Find the first bottleneck: the permission to be reached</h2>
+
+<div class="card calc">
+  <p><b>The first bottleneck is not throughput — it's the standing permission to reach the user, held on two sides at once and non-renewable:</b></p>
+  <div class="diagram"><pre>
+  the two scarce, coupled resources:
+
+    USER SIDE          PROVIDER SIDE
+    notifications ON   sender reputation (bounce + spam-complaint rate)
+        │                   │
+   over-send → annoy   over-send to unengaged → bounces + spam reports
+        │                   │
+        ▼                   ▼
+   user disables push   Gmail routes you to SPAM / blocks you
+   (free channel lost)  (for EVERY user, not just the annoyed one)
+
+    both degrade with volume; both are slow or impossible to recover.
+  </pre></div>
+  <p><span class="key">Every send is a withdrawal from two accounts that don't refill on demand — the user's tolerance and the providers' trust — and once either is overdrawn, no amount of throughput helps because you've lost the right to arrive.</span> This reframes the system: it is not a delivery engine, it's a <b>permission-conservation</b> engine, which is why so much of it (preferences, dedup, rate limit, quiet hours, digests) exists to <i>not</i> send. Trade, stated plainly: <b>reach &amp; timeliness vs annoyance &amp; cost</b> — pushed too far toward reach, the channel dies and future reach goes to zero.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The second wall — out-of-order events tell a nonsense story.</b> The pipeline is at-least-once and per-partition ordered at best (L09/L68), so lifecycle events can arrive out of order across partitions:</p>
+  <div class="diagram"><pre>
+  intended:   placed → shipped → delivered
+  arrives:    shipped (10:02)  then  placed (10:03, delayed retry)
+
+  naive: send "shipped" then "your order was placed" → user confused
+         ("it shipped before I placed it?")
+
+  fix: make notifications STATE-AWARE, not event-blind:
+     · carry a status version / sequence per order; a notification for an
+       OLDER state than already-sent is suppressed (L35 logical order).
+     · or collapse: only notify on the LATEST known state at send time.
+  </pre></div>
+  <p><span class="key">A notification reflects a state, so send it against the newest known state, not blindly per event — or the user reads the story backwards.</span> This is L35's causal-ordering problem wearing a UX hat. Trade: state-aware suppression needs you to track per-entity status (more state) but prevents the confusing, trust-eroding out-of-order buzz.</p>
+</div>
+
+<div class="card calc">
+  <p><b>The third wall — the self-inflicted thundering herd.</b> A campaign that fans out to millions "right now" hits your <i>own</i> app when everyone taps at once:</p>
+  <div class="diagram"><pre>
+  send 4,000,000 pushes instantly → say 20% tap within 2 minutes:
+     0.20 × 4,000,000 = 800,000 taps / 120 s  ≈ 6,700 req/s spike
+     stacked on the steady 40k req/s fleet (L27) → toward the knee
+
+  fix: STAGGER + JITTER the send (L02/L07 shape):
+     spread 4M over 15 min → 4,000,000 / 900 s ≈ 4,400 sends/s
+     → the tap spike flattens under the fleet's headroom
+  </pre></div>
+  <p><span class="key">A notification is a request you send yourself later — fan it out all at once and you DDoS your own backend when the taps land.</span> The fix is the familiar one: spread the sends over a window with jitter so the induced traffic is a plateau, not a spike (L27's latency knee, L28's goodput cliff, both reachable by a careless blast). Trade: staggering delays the last recipient by minutes but keeps the whole platform up for everyone — timeliness spent to protect availability.</p>
+</div>
+
+<p>So the honest picture: a notification system looks like "call the send API" and is really a machine for <b>deciding not to send</b>. <b>Estimate</b> showed the stream is small (~300/s peak, absorbed by a queue with a priority lane) but the <b>cost</b> is everything — SMS at 75× email and 50× slower forces a push → email → SMS fallback ladder. <b>Model</b> built the pipeline as a chain of filters: <b>dedup</b> before the irreversible send (L13/L73), <b>preference</b>-bound routing, an inbox <b>token bucket</b> with <b>digest</b> overflow (L08), timezone <b>quiet hours</b>, template <b>rendering</b> (where one emoji triples an SMS bill), and <b>delivery</b> with transient-retry / permanent-suppress and a DLQ (L09/L68). <b>Tracing</b> a clean push, an invisible duplicate, and a held-and-batched 2 a.m. promo showed the filters firing. The <b>first bottleneck</b> — the permission to be reached, held by both the user and the providers and refilled by neither — makes over-sending the cardinal sin; beneath it, out-of-order events demand state-aware sends (L35) and mass fan-out demands staggered, jittered delivery (L07/L27). The standing tension: <b>reach &amp; timeliness vs user annoyance &amp; cost.</b></p>
+
+<p><span class="key">The deepest point: a sent notification is the rare system output you cannot roll back, spent on a resource that doesn't replenish — so the whole discipline is restraint.</span> A queue can retry, a database can be corrected, a cache can be invalidated; a buzz at the wrong time, for the wrong reason, one time too many, is permanent, and it withdraws from an account (the user's attention, the providers' trust) that you cannot top up by trying harder. The genuinely new idea is small and sharp: <i>most of a notification system's job is to decide, at every stage, that the right move is silence.</i> The trade to carry: <span class="key">reach &amp; timeliness vs user annoyance &amp; cost.</span></p>
+
+<h3>The scoreboard: which idea solves which sub-problem</h3>
+<table>
+  <tr><th>Sub-problem</th><th>Idea (lesson)</th><th>What it buys / its price</th></tr>
+  <tr><td>Which channel to use at all</td><td>Cost/throughput ladder: push→email→SMS</td><td>reach at least cost / SMS reserved for critical, no-token cases</td></tr>
+  <tr><td>The same event arrives twice</td><td>Dedup with atomic claim before send (L13/L73)</td><td>no double buzz / needs a TTL'd dedup store (the TTL trap)</td></tr>
+  <tr><td>User doesn't want this / this way</td><td>Per-category, per-channel preferences</td><td>respect + engagement / more state to store and honor everywhere</td></tr>
+  <tr><td>One user flooded with sends</td><td>Inbox token bucket + digest overflow (L08)</td><td>attention protected / adds delay, blurs individual events</td></tr>
+  <tr><td>A 3 a.m. intrusion</td><td>Timezone-aware quiet hours</td><td>better reception / delays delivery; needs urgency tiers to bypass</td></tr>
+  <tr><td>Provider failure on send</td><td>Retry transient, suppress permanent + DLQ (L07/L09)</td><td>recovers the recoverable / mis-retrying bounces burns reputation</td></tr>
+  <tr><td>Over-sending kills the channel</td><td>The whole "decide not to send" stack</td><td>keeps the channel alive / every filter is a chance to under-notify</td></tr>
+  <tr><td>Events arrive out of order</td><td>State-aware / latest-state sends (L35)</td><td>no backwards story / must track per-entity status</td></tr>
+  <tr><td>Mass fan-out DDoSes your own app</td><td>Stagger + jitter the send (L07/L27)</td><td>flat load, platform stays up / last recipient delayed minutes</td></tr>
+</table>
+
+<h3>The four traps</h3>
+<ul>
+  <li><b>Trap 1 — send on every channel to be safe.</b> Four buzzes for one event multiplies cost and annoyance and trains the user to disable notifications, losing the free channel forever. Pick the cheapest allowed channel that can deliver and climb the ladder only on failure.</li>
+  <li><b>Trap 2 — no dedup, "the queue is reliable."</b> Upstream is at-least-once (L68), so events double; without an atomic dedup claim before the send, the duplicate becomes a second buzz you can never recall. Dedup is correctness, not optimization.</li>
+  <li><b>Trap 3 — retry every failure the same way.</b> Retrying hard bounces and dead tokens raises your bounce rate, which providers read as spam and punish for <i>all</i> users. Retry only transient failures; suppress permanent ones immediately.</li>
+  <li><b>Trap 4 — blast the campaign all at once.</b> A 4M instant fan-out spikes your own backend when the taps land and hammers provider rate limits. Stagger with jitter so the induced load is a plateau, not a cliff.</li>
+</ul>
+
+<h2>Where we landed</h2>
+<p>We asked how to deliver Lesson 87's shipped-it result to a real person — one "order shipped" across push, email, SMS, and in-app — without becoming noise. <b>Estimate</b> found the stream small (~300/s peak, queued with a priority lane, L09) but the <b>cost</b> decisive: SMS at 75× email and 50× slower forces the push → email → SMS fallback ladder. <b>Model</b> built the pipeline as filters that mostly say no: <b>dedup</b> before the irreversible send (L13/L73), preference-bound <b>routing</b>, an inbox <b>token bucket</b> with <b>digest</b> overflow (L08), timezone <b>quiet hours</b>, template <b>rendering</b> (one emoji → 3× SMS cost), and <b>delivery</b> with transient-retry/permanent-suppress + DLQ (L09/L68). <b>Tracing</b> a clean push, an invisible duplicate, and a held-and-batched 2 a.m. promo showed each filter fire. The <b>first bottleneck</b> — the permission to be reached, held by both the user and the providers and refilled by neither — makes restraint the core skill; beneath it, out-of-order events need state-aware sends (L35) and mass fan-out needs stagger + jitter (L07/L27). The deepest point: a send is the output you can't undo, spent on a resource that doesn't refill — so the system's real job is deciding when silence is the right send. The standing tension: <span class="key">reach &amp; timeliness vs user annoyance &amp; cost.</span></p>
+
+<div class="card">
+  <p style="margin:.2rem 0; color:var(--muted)"><b>Next up — we've been trusting the numbers our pipelines produce (order counts, CTR, delivery rates). Lesson 89 asks the uncomfortable question: how do you know those numbers are right? A pipeline can run green for weeks while quietly emitting garbage.</b></p>
+  <p style="margin:.2rem 0">• <b>Data quality &amp; pipeline observability (Lesson 89):</b> trusting the numbers — schema/contract enforcement at ingest (L80), freshness &amp; volume &amp; distribution checks, the "silent bad data" failure (a null flood no alarm caught), lineage, and backfill-safe reprocessing (L57). Trade: data trust &amp; coverage vs pipeline complexity &amp; latency.</p>
+  <p style="margin:.2rem 0">Say <b>next</b> and we'll build the checks that catch a pipeline lying to you before a dashboard does — the tripwires that fire when the data goes quietly wrong.</p>
+</div>
+
+<h2 id="quiz">Check yourself</h2>
+<p class="lead">Pick an answer — it'll explain why.</p>
+<div class="quiz" id="quiz"></div>
+
+<footer>
+  <p><b>Glossary touched this lesson:</b>
+    <span class="pill">channel</span>
+    <span class="pill">push token</span>
+    <span class="pill">transactional vs marketing</span>
+    <span class="pill">preference / opt-out</span>
+    <span class="pill">dedup (idempotency)</span>
+    <span class="pill">fan-out</span>
+    <span class="pill">fallback ladder</span>
+    <span class="pill">inbox rate limit</span>
+    <span class="pill">digest / batching</span>
+    <span class="pill">quiet hours</span>
+    <span class="pill">provider</span>
+    <span class="pill">bounce (hard/soft)</span>
+    <span class="pill">suppression list</span>
+    <span class="pill">sender reputation</span>
+    <span class="pill">DLQ</span>
+  </p>
+  <p>That's Lesson 88. It builds on: Lesson 87 (the experiment that said "ship it" — now we deliver the result), Lesson 73 (dedup / entity resolution — here dedup before an irreversible send), Lesson 13 (idempotency: exactly-once effect on at-least-once delivery), Lesson 09/68 (queues, retries, DLQ, and at-least-once delivery), Lesson 08 (the token bucket — here rationing a user's inbox), Lesson 07/27/28 (backoff/jitter and the latency knee / goodput cliff a fan-out can hit), and Lesson 35 (logical/causal ordering — here out-of-order lifecycle events). <b>Ask me follow-ups</b> — e.g. "how does a preference center handle regulatory consent (GDPR/CAN-SPAM/TCPA) per channel?", "how do you actually measure and protect email sender reputation (SPF/DKIM/DMARC, warmup)?", "how would you design the digest scheduler so it fires once per user per timezone at scale?", "what changes if 'order shipped' must be exactly-once even across a channel-provider retry you can't see?", or "how do you A/B test notification copy without over-notifying the test group?" When you're ready, say <b>next</b> and we'll build the data-quality checks that tell you whether any of these numbers can be trusted.</p>
+</footer>
+
+</div>
+
+<script>
+const QUESTIONS = [
+  {
+    stem: "A teammate proposes: 'to maximize reach, send every notification on all four channels — push, email, SMS, and in-app — so the user definitely sees it.' Why is this the wrong default?",
+    options: [
+      {t:"Because every extra send spends two non-renewable resources: real money (SMS is ~75× email, and four channels is 4× the cost) and the user's tolerance — four buzzes for one shipped package trains them to disable notifications, at which point you lose the free, instant push channel forever and are left paying for SMS or reaching no one. The right default is the cheapest ALLOWED channel that can deliver, climbing the fallback ladder only on failure.",
+       ok:true,
+       fb:"Exactly. Reach isn't free — it's withdrawn from cost and from the user's standing permission to be reached, and the second account doesn't refill. Over-sending to 'be safe' is the fastest way to end up unable to reach the user at all."},
+      {t:"Because sending on four channels at once would exceed your queue throughput — the system physically can't emit 4× the messages per second.",
+       ok:false,
+       fb:"Throughput isn't the constraint here; a queue absorbs bursts and the steady stream is only ~300/s. The real cost is money (SMS especially) and the user's attention — sending four times is technically easy and exactly why it's dangerous."},
+      {t:"Because in-app notifications are unreliable, so you should always drop in-app and send only the other three channels.",
+       ok:false,
+       fb:"The problem isn't one specific channel's reliability — it's sending on ALL of them for one event. In-app is fine for its purpose (seen when the app is open); the fix is choosing the single cheapest allowed channel that delivers, not swapping which three you blast."}
+    ]
+  },
+  {
+    stem: "Your notification service consumes 'order.shipped' events from an at-least-once pipeline (L68). During a redelivery, event E-551 for one user arrives twice. Without a dedup step, what happens, and what's the correct fix?",
+    options: [
+      {t:"The user gets two identical buzzes seconds apart — and a sent notification can't be recalled, so it's a permanent annoyance, not a fixable duplicate row. Fix: before sending, make an ATOMIC dedup claim on a key like (user+event_id+type+channel) in a TTL'd store; the first arrival proceeds, the second finds the key and drops. It must be atomic or two workers on the duplicate both see 'absent' and both send.",
+       ok:true,
+       fb:"Right. This is L13's exactly-once EFFECT on at-least-once delivery, and it matters more for a notification than a DB write: a doubled row is cleanup, a doubled buzz is an irreversible withdrawal from the user's attention. Dedup before the send is the only place to stop it, and the claim must be atomic to survive a concurrent redelivery."},
+      {t:"Nothing bad — notification providers (APNs/Twilio) automatically dedupe identical messages to the same user, so the second send is silently dropped for you.",
+       ok:false,
+       fb:"Providers don't dedupe your application-level events — they'll happily deliver two 'order shipped' pushes if you send two. Dedup is your responsibility, done before the send with an atomic claim, because at-least-once delivery guarantees duplicates will occur."},
+      {t:"The duplicate is harmless because you can detect it after the fact and send a follow-up 'ignore the previous message' notification to correct it.",
+       ok:false,
+       fb:"That makes it worse — now the user got three buzzes. A send is irreversible; you can't correct it with another send. The only fix is to prevent the duplicate before it leaves, via an atomic dedup claim ahead of the send."}
+    ]
+  },
+  {
+    stem: "Marketing wants to send a flash-sale push to all 4,000,000 eligible users 'immediately, for maximum impact.' Engineering pushes back. What's the strongest technical reason to stagger the send over ~15 minutes with jitter instead?",
+    options: [
+      {t:"A notification is a request you schedule against your OWN backend: if 20% of 4M users tap within 2 minutes, that's ~6,700 req/s stacked on the live 40k req/s fleet — a self-inflicted spike toward the latency knee (L27). Staggering 4M over 15 min (~4,400 sends/s) flattens both the provider load and the induced tap traffic into a plateau the fleet's headroom can absorb.",
+       ok:true,
+       fb:"Exactly. The danger isn't the sending — it's the synchronized RESPONSE. A mass instant fan-out DDoSes your own app (and hammers provider rate limits) when the taps land together; stagger + jitter (L07 shape) turns the cliff into a plateau. The last user is delayed minutes; everyone stays up."},
+      {t:"Because sending 4M pushes at once would cost too much — spreading them over 15 minutes reduces the per-message price.",
+       ok:false,
+       fb:"Push is ~free regardless of timing, and staggering doesn't change per-message cost on any channel. The reason to stagger is load: the synchronized tap-back spike against your own backend and the provider's rate limits, not the price of the sends."},
+      {t:"Because users who receive a notification later are more likely to engage, so delaying delivery improves click-through.",
+       ok:false,
+       fb:"There's no general rule that later delivery lifts engagement — if anything a flash sale is time-sensitive. Staggering is about protecting your backend and the providers from the synchronized spike, accepting a small delay for the last recipients as the cost of staying available."}
+    ]
+  },
+  {
+    stem: "An engineer notices some 'order shipped' emails hard-bounce (the address doesn't exist) and, to maximize delivery, configures the system to retry every failed send aggressively — hard bounces included. Why is this harmful?",
+    options: [
+      {t:"A hard bounce is a PERMANENT failure — retrying it can never succeed, and worse, a high bounce rate is exactly the signal email providers use to judge your sender reputation. Push it up and providers route your mail to spam or block you for EVERY user, not just the bad addresses. Fix: retry only TRANSIENT failures (429/5xx/timeout) with backoff; suppress permanent ones (hard bounce, invalid token, unsubscribe) immediately.",
+       ok:true,
+       fb:"Right. Retry the transient, suppress the permanent. Aiming retries at hard bounces burns money on impossible sends and, by inflating your bounce rate, damages deliverability for your entire user base — the provider-side twin of annoying users into opting out."},
+      {t:"It's harmful only because it wastes compute on retries; the deliverability of your other emails is unaffected since each address is independent.",
+       ok:false,
+       fb:"Deliverability is NOT per-address independent — providers score the sender as a whole on bounce and complaint rates. A flood of retried hard bounces raises that rate and gets your good mail sent to spam too. The cost isn't just compute; it's your reputation for every user."},
+      {t:"It's fine as long as you cap retries at, say, 50 attempts per message — the address might come back online.",
+       ok:false,
+       fb:"A hard bounce means the mailbox doesn't exist, so it won't 'come back' — that's a soft bounce (temporary, e.g. full mailbox). Retrying a hard bounce 50 times just multiplies the reputation damage. Hard bounces go straight to the suppression list; only soft/transient failures are worth a bounded retry."}
+    ]
+  }
+];
+
+const root = document.getElementById('quiz');
+QUESTIONS.forEach((q, qi) => {
+  const wrap = document.createElement('div'); wrap.className = 'q';
+  const stem = document.createElement('div'); stem.className = 'stem';
+  stem.textContent = (qi+1) + '. ' + q.stem; wrap.appendChild(stem);
+  const fb = document.createElement('div'); fb.className = 'fb';
+  q.options.forEach(opt => {
+    const b = document.createElement('button');
+    b.textContent = opt.t;
+    b.onclick = () => {
+      if (wrap.dataset.done) return;
+      wrap.dataset.done = '1';
+      b.classList.add(opt.ok ? 'correct' : 'wrong');
+      if (!opt.ok) {
+        [...wrap.querySelectorAll('button')].forEach(x => {
+          if (x.textContent === q.options.find(o=>o.ok).t) x.classList.add('correct');
+        });
+      }
+      fb.innerHTML = '<b>' + (opt.ok ? 'Correct. ' : 'Not quite. ') + '</b>' + opt.fb;
+      fb.classList.add('show');
+    };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(fb);
+  root.appendChild(wrap);
+});
+</script>
+</body>
+</html>

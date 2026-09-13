@@ -1733,9 +1733,16 @@
     eats shared inventory → cannibalizes control, lift overstated) → cluster/geo/switchback randomization (L23/34,
     fewer units → bigger MDE). Deepest point: an experiment measures whether the difference beats the noise GIVEN a
     valid split — verify the split, never assume it. Trade: statistical rigor & safety vs shipping velocity. (Lesson 0087)
-88. Notification systems end-to-end — one "your order shipped" across email/SMS/push/in-app: preference & dedup
-    (L73), per-channel delivery + retries/DLQ (L09/68), rate-limiting a user's inbox (L08), template rendering, and
-    the quiet-hours / batching digest. Trade: reach & timeliness vs user annoyance & cost.
+88. ✅ **Notification systems end-to-end** — one "your order shipped" (order.shipped, U-8842) across email/SMS/push/in-app
+    on the 5M-DAU marketplace: estimate the modest stream (~300/s peak, queued w/ priority lane, L09) vs the decisive
+    COST (SMS 75× email — $30k vs $400 for 4M, 50× slower → push→email→SMS fallback ladder); model the pipeline as
+    filters that mostly DROP — dedup before the irreversible send (L13/L73), preference-bound routing, inbox token
+    bucket + digest overflow (L08), timezone quiet hours, render (one emoji → 3× SMS segments), deliver w/
+    transient-retry/permanent-suppress + DLQ (L09/68); trace clean push / invisible duplicate / 2 a.m. promo held &
+    batched; first bottleneck = NOT throughput but the PERMISSION to be reached (user's notifications-on + sender
+    reputation with providers) — non-renewable, destroyed by over-sending; walls = out-of-order events → state-aware
+    sends (L35), mass fan-out → self-DDoS → stagger+jitter (L07/27). Trade: reach & timeliness vs user annoyance & cost.
+    (Lesson 0088)
 89. Data quality & pipeline observability — trusting the numbers: schema/contract enforcement at ingest (L80),
     freshness & volume & distribution checks, the "silent bad data" failure (a null flood no alarm caught), lineage,
     and backfill-safe reprocessing (L57). Trade: data trust & coverage vs pipeline complexity & latency.
